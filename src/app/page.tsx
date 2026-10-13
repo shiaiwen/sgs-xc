@@ -54,6 +54,9 @@ export default function Home() {
           <p className="mt-6 text-lg font-medium tracking-[0.22em] text-[#f0c9a0] sm:text-2xl">
             永久免费 · 持续更新 · 代码开源
           </p>
+          <p className="sr-only">
+            三国杀打小抄下载站，提供记牌助手微端安装包和浏览器油猴脚本。进入游戏后可查看记牌面板，项目只用于学习技术，不是游戏官方产品。
+          </p>
           <div className="mt-10 grid w-full max-w-md grid-cols-2 gap-3 sm:flex sm:w-auto sm:max-w-none sm:flex-nowrap sm:justify-center sm:gap-5">
             <Link
               href="/downloads"
