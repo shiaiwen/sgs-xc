@@ -26,11 +26,6 @@ updated: 2026-09-30
 
 首页导航里的「关于我」指向 `/about`。要加新入口，改 `src/components/site-header.tsx` 里的链接。
 
-## 上架一份小抄
-
-1. 把文件放进 `public/downloads`。
-2. 在 `src/lib/cheatsheets.ts` 增加一条记录，`file` 写成 `/downloads/文件名`。
-
 ## 上线前
 
 把 `src/lib/site.ts` 里的 `url` 改成正式域名，站点地图和规范链接会跟着变。

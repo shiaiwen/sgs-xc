@@ -74,7 +74,7 @@ export default function Home() {
               关于我
             </Link>
             <a
-              href="https://my.feishu.cn/share/base/form/shrcnREBtELtxUOKphwHtlgJYmb"
+              href="https://my.feishu.cn/share/base/form/shrcnkAw07JyIvNIkpNr4lgPJQf"
               target="_blank"
               rel="noopener noreferrer"
               className={buttonClass}

@@ -15,7 +15,6 @@
 
 # next.js
 /.next/
-/.next-dev-3003/
 /out/
 /dist/
 
@@ -41,3 +40,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# dist 
+/dist
+public/downloads
