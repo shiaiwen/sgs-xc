@@ -22,7 +22,7 @@ const zipName = `wd-xc-${String(manifest.version || '').trim()}.zip`;
 const releaseZip = path.join(root, 'release', zipName);
 const portalRoot = process.env.PORTAL_ROOT
   ? path.resolve(process.env.PORTAL_ROOT)
-  : path.resolve(root, '..', 'sgs-xc-portal');
+  : path.resolve(root, '..', 'portal');
 const portalDownloads = path.join(portalRoot, 'public', 'downloads');
 const portalZip = path.join(portalDownloads, zipName);
 const portalAppZip = path.join(portalDownloads, 'app.zip');
@@ -63,4 +63,4 @@ console.log(`[portal] 已拷贝到 ${portalAppZip}`);
 console.log(`[portal] 已拷贝到 ${portalManifest}`);
 console.log(`[portal] 已拷贝到 ${portalUserscript}`);
 console.log(`[portal] ${kb} KB`);
-console.log('[portal] 网站发布请到 sgs-xc-portal 目录执行 npm run deploy');
+console.log('[portal] 整站发布执行 npm run deploy -w apps/portal；发版用根目录 npm run release 一条命令完成');

@@ -158,7 +158,7 @@ async function main() {
   };
   const manifestPath = path.join(root, 'release', 'xiaochao-manifest.json');
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  const serverManifest = path.resolve(root, '..', 'sgs-xc-server', 'data', 'xiaochao-manifest.json');
+  const serverManifest = path.resolve(root, '..', 'server', 'data', 'xiaochao-manifest.json');
   if (existsSync(path.dirname(serverManifest))) {
     copyFileSync(manifestPath, serverManifest);
     console.log(`[pack] 版本清单已同步到 ${serverManifest}`);
