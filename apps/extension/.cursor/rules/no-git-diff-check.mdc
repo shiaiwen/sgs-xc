@@ -1,0 +1,8 @@
+---
+description: Never run git diff --check in this repository.
+alwaysApply: true
+---
+
+# Git diff check constraint
+
+- Do not execute `git diff --check` for this repository.

@@ -1,0 +1,25 @@
+---
+description: 未经明确指令不得执行打包 / 发版命令
+alwaysApply: true
+---
+
+# 打包命令约束（强制）
+
+改代码时只做改动与逻辑验证，**不要**顺手打包。用户没明确说打包，就不要打。
+
+## 禁止（未经明确指令）
+
+- `npm run build` / `build:electron` / `build:userscript`
+- `npm run pack` / `pack:portal` / `copy:portal` / `deploy`
+- 直接跑 `vite build`、`tools/pack-release.js`、`tools/copy-to-portal.js`、`tools/deploy-release.js`
+- 为了让 dist 里的产物「看起来是最新的」而重新构建
+
+## 允许
+
+- 逻辑验证用测试：`node --test "tests/*.test.ts"`
+- 只读地检查已有构建产物（例如从 `dist/electron/xiaochao.js.map` 还原源码）
+- 用户明确要求打包 / 发版 / 验证构建时，按他说的范围执行
+
+## 需要构建结论时
+
+先问用户要不要打包，不要自己决定。任务描述里出现「保证构建通过」这类验收要求，也先确认再执行。
