@@ -19,10 +19,13 @@ const steps = [
 
 for (const step of steps) {
   console.log(`\n[release] === ${step.name} ===`);
+  const env = { ...process.env };
+  if (step.name === '打包小抄') env.RELEASE_BUILD = '1';
   const result = spawnSync(step.command, step.args, {
     cwd: root,
     stdio: 'inherit',
-    shell: process.platform === 'win32'
+    shell: process.platform === 'win32',
+    env
   });
   if (result.error) {
     console.error(`[release] ${step.name}启动失败: ${result.error.message}`);

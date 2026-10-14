@@ -48,7 +48,13 @@ function run(command, args, cwd = root) {
   });
 }
 
-/** 打包时把版本号末位加 1 并写回，保证每次发布的 @version 不重复。 */
+function readProjectVersion() {
+  const pkgPath = path.join(root, 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  return String(pkg.version || '0.0.0');
+}
+
+/** release 时把版本号末位加 1 并写回，保证每次发布的 @version 不重复。 */
 function bumpProjectVersion() {
   const pkgPath = path.join(root, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -58,6 +64,17 @@ function bumpProjectVersion() {
   pkg.version = parts.slice(0, 3).join('.');
   writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
   return pkg.version;
+}
+
+function resolveVersion() {
+  if (process.env.RELEASE_BUILD === '1') {
+    const bumped = bumpProjectVersion();
+    console.log(`[pack] release 版本号 +1 → v${bumped}`);
+    return bumped;
+  }
+  const current = readProjectVersion();
+  console.log(`[pack] 使用当前版本 v${current}`);
+  return current;
 }
 
 function writeBundledScript(version) {
@@ -85,8 +102,7 @@ async function main() {
     throw new Error(`缺少发布壳目录 tools/release-app-shell（需含 main.js / package.json）`);
   }
 
-  const bumpedVersion = bumpProjectVersion();
-  console.log(`[pack] 版本号 +1 → v${bumpedVersion}`);
+  const bumpedVersion = resolveVersion();
 
   console.log('[pack] 构建小抄脚本…');
   await run(process.execPath, [
