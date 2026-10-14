@@ -1,0 +1,71 @@
+---
+description: Implementation record and constraints for the Mingpai feature audit against the reference bundle.
+alwaysApply: false
+---
+
+# 明牌缺口实现记录
+
+本项目的明牌改动以 `D:\workspace\sgs-extension` 为唯一读写范围。不能把「旧版有代码」当作「本项目已经可见可用」；每项需要分别核对协议输入、状态推演和 UI 展示。
+
+## 本轮：把旧版明牌代码搬过来（第一阶段）
+
+解混淆产物与逐行为规格放在 `.dev-data/mingpai-spec/`（该目录不进版本库）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `01-graph-engine.md` | 牌位图引擎（key/id 编码、pack/unpack、groups/LABELs、findKZ、identify、destroy、明牌标签与炁归属）逐方法伪代码与全部 error 分支 |
+| `02-protocol-driver.md` | 协议驱动：移牌主链、分区语义、顶底常量、炁链路、队友标记、周旋/宴戏、重连与洗牌、临时区多层 |
+| `03-preview-ui.md` | 预览条与弹层的几何、配色、字号、分流、交互、原生组件隐藏，含混淆符号对照表 |
+| `04-current-src-audit.md` | 现有 TS 实现的功能清单与缺口证据 |
+
+已落地的移植：
+
+- 新增 `src/features/mingpai/graph/card-graph.ts`：牌位图的忠实 TS 移植，含槽位链（key/id/next/prev、swap/create/delete/destroy/identify）、区域（show/remove/add/set，含锚点定位与不确定顺序兜底）、打包与解包（明组 / 暗组、洗牌池搬运）、明牌组登记、标签生命周期、炁归属、官方公开手牌集合。渲染与统计通过 hooks 外置，不碰 DOM。
+- 新增 `src/features/mingpai/graph/temporary-zone-grid.ts`：技能临时区多层网格的忠实移植。三元组回报推进（层内互换 / 跨层时同层后移 / 外部置换格记账 / 非法回报置为不可信 / 单元素表示追踪结束）、按顶底半区取回并按外部置换格补偿少一张、追踪注册表（同座位 + 技能 + 目标区只留最新，返完注销）、`wj/wQ/wd/wn/wm/wT/c0` 等辅助。
+- 新增 `src/features/mingpai/graph/move-pipeline.ts`：移牌主链的分区调度。早退（空移 / 类型 0 / 目标 11 区 / 自发包）、回收区 12、手牌回牌堆的打包挂链、洗牌、同区就地亮牌（唯一认牌入口）、整手亮牌（其余进回收区）、普通换区（临时区先按网格取回，再来源区摘牌 + 目标区加入，牌堆一次进多张到临时区时登记网格）。位置与张数纠偏仍由进入前的规则层完成。
+- 新增 `src/features/mingpai/graph/graph-engine.ts`：牌位图驱动的明牌引擎，实现同一套 `MingpaiEngine` 接口。分区账本、位置查询（`getHandCardIds` / `getZoneCardIds` / `findKZ` / `getDrawPileCardIds`）、暗牌顶底推算全部读牌位图；标签、炁归属、官方公开手牌直接由牌位图提供。
+- **已切换**：`createMingpaiEngine` 就是牌位图引擎，回退开关与位置登记表旧实现（`known-card-registry` 位置簿、`draw-pile-order` 顺序表）已整体删除；`mingpai-engine.ts` 现在只剩对外契约与区域常量，`KnownCardLocation` / `KnownCardMovement` 也移到那里。新建引擎会重置整张牌位图，等同于开一局。
+- 控制器里那套重复的临时区追踪（`temporaryCardZones` / `recoverCardsFromTemporaryZone` / `trackTemporaryZoneMovement` / `applyTemporaryCardReorder` / `temporaryZoneKey`）已删除；技能临时区的顺序推进改由 `advanceSeatGridTrace` / `advanceUniqueSeatGridTrace` 接管，移牌只走 `applyGraphMove`。
+- 开局 / 断线按整副牌重建已接上：`MsgGamePlayCardNtf`（`card-list-ready`）→ `resetAllCardsUnknown`，整副牌各占一个未知槽位、先不归区；`MsgReconnectGame` → `resetAllCardsToDrawPile`，用本局记下的总牌表把整副牌当作牌堆里的未知牌。
+- 断线清理按 `c3()` 对齐：丢临时区网格与牌堆顺序（`dropUntrustedOrder`）、清判定纠偏缓存（`resetObfuscatedJudge`）、清炁的全部转移状态（`resetQiTransferState`）、清牌面标签与跟踪（`seatStateStore.resetKnownHands`），之后才重建牌位图并用场上公开手牌归位。预览控制器也随重连丢掉队友标记、已选标记、展示列表缓存与待发定时器。
+- `unknown` 投影语义对齐旧实现：只表示「身份已知、归属还没定」——当前在临时区（3/8/10）里的已知牌，加上技能自己投影的候选；整副牌的未知槽位不算进来。
+- 新增 `src/features/mingpai/graph/mingpai-candidates.ts`：明牌候选推导。把「内容可枚举的明组」顺着槽位链展开成可能的具体牌号，看不清的部分用 0 占位；判断一组里还有没有未知候选；按「手牌区与技能标记区的明组登记顺序」分配天干标签（甲乙丙丁…，超出用「组N」）；给出座位手牌区的不确定组与可能牌集合。预览条的可能牌改成「座位快照 ∪ 牌位图明组展开」，任一边知道都算。
+- 技能标记区（zone 4）的预览行也按旧版搬好：区域键 `4-座位-技能号`，每行给出手牌之外的确定牌、明组展开出的可能牌与不确定组；预览弹层里按行单独分栏，标题色用旧版的 `#E6E7AF`。技能名走 `spell-name.ts` 从游戏注入的技能表读。
+- 洗牌分支依赖的对局状态已接上：引擎维护「还在这一局」（`isGameStart`）与「这一局已经结算过」（`isPassed`），对局中洗牌先按旧版把未知槽位打包成「已经洗回牌堆、身份不可知」的组（`pack(..., mode=1)` 登记进洗牌池并平移池内 key），结算之后再洗牌就不打包。新增 `MingpaiEngine.noteGameSettled()`，控制器在 `game-ended` 里调用。
+- 「判定牌按座位颜色回手」不再只认 3571：`MoveJudgeHost` 新增 `isJudgeRecoverySpell`，控制器把它放宽到 3571 与椒遇；椒遇的座位颜色来自技能私有数据（`spell-data-updated` 的第一位，1 红 / 2 黑）。没有放宽的宿主行为不变。
+- 7016 / 7017「自己亮出的牌随后暗置进手牌」在运行时原本是**死分支**：`fillHiddenIds` 会读 `shownBySpell`，但没有任何地方为这两个技能号写入。现在 `noteObfuscatedUseSpell` 在自己亮牌时记下来，消费端按顺序一张一张取。
+- 删除重复实现：`special-spell-recovery.ts`（与 `obfuscated-judge.ts` 高度重合）连同它的测试一并删除，椒遇与 7016 两个用例已分别落到 `tests/mingpai-jiaoyu-judge.test.ts` 与 `tests/mingpai-self-hand-gain.test.ts`（都是打在运行时实现上）。另外删掉运行时不引用的两套看牌规则表 `rules/opt-target-rules.ts` 与 `rules/spell-opt-rep-rules.ts`（已被 `obfuscated-judge.ts` 的 `judgeOptTarget` / `judgeSpellOpt` 取代）。
+- 牌堆方向由测试固定：协议「顶」对应牌堆区数组头，看牌给的顺序直接落到头部，底端顺序相反。
+- 预览数据推导还差一块：不确定组的标签与张数已经算出并用于弹层分栏标题，但「同一组的多张牌在可能牌栏里怎么归并展示」还没做（旧版 `yy` 的 `label`/`count`/`hasUnknownCandidate` 已具备，展示层只用了候选牌号）。
+- `cardCounter`（牌名 / 花色 / 点数 / 类型的统计与筛选状态）已按旧版搬好，但还没有消费者：对应的原生「局内牌堆悬浮窗」筛选界面尚未移植，`faceOf` 也还没接卡表，因此目前是惰性的。
+- 展示与标签的取值规则：牌**离开手牌**时（`FromZone === 5`）协议没公开身份就不能泄露，展示与标签仍按控制器解析结果；从技能临时区 / 处理区出来时这些牌本来就在明面上，直接用引擎的落位结果。这条规则由缔盟（临时区交接要显示）与顺手牵羊（偷牌不得显示）两条测试固定。
+- 卡牌标签改为单一来源：`known-card-registry` 只保留位置，`tags / persistentTags / originalOwnerSeatId` 全部由牌位图管理。粘性标签为「炁」「心幽」，其余标签（技能来源等）在牌离开手牌或离开官方公开手牌集合时回收。
+- 新增 `MingpaiEngine.syncOfficialHand` / `getOfficialHandCardIds`；「炁」改走归属表 `rememberMingpaiQiCards`，不再靠启发式猜测。
+- 预览控制器里「离开官方公开手牌列表」的牌改为只回收普通标签，不再推断它进了弃牌堆。
+- 新增测试 `tests/mingpai-card-graph.test.ts`（6 例）、`tests/mingpai-tag-lifecycle.test.ts`（4 例）、`tests/mingpai-temp-zone-grid.test.ts`（6 例）、`tests/mingpai-move-pipeline.test.ts`（7 例）、`tests/mingpai-graph-engine.test.ts`（6 例）。全量 59 例通过，双端构建通过。
+
+## 已完成（第二阶段）
+
+- 3483（手牌暂存到技能区后按 key 换回）的读取端已接上：移牌管线新增 `spell3483Branch`，跨移牌保存在引擎的 `moveState` 里。分支与旧版一致——手牌进技能区时记下暂存牌；牌堆顶进技能区时先按看牌回报的张数打包（张数由 `obfuscated-judge` 的 `getObfuscated3483PileCount()` 提供，控制器在 3483 的移牌上带上）；技能区回牌堆时先翻转目标区取牌方向，没有具体牌号且有暂存手牌就建归还计划，建不出来就退回常规取牌；技能区回手牌且有计划时先按 key 换回（失败就打包暂存手牌）再执行归还计划。状态在引擎 `clear()` 与两个整副牌重建入口里复位。
+- 3483 的归还路径已补上用例，并修掉一处条件写错：旧版伪代码里的 `count===0` 指的是「这次移牌没有给出具体牌号」，不是「张数为 0」。现在三处门禁都按 `positiveCount(cardIds) === 0` 判断。
+- 引擎对外契约补了用例 `tests/mingpai-engine-contract.test.ts`：技能分区的替换 / 追加 / 移除 / 清空、技能投影写进 unknown、`subscribe` 的首次回调与去重、`reconcileVisibleHands` 的手牌区重建。
+
+## 明确待办
+
+- 牌堆「放回顶部」时的数组方向（`add` 会把整批倒序插到数组头）与「从顶部取」（`remove` 不倒序，只有 3208/7011/987/988/3903 才倒序）不对称，是旧版原样；已按原样保留，实机摸牌顺序要专门对一遍。
+- 不确定组的归并展示：标签（甲乙丙丁）与张数已经算出并用于弹层分栏标题，但「同一组的多张牌在可能牌栏里怎么归并展示」还没做。
+- 队友手牌标记缺旧版的选中 / 推荐描边节点；点击选择、限额、发送与回包同步已可用，回包按 `{error_id, seat_id, card_list}` 读取。
+- `cardCounter`（牌名 / 花色 / 点数 / 类型的统计与筛选状态）已按旧版搬好，但还没有消费者：对应的原生筛选界面尚未移植，`faceOf` 也还没接卡表。
+- 命名：运行时的判牌模块还叫 `obfuscated-judge.ts`（按来源命名），另有一批 `noteObfuscated*` 函数名；纯改名，留到功能稳定后一起做。
+- `rules/move-card-rules.ts` 只剩 `isInitialPileLoad` 一个函数在运行时被用，其余导出可以再收。
+
+## 其他尚未完成，不得标为已实现
+
+- 周旋：已有 3065 展示牌暗移恢复；尚无放置记录的可见摘要、命中结果状态或后续提示 UI。
+- 阴风甲、装备牌来源/技能状态：当前座位快照不包含装备牌集合和装备状态字段，需先从场景适配器或协议建立可靠输入。
+- 宴戏：已有候选牌手牌/牌堆归属推算；尚未完全恢复候选在牌堆顶、底及未知牌之间的相对位置。
+- 技能来源标签：已按旧版规则改成非粘性标签，覆盖范围仍比旧版窄。
+
+## 验收要求
+
+新增每项明牌功能时同时补协议/状态处理与用户能看到的界面；对于协议无法唯一判断的状态，展示未知并保留原顺序，不得猜牌。编译通过只能证明代码可构建，不能作为游戏内交互已验证的证据。
