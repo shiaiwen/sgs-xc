@@ -1,5 +1,5 @@
 <script setup>
-/** 自动任务设置：总开关与各项跳过选项，可手动触发领取。 */
+/** 自动领取设置：总开关控制下面的领取项。勾选表示要领，写入配置时取反为 skip。 */
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import BaseDialog from '../dialog/BaseDialog.vue';
 import {
@@ -17,8 +17,9 @@ const props = defineProps({
 
 const isOpen = ref(false);
 const enabled = ref(props.configStore.get(AUTO_TASK_ENABLED_KEY));
-const skipValues = reactive(Object.fromEntries(
-  AUTO_TASK_SKIP_SETTINGS.map(({ key }) => [key, props.configStore.get(key)])
+/** 界面勾选态：true = 要领 = 配置 skip 为 false */
+const claimValues = reactive(Object.fromEntries(
+  AUTO_TASK_SKIP_SETTINGS.map(({ key }) => [key, !props.configStore.get(key)])
 ));
 
 const unsubscribe = [
@@ -26,11 +27,15 @@ const unsubscribe = [
     enabled.value = value;
   }),
   ...AUTO_TASK_SKIP_SETTINGS.map(({ key }) => props.configStore.subscribe(key, ({ value }) => {
-    skipValues[key] = value;
+    claimValues[key] = !value;
   })),
 ];
 
-const skipCount = computed(() => AUTO_TASK_SKIP_SETTINGS.filter(({ key }) => skipValues[key]).length);
+const claimCount = computed(() => AUTO_TASK_SKIP_SETTINGS.filter(({ key }) => claimValues[key]).length);
+const entryText = computed(() => {
+  if (!enabled.value) return '关';
+  return `${claimCount.value}/${AUTO_TASK_SKIP_SETTINGS.length}`;
+});
 
 onBeforeUnmount(() => unsubscribe.forEach((stop) => stop()));
 
@@ -38,8 +43,8 @@ function updateEnabled(event) {
   props.configStore.set(AUTO_TASK_ENABLED_KEY, event.currentTarget.checked);
 }
 
-function updateSkip(key, event) {
-  props.configStore.set(key, event.currentTarget.checked);
+function updateClaim(key, event) {
+  props.configStore.set(key, !event.currentTarget.checked);
 }
 </script>
 
@@ -53,7 +58,7 @@ function updateSkip(key, event) {
         @click="isOpen = true"
       >
         <span>自动领取</span>
-        <span class="xiaochao-block-entry__count">{{ enabled ? `开·跳过${skipCount}` : '关' }}</span>
+        <span class="xiaochao-block-entry__count">{{ entryText }}</span>
       </button>
     </div>
     <BaseDialog
@@ -87,7 +92,7 @@ function updateSkip(key, event) {
         </div>
       </section>
       <section class="xiaochao-block-group">
-        <h4 class="xiaochao-block-group__title">跳过项（勾选 = 不领）</h4>
+        <h4 class="xiaochao-block-group__title">领取项</h4>
         <div class="xiaochao-block-group__grid">
           <label
             v-for="setting in AUTO_TASK_SKIP_SETTINGS"
@@ -100,9 +105,9 @@ function updateSkip(key, event) {
             <input
               type="checkbox"
               :aria-label="setting.label"
-              :checked="skipValues[setting.key]"
+              :checked="claimValues[setting.key]"
               :disabled="!enabled"
-              @change="updateSkip(setting.key, $event)"
+              @change="updateClaim(setting.key, $event)"
             >
             <span class="xiaochao-block-check__box" />
             <span class="xiaochao-block-check__label">{{ setting.label }}</span>

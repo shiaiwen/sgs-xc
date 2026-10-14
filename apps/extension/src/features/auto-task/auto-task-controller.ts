@@ -18,7 +18,7 @@ import {
 } from '../skin-background/skin-runtime.ts';
 import { beijingDayIndex, createAutoTaskClaims } from './auto-task-claims.ts';
 import { createAutoTaskRunner, type AutoTaskOptions } from './auto-task-runner.ts';
-import { ALL_AUTO_TASK_KEYS, AUTO_TASK_ENABLED_KEY } from './auto-task-settings.ts';
+import { ALL_AUTO_TASK_KEYS, AUTO_TASK_ENABLED_KEY, AUTO_TASK_SKIP_SETTINGS } from './auto-task-settings.ts';
 import { createAutoTaskWindows } from './auto-task-windows.ts';
 
 export type AutoTaskReason = 'login' | 'gameEnd' | 'postGame' | 'switch' | 'tavern' | 'heartbeat' | 'auto';
@@ -269,7 +269,11 @@ export function installAutoTaskController(
 
   ALL_AUTO_TASK_KEYS.forEach((key) => {
     unsubscribes.push(configStore.subscribe(key, ({ value, previousValue }) => {
-      if (key === AUTO_TASK_ENABLED_KEY && value === true && previousValue !== true) schedule('switch', true);
+      if (key === AUTO_TASK_ENABLED_KEY && value !== previousValue) {
+        // 总开关控制领取项：开=全要领，关=全不领。
+        AUTO_TASK_SKIP_SETTINGS.forEach(({ key: skipKey }) => configStore.set(skipKey, value !== true));
+        if (value === true) schedule('switch', true);
+      }
       if (key === 'autoTask.skipTavern' && value === false && configStore.get(AUTO_TASK_ENABLED_KEY)) {
         schedule('tavern', true);
       }

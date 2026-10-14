@@ -1,5 +1,6 @@
 /**
- * 自动任务设置项：总开关与各项「跳过」选项声明。
+ * 自动任务设置项：总开关与领取项声明。
+ * 配置键仍为 skip*：true 表示跳过；界面勾选表示要领，读写时取反。
  */
 
 import type { XiaochaoConfigKey } from '../../config/config-schema.ts';
@@ -14,19 +15,26 @@ export interface AutoTaskSkipSetting {
 
 export const AUTO_TASK_ENABLED_KEY = 'autoTask.enabled' satisfies XiaochaoConfigKey;
 
-export const AUTO_TASK_ENABLED_TOOLTIP = '自动完成砍树、敲鼓等枯燥的点击流程\n'
-  + '自动领取活跃任务、月卡、签到、活动等奖励\n'
-  + '这是总开关，下面的选项可在此基础上排除部分内容\n'
+export const AUTO_TASK_ENABLED_TOOLTIP = '打开后按下面勾选的项自动领取\n'
+  + '也会顺带做砍树、敲鼓、活跃任务、月卡、签到等\n'
   + '自动化操作存在账号风险，请自行斟酌';
 
-/** 开启表示跳过该类奖励。 */
+/** 配置为 true 表示跳过；设置页勾选表示要领，读写时取反。 */
 export const AUTO_TASK_SKIP_SETTINGS: readonly AutoTaskSkipSetting[] = [
-  { key: 'autoTask.skipTavern', label: '酒馆', tooltip: '跳过酒馆碎片任务，也不同步酒馆进度' },
-  { key: 'autoTask.skipMail', label: '邮件', tooltip: '跳过邮件附件' },
-  { key: 'autoTask.skipDailyGeneralBag', label: '武将包', tooltip: '跳过每日免费武将包' },
-  { key: 'autoTask.skipSignTrialCard', label: '体验卡', tooltip: '签到会有体验武将，领取会污染将池\n开启表示跳过，月底记得手动领取' },
-  { key: 'autoTask.skipDiJiaQuan', label: '抵价券', tooltip: '不领取任何含抵价券的奖励' },
-  { key: 'autoTask.skipHuanLeDou', label: '欢乐豆', tooltip: '不领取任何含欢乐豆的奖励\n低于600豆时的免费领豆也会跳过' }
+  { key: 'autoTask.skipTavern', label: '酒馆', tooltip: '自动领取酒馆碎片任务，并同步酒馆进度' },
+  { key: 'autoTask.skipMail', label: '邮件', tooltip: '自动领取邮件附件' },
+  { key: 'autoTask.skipDailyGeneralBag', label: '武将包', tooltip: '自动领取每日免费武将包' },
+  {
+    key: 'autoTask.skipSignTrialCard',
+    label: '体验卡',
+    tooltip: '签到里的体验武将会进将池，勾选才会自动领'
+  },
+  { key: 'autoTask.skipDiJiaQuan', label: '抵价券', tooltip: '领取含抵价券的奖励' },
+  {
+    key: 'autoTask.skipHuanLeDou',
+    label: '欢乐豆',
+    tooltip: '领取含欢乐豆的奖励，低于 600 豆时也会领免费豆'
+  }
 ];
 
 export const ALL_AUTO_TASK_KEYS: readonly XiaochaoConfigKey[] = [

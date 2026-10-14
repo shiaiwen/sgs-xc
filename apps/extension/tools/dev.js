@@ -165,7 +165,19 @@ function run(command, args, options = {}) {
   return child;
 }
 
-const viteCli = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
+function resolveViteCli() {
+  try {
+    return path.join(path.dirname(require.resolve('vite/package.json')), 'bin', 'vite.js');
+  } catch {
+    return path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
+  }
+}
+
+const viteCli = resolveViteCli();
+if (!existsSync(viteCli)) {
+  console.error(`[dev] 找不到 vite：${viteCli}\n在仓库根目录执行 npm install 后再启动。`);
+  process.exit(1);
+}
 run(process.execPath, [
   viteCli,
   'build',
