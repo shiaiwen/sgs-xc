@@ -1,0 +1,18 @@
+{
+  "name": "sgs-xc",
+  "private": true,
+  "version": "0.1.0",
+  "description": "小抄 monorepo：微端注入脚本、下载门户、版本服务",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/extension",
+    "build": "npm run build -w apps/extension",
+    "test": "npm run test -w apps/extension --if-present",
+    "pack": "npm run pack -w apps/extension",
+    "release": "node tools/release.js",
+    "deploy:portal": "npm run deploy:downloads -w apps/portal",
+    "deploy:server": "npm run deploy -w apps/server"
+  }
+}
