@@ -41,6 +41,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# dist 
+# dist
 /dist
-public/downloads
+# 发版下载包与清单，由 copy:portal 生成
+public/downloads/

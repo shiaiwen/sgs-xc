@@ -5,3 +5,7 @@ release/
 .dev-data/
 *.log
 .DS_Store
+
+# 发版构建产物：由 pack / copy:portal 生成，勿入库
+apps/portal/public/downloads/
+apps/server/data/xiaochao-manifest.json
