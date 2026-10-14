@@ -598,6 +598,14 @@ function initElectronFrame() {
             else webview.addEventListener('dom-ready', openTools, { once: true });
         });
     }
+    if (!webview.__xcFocusWebviewBound) {
+        webview.__xcFocusWebviewBound = true;
+        // 输入框聚焦时（经 electron_renderer.cjs 的 focusWebview 转发）把原生键盘
+        // 焦点和输入法状态交回 webview，修 guest 焦点脱钩导致的中文打不进去。
+        webview.addEventListener('ipc-message', (event) => {
+            if (event.channel === 'xiaochao-focus-webview') webview.focus();
+        });
+    }
     webview.addEventListener("dom-ready", function () {
         developmentWebviewReady = true;
         developmentReloadQueued = false;

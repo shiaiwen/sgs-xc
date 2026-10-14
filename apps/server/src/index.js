@@ -3,6 +3,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { startGiftCodeRefresh } from './gift-codes/refresh.js';
 import { createGiftCodeRoutes } from './gift-codes/routes.js';
+import { createLogRoutes } from './logs-page.js';
+import { captureRequestLog } from './request-log.js';
 import { createVersionRoutes } from './version/routes.js';
 
 const app = new Hono();
@@ -15,6 +17,12 @@ app.use('*', cors({
 
 app.get('/health', (context) => context.json({ ok: true }));
 
+app.use('*', async (context, next) => {
+  await next();
+  await captureRequestLog(context);
+});
+
+app.route('/', createLogRoutes());
 app.route('/', createGiftCodeRoutes());
 app.route('/', createVersionRoutes());
 

@@ -20,13 +20,16 @@ import { applyCardReveals } from './reveal-sink.ts';
 import {
   correctMoveCard,
   getObfuscated3483PileCount,
+  hasShownJudgeCard,
   isObfuscatedSameZoneShow,
   judgeOptTarget,
   judgeSpellOpt,
   noteObfuscatedCurrentSeat,
   noteObfuscatedSeatColor,
   noteObfuscatedUseSpell,
+  recordJudgeColorGain,
   resetObfuscatedJudge,
+  takeJudgeCardId,
   takeHiddenZoneCards,
   takeQiDiscardCards
 } from './obfuscated-judge.ts';
@@ -40,7 +43,7 @@ import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { resolveSkillIds } from '../skill-assist/skill-visibility.ts';
 import { traceMingpai } from '../../runtime/mingpai-trace.ts';
 import { legacyIncomingHandLabel } from './rules/legacy-hand-label.ts';
-import { DRAW_PILE_OWNER } from './rules/reveal-types.ts';
+import { DRAW_PILE_OWNER, handReveal } from './rules/reveal-types.ts';
 
 type MoveCardEvent = Extract<GameEvent, { type: 'cards-moved' }>;
 
@@ -79,6 +82,8 @@ export function installMingpaiController(
   let reconnectNeedsHands = false;
   /** 本局的整副牌，断线重建时用。 */
   let lastCardList: number[] = [];
+  /** 椒遇最近一次技能私有数据，重复上报不再当成新拿到一张。 */
+  let lastJiaoyuDatas = '';
 
   const unsubscribeSeatState = seatStateStore.subscribe((snapshot) => {
     if (synchronizingPersistentTags) return;
@@ -126,6 +131,7 @@ export function installMingpaiController(
       // 再按本局总牌表把整副牌当作牌堆里的未知牌，最后用场上仍公开的手牌归位。
       dropUntrustedOrder();
       resetObfuscatedJudge();
+      lastJiaoyuDatas = '';
       resetQiTransferState();
       seatStateStore.resetKnownHands();
       if (lastCardList.length) engine.resetAllCardsToDrawPile(lastCardList);
@@ -135,6 +141,7 @@ export function installMingpaiController(
     }
     if (event.type === 'game-ended') {
       resetObfuscatedJudge();
+      lastJiaoyuDatas = '';
       // 同房间结算/再开不切场景，只能靠协议清空；不要 store.clear() 把 inGame 打成 false，
       // 否则下一帧场景轮询又会当成新的 game-started，并把残留 CardUi 写回引擎。
       clearTempZoneGrids();
@@ -147,6 +154,7 @@ export function installMingpaiController(
     if (event.type === 'game-started') {
       // 开局一律丢掉上一局缓存。热重载恢复只留给 game-reconnected。
       resetObfuscatedJudge();
+      lastJiaoyuDatas = '';
       clearTempZoneGrids();
       resetQiTransferState();
       lastCardList = [];
@@ -215,10 +223,27 @@ export function installMingpaiController(
       updateQiSeatState(event.seatId, event.value);
       return;
     }
-    if (event.type === 'spell-data-updated' && isJiaoyuSpell(event.dataId)) {
-      // 椒遇：技能私有数据第一位就是这个座位的判定颜色（1 红 / 2 黑）。
-      const color = Math.trunc(Number(event.datas[0]));
-      if (color === 1 || color === 2) noteObfuscatedSeatColor(event.seatId, color);
+    if (event.type === 'spell-data-updated'
+      && isJudgeColorSpell(event, hasShownJudgeCard)) {
+      // 椒遇：技能私有数据第一位是这个座位的判定颜色（1 红 / 2 黑），
+      // 后面的牌号就是这一手拿到的那张判定牌。协议不给卡号时，
+      // 用刚刚在判定展示区露面的那张牌补上——拿到手就是确定牌，不能再留成可能牌。
+      const signature = `${event.seatId}:${event.datas.join(',')}`;
+      if (signature !== lastJiaoyuDatas) {
+        lastJiaoyuDatas = signature;
+        const gainedCardId = recordJudgeColorGain(event.seatId, event.datas) ?? takeJudgeCardId();
+        if (gainedCardId !== null) {
+          // 只并入这一张，不能当成整手公开，否则会抹掉这个座位其它已记下的明牌。
+          applyCardReveals(
+            handReveal(event.seatId, [gainedCardId], true),
+            engine,
+            seatStateStore,
+            'jiaoyu-gain'
+          );
+          traceMingpai('jiaoyu-gain', { seatId: event.seatId, cardId: gainedCardId });
+          markJiaoyuCard(gainedCardId);
+        }
+      }
       return;
     }
     if (event.type === 'player-died') {
@@ -226,7 +251,10 @@ export function installMingpaiController(
       return;
     }
     if (event.type === 'cards-used') {
-      event.cardIds.filter((cardId) => cardId > 0).forEach(clearXinyouTag);
+      event.cardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
+        clearXinyouTag(cardId);
+        clearPersistentTag(cardId, JIAOYU_TAG);
+      });
     }
     if (event.type === 'phase-changed') noteObfuscatedCurrentSeat(event.seatId);
     if (event.type === 'phase-changed' && xinyouTagExpires(event.phase)) {
@@ -254,6 +282,20 @@ export function installMingpaiController(
   function clearXinyouTag(cardId: number): void {
     if (!engine.getPersistentTags(cardId).includes(XINYOU_TAG)) return;
     engine.forgetPersistentCardTag(cardId, XINYOU_TAG);
+    seatStateStore.setPersistentKnownCardTags(cardId, engine.getPersistentTags(cardId));
+  }
+
+  /** 这张牌被使用或打出后去掉指定的跟随标签。 */
+  function clearPersistentTag(cardId: number, tag: string): void {
+    if (!engine.getPersistentTags(cardId).includes(tag)) return;
+    engine.forgetPersistentCardTag(cardId, tag);
+    seatStateStore.setPersistentKnownCardTags(cardId, engine.getPersistentTags(cardId));
+  }
+
+  /** 椒遇收到的判定牌：打上标签并同步到座位明牌，牌条上直接显示。 */
+  function markJiaoyuCard(cardId: number): void {
+    if (!(cardId > 0)) return;
+    engine.rememberPersistentCardTag(cardId, JIAOYU_TAG);
     seatStateStore.setPersistentKnownCardTags(cardId, engine.getPersistentTags(cardId));
   }
 
@@ -378,6 +420,11 @@ export function installMingpaiController(
         cardType,
         isRedCard,
         isJudgeRecoverySpell: (spellId) => spellId === JUDGE_RECOVERY_SPELL_ID || isJiaoyuSpell(spellId),
+        // 判定牌按颜色收进手牌时给这批牌打上椒遇标签，牌打出去后去掉。
+        onJudgeCardRecovered: (seatId, cardIds) => {
+          if (!Number.isInteger(seatId) || seatId < 0) return;
+          cardIds.filter((cardId) => cardId > 0).forEach(markJiaoyuCard);
+        },
         zoneCardIds: (seatId, zone) => engine.getZoneCardIds(formatZoneId(seatId, zone)),
         handCardIds: (seatId) => {
           const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
@@ -460,6 +507,12 @@ export function installMingpaiController(
       appliedCardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
         engine.rememberPersistentCardTag(cardId, XINYOU_TAG);
       });
+    }
+    // 椒遇：判定牌从展示区收进自己手里，这批牌就是椒遇拿到的牌。
+    const jiaoyuGain = Number(event.fromZone) === JUDGE_SHOW_ZONE && Number(event.toZone) === HAND_ZONE
+      && (event.spellId === JUDGE_RECOVERY_SPELL_ID || isJiaoyuSpell(event.spellId));
+    if (jiaoyuGain) {
+      appliedCardIds.filter((cardId) => cardId > 0).forEach(markJiaoyuCard);
     }
     if (preferredQiOwner !== null && appliedCardIds.some((cardId) => cardId > 0)) {
       appliedCardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
@@ -591,6 +644,11 @@ export function installMingpaiController(
 
 const XINYOU_SKILL = { id: 'xinyou', title: '心幽', skillIds: [] as number[], spellNames: ['心幽'] };
 
+/** 椒遇收来的判定牌标签，跟着牌走，牌打出去后去掉。 */
+export const JIAOYU_TAG = '椒遇';
+/** 判定展示区。 */
+const JUDGE_SHOW_ZONE = 8;
+
 /** 3571：判定牌按座位颜色回手。 */
 const JUDGE_RECOVERY_SPELL_ID = 0xdf3;
 /** 椒遇：同样按座位颜色把判定牌回手，颜色来自技能私有数据。 */
@@ -599,6 +657,21 @@ const JIAOYU_SKILL = { id: 'jiaoyu', title: '椒遇', skillIds: [] as number[], 
 function isJiaoyuSpell(spellId: number): boolean {
   if (!Number.isInteger(spellId) || spellId <= 0) return false;
   return resolveSkillIds(JIAOYU_SKILL, locateGameScene(window)).includes(spellId);
+}
+
+/**
+ * 判定牌按颜色定归属的技能私有数据。椒遇的技能号在技能表里查不到时，
+ * 只有判定展示区里确实有这个座位刚亮出来的判定牌才按同一条路径处理，
+ * 免得别的技能把第一个数写成 1 / 2 就误当成判定牌。
+ */
+function isJudgeColorSpell(
+  event: { dataId: number; seatId: number; datas: readonly number[] },
+  hasShownJudgeCard: (seatId: number) => boolean
+): boolean {
+  if (isJiaoyuSpell(event.dataId)) return true;
+  const color = Math.trunc(Number(event.datas[0]));
+  if (color !== 1 && color !== 2) return false;
+  return hasShownJudgeCard(event.seatId);
 }
 
 /** 谋周瑜醉锋：看别人的手牌，参数与固定名单里的看手牌技能同形。 */

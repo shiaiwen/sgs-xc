@@ -400,13 +400,6 @@ function mergeTrackedHands(
         (seat.equipmentCards ?? []).map((card) => card.cardId).filter((cardId) => cardId > 0)
       );
       const tracked = hands.get(seat.seatId);
-      const possibleCards = (sceneHandCount > 0 ? possibleBySeat.get(seat.seatId) ?? [] : [])
-        .filter((cardId) => !equipmentIds.has(cardId))
-        .map((cardId) => ({
-          cardId,
-          name: '',
-          tags: [...(persistentTagsByCardId.get(cardId) ?? [])]
-        }));
       const suppressedCardIds = suppressedCardsBySeat.get(seat.seatId);
       const visibleSceneCards = (suppressedCardIds
         ? seat.knownCards.filter((card) => !suppressedCardIds.has(card.cardId))
@@ -414,6 +407,7 @@ function mergeTrackedHands(
         .filter((card) => !equipmentIds.has(card.cardId));
       const hasPersistentTags = visibleSceneCards.some((card) => persistentTagsByCardId.has(card.cardId));
       if (!tracked && visibleSceneCards.length === seat.knownCards.length && !hasPersistentTags) {
+        const possibleCards = buildPossibleCards(seat.seatId, sceneHandCount, equipmentIds, possibleBySeat, persistentTagsByCardId);
         return possibleCards.length ? { ...seat, possibleCards } : seat;
       }
       const knownCardIds = new Set(visibleSceneCards.map((card) => card.cardId));
@@ -435,6 +429,10 @@ function mergeTrackedHands(
           tags: [...(persistentTagsByCardId.get(cardId) ?? [])]
         }))
       ];
+      // 可能牌按合并后的确定牌过一遍：同一张牌不能既是确定牌又是可能牌。
+      const confirmedIds = new Set(mergedKnownCards.map((card) => card.cardId));
+      const possibleCards = buildPossibleCards(seat.seatId, sceneHandCount, equipmentIds, possibleBySeat, persistentTagsByCardId)
+        .filter((card) => !confirmedIds.has(card.cardId));
       // 游戏场景提供的总手牌数优先；新增明牌占用原先的未知牌名额。
       return {
         ...seat,
@@ -444,6 +442,24 @@ function mergeTrackedHands(
       };
     })
   });
+}
+
+/** 这个座位的可能牌：按可能位置和手牌数筛出，装备区里的牌不重复报。 */
+function buildPossibleCards(
+  seatId: number,
+  sceneHandCount: number,
+  equipmentIds: ReadonlySet<number>,
+  possibleBySeat: ReadonlyMap<number, number[]>,
+  persistentTagsByCardId: ReadonlyMap<number, string[]>
+): { cardId: number; name: string; tags: string[] }[] {
+  if (sceneHandCount <= 0) return [];
+  return (possibleBySeat.get(seatId) ?? [])
+    .filter((cardId) => !equipmentIds.has(cardId))
+    .map((cardId) => ({
+      cardId,
+      name: '',
+      tags: [...(persistentTagsByCardId.get(cardId) ?? [])]
+    }));
 }
 
 function suppressDepartedKnownCards(

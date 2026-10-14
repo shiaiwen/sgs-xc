@@ -7,7 +7,6 @@ import {
 } from '../src/features/mingpai/graph/card-graph.ts';
 import {
   expandGroupCandidates,
-  getGroupLabel,
   getSeatKnownCardIds,
   getSeatPossibleCardIds,
   getSeatUncertainGroups
@@ -34,7 +33,6 @@ test('明组展开出可能的具体牌号，未知槽位算「还有未知候�
   assert.deepEqual(groups[0].candidateCardIds, [101]);
   assert.equal(groups[0].hasUnknownCandidate, true);
   assert.equal(groups[0].count, 2);
-  assert.equal(groups[0].label, '甲');
   assert.deepEqual(getSeatPossibleCardIds(1), [101]);
 });
 
@@ -44,8 +42,6 @@ test('暗组只有未知候选，不报成可能牌', () => {
   assert.ok(groupKey < 0 && groupKey % 2 === 0, `暗组 key 应为负偶数，实际 ${groupKey}`);
   assert.deepEqual(getSeatUncertainGroups(1), []);
   assert.deepEqual(getSeatPossibleCardIds(1), []);
-  // 暗组不在明组登记里，标签按组号回落。
-  assert.equal(getGroupLabel(groupKey), '甲');
 });
 
 test('打包成组后，牌不再算手牌区已确定，而是落到可能牌里', () => {

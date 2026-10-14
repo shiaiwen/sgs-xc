@@ -22,7 +22,6 @@ import type { SeatStateStore } from '../seat-display/seat-state-store.ts';
 import { DISCARD_ZONE, DRAW_PILE_ZONE, HAND_ZONE, type MingpaiEngine } from './mingpai-engine.ts';
 import {
   getSeatPossibleCardIds,
-  getSeatUncertainGroups,
   getZone4Rows,
   type Zone4Row
 } from './graph/mingpai-candidates.ts';
@@ -63,8 +62,6 @@ interface SeatStrip {
   possibleIds: number[];
   /** 技能标记区（zone 4）的行，弹层里单独分栏。 */
   zone4Rows: Zone4Row[];
-  /** 可能牌 → 它所属的不确定组标签（甲乙丙丁…）。 */
-  groupLabelByCardId: Map<number, string>;
   tagsByCardId: Map<number, string[]>;
   anchor: Rect | null;
   nativeSprite: UnknownRecord | null;
@@ -188,7 +185,7 @@ export function installNativeMingpaiPreviewController(
     call(host, 'addChild', strip);
     const entry: SeatStrip = {
       seatId, strip, hit, signature: '', cardIds: [], possibleIds: [], zone4Rows: [],
-      groupLabelByCardId: new Map(), tagsByCardId: new Map(), anchor: null, nativeSprite: null
+      tagsByCardId: new Map(), anchor: null, nativeSprite: null
     };
     const Event = readLayaEvent();
     call(hit, 'on', Event?.ROLL_OVER ?? 'mouseover', entry, () => {
@@ -226,20 +223,10 @@ export function installNativeMingpaiPreviewController(
       { cardIds: possibleIds, possible: true }
     ].filter((row) => row.cardIds.length);
     const hintText = equipmentHintText(entry.seatId);
-    // 可能牌按不确定组归并：同一组的牌共用同一个标签。
-    const groupLabelByCardId = new Map<number, string>();
-    if (mingpaiEngine) {
-      getSeatUncertainGroups(entry.seatId).forEach((group) => {
-        group.candidateCardIds.forEach((cardId) => {
-          if (!groupLabelByCardId.has(cardId)) groupLabelByCardId.set(cardId, group.label);
-        });
-      });
-    }
-    const groupSignature = [...groupLabelByCardId].map(([cardId, label]) => `${cardId}:${label}`).join(',');
     const zone4Signature = zone4Rows
       .map((row) => `${row.zoneId}:${row.knownCardIds.join(',')}:${row.possibleCardIds.join(',')}`)
       .join(';');
-    const signature = `${cardIds.join(',')}|${possibleIds.join(',')}|${hintText}|${zone4Signature}|${groupSignature}|${JSON.stringify([...tagsByCardId])}`;
+    const signature = `${cardIds.join(',')}|${possibleIds.join(',')}|${hintText}|${zone4Signature}|${JSON.stringify([...tagsByCardId])}`;
     if (entry.signature !== signature) {
       readChildren(entry.strip)
         .filter((child) => child !== entry.hit)
@@ -278,7 +265,6 @@ export function installNativeMingpaiPreviewController(
     entry.cardIds = cardIds;
     entry.possibleIds = possibleIds;
     entry.zone4Rows = zone4Rows;
-    entry.groupLabelByCardId = groupLabelByCardId;
     entry.tagsByCardId = tagsByCardId;
     entry.anchor = anchor;
     const tileCount = Math.max(0, ...rows.map((row) => Math.min(row.cardIds.length, MAX_VISIBLE_TILES)));
@@ -417,7 +403,7 @@ export function installNativeMingpaiPreviewController(
       && entry.seatId !== seatStateStore.getSnapshot().selfSeatId;
     const receivedMarks = recommendedBySeat.get(entry.seatId) ?? new Set<number>();
     const selectedMarks = selectedBySeat.get(entry.seatId) ?? new Set<number>();
-    const signature = `${entry.seatId}:${entry.cardIds.join(',')}|${entry.possibleIds.join(',')}:${[...receivedMarks].join(',')}:${[...selectedMarks].join(',')}:${teamMarkable}:${[...entry.groupLabelByCardId].map(([cardId, label]) => `${cardId}:${label}`).join(',')}:${zone4Sections(entry.zone4Rows).map((section) => `${section.label}${section.cardIds.join(',')}`).join(';')}:${Math.round(width)}:${direction}`;
+    const signature = `${entry.seatId}:${entry.cardIds.join(',')}|${entry.possibleIds.join(',')}:${[...receivedMarks].join(',')}:${[...selectedMarks].join(',')}:${teamMarkable}:${zone4Sections(entry.zone4Rows).map((section) => `${section.label}${section.cardIds.join(',')}`).join(';')}:${Math.round(width)}:${direction}`;
 
     if (!popup || popupSignature !== signature) {
       destroyPopup();
@@ -514,20 +500,6 @@ export function installNativeMingpaiPreviewController(
               call(mark, 'pos', x + cardWidth - 22, y + cardHeight - 30);
               call(created, 'addChild', mark);
             }
-            // 同组的可能牌共用标签，一眼看出「这几张里必有一张」。
-            const groupLabel = entry.groupLabelByCardId.get(cardId);
-            if (groupLabel) {
-              const chip = createText(groupLabel, 12, '#E6C56A', 'left', true);
-              if (chip) {
-                chip.name = `xcVueMingpaiPossibleGroup-${cardId}`;
-                chip.stroke = 2;
-                chip.strokeColor = '#332411';
-                chip.zOrder = 950 + index;
-                call(chip, 'size', 16, 16);
-                call(chip, 'pos', x + 2, y + 2);
-                call(created, 'addChild', chip);
-              }
-            }
           }
         });
         sectionTop += section.height + (sectionIndex < sections.length - 1 ? POPUP_SECTION_GAP : 0);
@@ -582,7 +554,7 @@ export function installNativeMingpaiPreviewController(
         handUis.forEach((cardUi) => installXinyouTagHook(cardUi));
         equipUis.forEach((cardUi) => installXinyouTagHook(cardUi));
         refreshNativeCardTags(equipUis, ['心幽'], true);
-        refreshNativeCardTags(handUis, ['心幽'], true);
+        refreshNativeCardTags(handUis, ['心幽', '椒遇'], true);
       }
       if (seat.seatId === snapshot.selfSeatId) {
         // 本机手牌仍由游戏原生组件承载选牌/技能交互，不能隐藏它。
@@ -597,8 +569,9 @@ export function installNativeMingpaiPreviewController(
         (seat.equipmentCards ?? []).map((card) => card.cardId).filter((cardId) => cardId > 0)
       );
       const currentKnownIds = new Set(seat.knownCards.map((card) => card.cardId));
-      const cardIds = (mingpaiEngine?.getHandCardIds(seat.seatId) ?? [])
-        .filter((cardId) => cardId > 0 && currentKnownIds.has(cardId) && !equipmentIds.has(cardId));
+      const engineHandIds = (mingpaiEngine?.getHandCardIds(seat.seatId) ?? [])
+        .filter((cardId) => cardId > 0 && !equipmentIds.has(cardId));
+      const cardIds = engineHandIds.filter((cardId) => currentKnownIds.has(cardId));
       const engineTagsByCardId = new Map((engineSnapshot?.records ?? [])
         .filter((record) => record.persistentTags.length)
         .map((record) => [record.cardId, record.persistentTags] as const));
@@ -609,11 +582,19 @@ export function installNativeMingpaiPreviewController(
         return tags.length ? [[cardId, tags] as const] : [];
       }));
       // 可能牌同时取座位快照与牌位图里「明组展开」的结果，任一边知道都算。
+      // 已经认成确定牌的不再报可能牌：场景列表还没跟上时也要按确定牌处理，
+      // 否则同一张牌会既在确定牌里、又在可能牌里挂个问号。
       const graphPossibleIds = mingpaiEngine ? getSeatPossibleCardIds(seat.seatId) : [];
-      const possibleIds = [...new Set([
+      const knownIdSet = new Set([...cardIds, ...engineHandIds]);
+      let possibleIds = [...new Set([
         ...(seat.possibleCards ?? []).map((card) => card.cardId),
         ...graphPossibleIds
-      ])].filter((cardId) => cardId > 0 && !equipmentIds.has(cardId));
+      ])].filter((cardId) => cardId > 0 && !equipmentIds.has(cardId) && !knownIdSet.has(cardId));
+      // 郭照：判定牌一律明牌，她拿到的牌牌面是确定的，手上不该再挂可能牌。
+      if (seatUi && seatIsGuozhao(seatUi) && possibleIds.length) {
+        possibleIds.forEach((cardId) => cardIds.push(cardId));
+        possibleIds = [];
+      }
       const existing = strips.get(seat.seatId);
       if (!seatUi || !anchor || (!cardIds.length && !possibleIds.length)) {
         if (existing) destroyStrip(existing);
@@ -687,7 +668,7 @@ export function installNativeMingpaiPreviewController(
 
   /**
    * 游戏重绘手牌时会清空 tagArr1 再调 UpdateTag。
-   * 在绘制前把心幽写回去，标签就不会先消失再出现。
+   * 在绘制前把心幽和椒遇写回去，标签就不会先消失再出现。
    */
   function installXinyouTagHook(rawUi: unknown): void {
     const cardUi = asRecord(rawUi);
@@ -701,7 +682,7 @@ export function installNativeMingpaiPreviewController(
     if (!descriptor || typeof descriptor.value !== 'function') return;
     const original = descriptor.value as (this: unknown, ...args: unknown[]) => unknown;
     const patched = function (this: UnknownRecord, ...args: unknown[]) {
-      stampXinyouTag(this);
+      stampPersistentCardTags(this);
       return original.apply(this, args);
     };
     try {
@@ -712,18 +693,20 @@ export function installNativeMingpaiPreviewController(
     }
   }
 
-  /** 这张牌仍带着心幽时，把标签放进游戏绘制用的数组。 */
-  function stampXinyouTag(cardUi: UnknownRecord): void {
-    if (!configStore.get('display.cardLabelsEnabled')) return;
+  /** 这张牌仍带着心幽 / 椒遇时，把标签放进游戏绘制用的数组。 */
+  function stampPersistentCardTags(cardUi: UnknownRecord): void {
     const card = asRecord(cardUi.Card) ?? asRecord(cardUi.card);
     if (!card) return;
     const cardId = Number(card.cardId ?? card.cardID ?? card.CardId ?? card.CardID ?? card.id ?? card.ID ?? card.key);
     if (!Number.isInteger(cardId) || cardId <= 0) return;
-    if (!mingpaiEngine?.getPersistentTags(cardId).includes('心幽')) return;
+    const persistent = mingpaiEngine?.getPersistentTags(cardId) ?? [];
+    const labels = ['心幽', '椒遇'].filter((label) => persistent.includes(label));
+    if (!labels.length) return;
     const tagKey = Object.prototype.hasOwnProperty.call(card, 'tagArr1') ? 'tagArr1' : 'TagArr1';
     const tags = Array.isArray(card[tagKey]) ? (card[tagKey] as unknown[]).map(String) : [];
-    if (tags.includes('心幽')) return;
-    card[tagKey] = [...tags, '心幽'];
+    const missing = labels.filter((label) => !tags.includes(label));
+    if (!missing.length) return;
+    card[tagKey] = [...tags, ...missing];
   }
 
   /** 把持续标签刷回原生卡牌 UI。keepOnCard 时写在牌上，直到调用方去掉标签。 */
@@ -872,8 +855,26 @@ export function installNativeMingpaiPreviewController(
   };
 }
 
-/** 游戏自己是否正在显示这个座位的明牌。排位队友手牌、斗地主明牌都是这种。 */
-function gameShowsOwnMingpai(seatUi: UnknownRecord): boolean {
+/**
+ * 这个座位是不是郭照。
+ * 郭照的判定牌是明牌，拿到的牌她的选定颜色在牌局里也是公开的，
+ * 所以她手上不该出现可能牌。
+ */
+export function seatIsGuozhao(seatUi: UnknownRecord): boolean {
+  const seat = asRecord(seatUi.seat);
+  if (!seat) return false;
+  for (const key of ['General', 'general', 'General2', 'general2']) {
+    const general = asRecord(seat[key]);
+    if (!general) continue;
+    for (const nameKey of ['cardName', 'specifyName', 'trueSpecifyName', 'Name', 'name']) {
+      const name = general[nameKey];
+      if (typeof name === 'string' && name.includes('郭照')) return true;
+    }
+  }
+  return false;
+}
+
+/** 游戏自己是否正在显示这个座位的明牌。排位队友手牌、斗地主明牌都是这种。 */function gameShowsOwnMingpai(seatUi: UnknownRecord): boolean {
   const manager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager);
   const sprite = asRecord(manager?.handCardSpr);
   if (!sprite || sprite.destroyed || !sprite.visible) return false;

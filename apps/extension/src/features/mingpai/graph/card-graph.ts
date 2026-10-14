@@ -71,13 +71,7 @@ let hooks: CardGraphHooks = {};
 let slotCounter = Number.NaN;
 /** 槽位号 → 占用该号的所有槽位。 */
 let slotsByKey = new Map<CardSlotKey, Set<CardSlot>>();
-/** 槽位号 → 组标签，0 固定是「？」。 */
-let groupLabels = new Map<CardSlotKey, string>([[0, '?']]);
-/** 可复用的组标签池。 */
-let labelPool: string[] = defaultLabelPool();
 
-const mingpaiGroupIndexByKey = new Map<number, number>();
-let mingpaiGroupSerial = 0;
 const mingpaiCardTags = new Map<number, string[]>();
 const mingpaiPersistentCardTags = new Map<number, string[]>();
 const officialHandCardsBySeat = new Map<number, Set<number>>();
@@ -89,7 +83,7 @@ let zoneStore = new Map<string, CardSlot[] | Set<CardSlot>>();
 
 const QI_TAG = '炁';
 /** 会跟着牌一直走下去的标签：牌离开手牌也不丢。 */
-const STICKY_TAGS = new Set<string>([QI_TAG, '心幽']);
+const STICKY_TAGS = new Set<string>([QI_TAG, '心幽', '椒遇']);
 
 export function setCardGraphClock(next: Partial<CardGraphClock>): void {
   clock = { ...clock, ...next };
@@ -133,14 +127,6 @@ export function filterSlots(predicate: (slot: CardSlot) => unknown = Boolean): C
     for (const slot of set) if (predicate(slot)) result.push(slot);
   }
   return result;
-}
-
-/** 组标签：同一 key 只分配一次，key 0 固定「？」。 */
-export function labelOf(key: number): string | undefined {
-  if (groupLabels.has(key)) return groupLabels.get(key);
-  const label = labelPool.shift();
-  groupLabels.set(key, label as string);
-  return label;
 }
 
 export class CardSlot {
@@ -368,7 +354,6 @@ export function packSlots(
       }
     }
     const shifted = negativeKeys.filter((key) => key > groupKey);
-    shiftMingpaiGroups(shifted, -2);
     const pooled = shifted.filter((key) => reshufflePoolKeys.has(key));
     pooled.forEach((key) => reshufflePoolKeys.delete(key));
     pooled.forEach((key) => reshufflePoolKeys.add(key - 2));
@@ -401,13 +386,7 @@ export function unpackSlots(key: CardSlotKey): boolean {
   const dissolvable = list.length === 1
     || (!zones.has(DRAW_PILE_ZONE_ID) && (zones.size === 1 || (nextKeys.size === 1 && key !== 0)));
   if (!dissolvable) return false;
-  unregisterMingpaiGroup(key);
   reshufflePoolKeys.delete(key);
-  const label = groupLabels.get(key);
-  if (label !== undefined) {
-    labelPool.unshift(label);
-    groupLabels.delete(key);
-  }
   const changed = list.map((slot) => slot.delete()).some(Boolean);
   [...new Set(list.filter((slot) => slot.prev).map((slot) => (slot.prev as CardSlot).key))]
     .forEach((prevKey) => unpackSlots(prevKey));
@@ -839,31 +818,6 @@ export function moveSlots(
   return cards;
 }
 
-/** 记下某个 key 属于第几个明牌组。 */
-export function registerMingpaiGroups(keys: readonly number[] = []): void {
-  [...new Set(keys.map(Number).filter((key) => key < 0 && key % 2 !== 0))]
-    .sort((left, right) => right - left)
-    .forEach((key) => {
-      if (!mingpaiGroupIndexByKey.has(key)) mingpaiGroupIndexByKey.set(key, mingpaiGroupSerial++);
-    });
-}
-
-export function getMingpaiGroupIndex(key: number): number | undefined {
-  registerMingpaiGroups([key]);
-  return mingpaiGroupIndexByKey.get(Number(key));
-}
-
-export function shiftMingpaiGroups(keys: readonly number[] | null | undefined, delta: number): void {
-  const moved = [...new Set((keys ?? []).map(Number))].filter((key) => mingpaiGroupIndexByKey.has(key));
-  const next = moved.map((key) => [key + delta, mingpaiGroupIndexByKey.get(key)] as const);
-  moved.forEach((key) => mingpaiGroupIndexByKey.delete(key));
-  next.forEach(([key, index]) => mingpaiGroupIndexByKey.set(key, index as number));
-}
-
-export function unregisterMingpaiGroup(key: number): void {
-  mingpaiGroupIndexByKey.delete(Number(key));
-}
-
 /** 记下这一格的标签；粘性标签会沉淀下来，离开手牌也不丢。 */
 export function rememberMingpaiCardTags(cardId: number, tags: readonly string[] = []): string[] {
   const id = Number(cardId);
@@ -963,10 +917,6 @@ export function getOfficialMingpaiHandCards(seatId: number): number[] {
 export function initCardGraph(cardIds: readonly number[], defaultZone: string = DEFAULT_ZONE): CardSlot[] {
   slotCounter = 0;
   slotsByKey = new Map();
-  groupLabels = new Map([[0, '?']]);
-  labelPool = defaultLabelPool();
-  mingpaiGroupIndexByKey.clear();
-  mingpaiGroupSerial = 0;
   mingpaiCardTags.clear();
   mingpaiPersistentCardTags.clear();
   officialHandCardsBySeat.clear();
@@ -987,10 +937,8 @@ export function hasReshufflePoolKey(key: number): boolean {
   return reshufflePoolKeys.has(key);
 }
 
-/** 清空明牌标签、炁归属、公开手牌集合与明牌组登记，位置不受影响。 */
+/** 清空明牌标签、炁归属、公开手牌集合与洗牌池登记，位置不受影响。 */
 export function resetMingpaiTags(): void {
-  mingpaiGroupIndexByKey.clear();
-  mingpaiGroupSerial = 0;
   mingpaiCardTags.clear();
   mingpaiPersistentCardTags.clear();
   officialHandCardsBySeat.clear();
@@ -1074,10 +1022,6 @@ export const cardCounter = {
     cardIds.forEach((cardId) => this.add(cardId));
   }
 };
-
-function defaultLabelPool(): string[] {
-  return Array.from({ length: 62 }, (_, index) => String.fromCharCode(index + 65));
-}
 
 function normalizeTags(tags: readonly unknown[]): string[] {
   return [...new Set(tags.map((tag) => String(tag ?? '').trim()).filter(Boolean))];

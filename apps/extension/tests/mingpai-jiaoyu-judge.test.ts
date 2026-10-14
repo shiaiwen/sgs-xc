@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   correctMoveCard,
   noteObfuscatedSeatColor,
+  recordJudgeColorGain,
   resetObfuscatedJudge,
   type MoveJudgeInput
 } from '../src/features/mingpai/obfuscated-judge.ts';
@@ -94,4 +95,67 @@ test('没有放宽的宿主只认 3571，椒遇的判定牌补不回来', () => 
     srcSeatId: 2
   }), strictHost);
   assert.deepEqual(gained.cardIds, [0]);
+});
+
+test('判定牌进展示区不看 MoveType，回手时仍按颜色补号', () => {
+  resetObfuscatedJudge();
+  noteObfuscatedSeatColor(2, 1);
+  correctMoveCard(move({
+    cardCount: 1,
+    cardIds: [11],
+    fromId: 2,
+    fromZone: 3,
+    toId: 2,
+    toZone: 8,
+    moveType: 1,
+    spellId: JIAOYU,
+    srcSeatId: 2
+  }), host);
+  const gained = correctMoveCard(move({
+    cardCount: 1,
+    cardIds: [0],
+    fromId: 2,
+    fromZone: 8,
+    toId: 2,
+    toZone: 5,
+    moveType: 12,
+    spellId: JIAOYU,
+    srcSeatId: 2
+  }), host);
+  assert.deepEqual(gained.cardIds, [11]);
+});
+
+test('技能私有数据直接给出判定牌号时，回手不再依赖颜色', () => {
+  resetObfuscatedJudge();
+  const gainedCardId = recordJudgeColorGain(2, [1, 11]);
+  assert.equal(gainedCardId, 11);
+  const gained = correctMoveCard(move({
+    cardCount: 1,
+    cardIds: [0],
+    fromId: 2,
+    fromZone: 8,
+    toId: 2,
+    toZone: 5,
+    moveType: 8,
+    spellId: JIAOYU,
+    srcSeatId: 2
+  }), host);
+  assert.deepEqual(gained.cardIds, [11]);
+});
+
+test('私有数据只有颜色时，回手退回展示区里剩下的判定牌', () => {
+  resetObfuscatedJudge();
+  assert.equal(recordJudgeColorGain(2, [1]), null);
+  const gained = correctMoveCard(move({
+    cardCount: 1,
+    cardIds: [0],
+    fromId: 2,
+    fromZone: 8,
+    toId: 2,
+    toZone: 5,
+    moveType: 8,
+    spellId: JIAOYU,
+    srcSeatId: 2
+  }), host);
+  assert.deepEqual(gained.cardIds, [11]);
 });

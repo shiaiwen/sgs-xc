@@ -86,6 +86,15 @@ const api = {
     invoke: (channel, data) => {
         return ipcRenderer.invoke(channel, data);
     },
+    // 输入框拿到焦点时调用：请外层把原生键盘焦点和输入法状态交回 webview。
+    // guest 的键盘焦点会和外层脱钩，中文输入法因此打不进游戏页面。
+    focusWebview: () => {
+        try {
+            ipcRenderer.sendToHost('xiaochao-focus-webview');
+        } catch (error) {
+            console.warn('focus webview unavailable:', error);
+        }
+    },
     onMessageFromMain: (channel ,callback) => {
         ipcRenderer.on(channel,(event, ...args) => {
             callback(event, ...args);

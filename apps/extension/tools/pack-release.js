@@ -1,6 +1,7 @@
 /** 组装发布目录并计算校验。 */
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   copyFileSync,
   cpSync,
@@ -16,6 +17,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const vitePackageJson = createRequire(path.join(root, 'package.json')).resolve('vite/package.json');
+const viteBin = path.join(path.dirname(vitePackageJson), 'bin', 'vite.js');
 const assetsDir = path.join(root, 'tools', 'release-assets');
 /** 已验证可启动的微端壳（不含 xiaochao.js）；打包时只替换脚本。 */
 const shellDir = path.join(root, 'tools', 'release-app-shell');
@@ -87,7 +90,7 @@ async function main() {
 
   console.log('[pack] 构建小抄脚本…');
   await run(process.execPath, [
-    path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'),
+    viteBin,
     'build',
     '--config',
     path.join(root, 'vite.electron.config.ts')
@@ -96,7 +99,7 @@ async function main() {
 
   console.log('[pack] 构建油猴脚本…');
   await run(process.execPath, [
-    path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'),
+    viteBin,
     'build',
     '--config',
     path.join(root, 'vite.userscript.config.ts')

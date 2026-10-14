@@ -56,6 +56,8 @@ export interface MoveJudgeInput {
 export interface MoveJudgeHost {
   /** 判定的颜色来源是否也适用于这个技能号；缺省只认 3571。 */
   isJudgeRecoverySpell?: (spellId: number) => boolean;
+  /** 判定牌按颜色收进手牌时回报一次牌号，调用方据此打标签。 */
+  onJudgeCardRecovered?: (seatId: number, cardIds: readonly number[]) => void;
   myId: number | null;
   nationWar: boolean;
   cardType: (cardId: number) => number;
@@ -75,6 +77,9 @@ export interface MoveJudgeResult {
 
 const judgmentsBySeat = new Map<number, number[]>();
 const colorBySeat = new Map<number, number>();
+const shownJudgeBySeat = new Map<number, number[]>();
+/** 最近一次在展示区露面的判定牌号，椒遇回手时用来把牌认成确定牌。 */
+let lastJudgeCardId: number | null = null;
 const shownBySpell = new Map<number, number[]>();
 const shown3488 = new Map<number, number>();
 let stack3488 = 0;
@@ -96,6 +101,8 @@ let handCards3483: number[] = [];
 export function resetObfuscatedJudge(): void {
   judgmentsBySeat.clear();
   colorBySeat.clear();
+  shownJudgeBySeat.clear();
+  lastJudgeCardId = null;
   shownBySpell.clear();
   shown3488.clear();
   stack3488 = 0;
@@ -359,7 +366,7 @@ function isJudgeRecoverySpell(spellId: number, host: MoveJudgeHost): boolean {
 
 function record3571Judgments(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHost): void {
   if (!isJudgeRecoverySpell(move.spellId, host)
-    || move.fromZone !== 0x3 || move.toZone !== 0x8 || move.moveType !== 0x6) return;
+    || move.fromZone !== 0x3 || move.toZone !== 0x8) return;
   const seat = move.srcSeatId;
   const known = cardIds.map(Number).filter((cardId) => cardId > 0);
   if (seat === null || !Number.isInteger(seat) || seat < 0 || seat >= 0xff || known.length !== move.cardCount) return;
@@ -367,11 +374,77 @@ function record3571Judgments(move: MoveJudgeInput, cardIds: number[], host: Move
   judgmentsBySeat.set(seat, [...new Set([...previous, ...known])]);
 }
 
+/** 判定牌已经在展示区里露面：判定颜色还没记上时也要留着，靠这张牌回手。 */
+function noteShownJudgeCard(seatId: number, cardIds: readonly number[]): void {
+  const known = cardIds.map(Number).filter((cardId) => cardId > 0);
+  if (!known.length) return;
+  lastJudgeCardId = known[known.length - 1] ?? null;
+  if (!Number.isInteger(seatId) || seatId < 0 || seatId >= 0xff) return;
+  const previous = shownJudgeBySeat.get(seatId) ?? [];
+  shownJudgeBySeat.set(seatId, [...new Set([...previous, ...known])]);
+}
+
+/**
+ * 最近一次在展示区露面的判定牌。
+ * 回手消息还没到、技能私有数据里也没带牌号时，就用它把牌认成确定牌。
+ */
+export function takeJudgeCardId(): number | null {
+  const cardId = lastJudgeCardId;
+  lastJudgeCardId = null;
+  return cardId;
+}
+
+/** 这个座位现在有没有判定牌正在展示区里亮着。 */
+export function hasShownJudgeCard(seatId: number): boolean {
+  return (shownJudgeBySeat.get(seatId)?.length ?? 0) > 0 || lastJudgeCardId !== null;
+}
+
+/**
+ * 判定牌收进手牌。
+ * 颜色已知就挑同色的；颜色没记上（椒遇这类新技能不给私有颜色）就退回展示区里
+ * 还在的判定牌。张数对不上时按从新到旧取够——宁可把展示区里的牌认成这张，
+ * 也不能让它掉成「可能牌」。
+ */
+function recoverJudgeCard(move: MoveJudgeInput, host: MoveJudgeHost): number[] {
+  const inZone = host.zoneCardIds(move.fromId, 0x8).filter((cardId) => cardId > 0);
+  if (!inZone.length) return [];
+  const wanted = move.cardCount > 0 ? move.cardCount : inZone.length;
+  const color = colorBySeat.get(move.toId);
+  const matchesColor = (cardId: number): boolean => (
+    color !== COLOR_RED && color !== COLOR_BLACK
+      ? true
+      : host.isRedCard(cardId) === (color === COLOR_RED)
+  );
+  const sameColor = inZone.filter(matchesColor);
+  if (sameColor.length >= wanted) return sameColor.slice(0, wanted);
+  const recorded = [...new Set([
+    ...(judgmentsBySeat.get(move.toId) ?? []),
+    ...(shownJudgeBySeat.get(move.toId) ?? [])
+  ])].filter((cardId) => inZone.includes(cardId));
+  if (recorded.length >= wanted) return recorded.slice(0, wanted);
+  const ordered = [...new Set([...recorded, ...inZone])];
+  return ordered.slice(0, wanted);
+}
+
+/** 判定牌回到手上、协议又不给卡号时，用这块座位色补号。技能私有数据没颜色就只留个座位色。 */
+export function recordJudgeColorGain(seatId: number, datas: readonly number[]): number | null {
+  if (!Number.isInteger(seatId) || seatId < 0 || seatId >= 0xff) return null;
+  const values = datas.map(Number).filter(Number.isFinite);
+  const color = values[0];
+  if (color === COLOR_RED || color === COLOR_BLACK) colorBySeat.set(seatId, color);
+  const cardIds = values
+    .filter((value, index) => index > 0 && Number.isInteger(value) && value > COLOR_BLACK);
+  noteShownJudgeCard(seatId, cardIds);
+  return cardIds[0] ?? null;
+}
+
 function fillHiddenIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHost): void {
   const spellId = move.spellId;
   const known = cardIds.filter((cardId) => cardId > 0).length;
   const hidden = known === 0;
   const count = move.cardCount;
+
+  if (isJudgeRecoverySpell(spellId, host) && move.toZone === 0x8) noteShownJudgeCard(move.srcSeatId ?? move.fromId, cardIds);
 
   if (spellId === 0xda0 && move.fromZone === 0x5 && move.toZone === 0x5 && move.moveType === 0x15 && known === 1) {
     const shown = cardIds.find((cardId) => cardId > 0) ?? 0;
@@ -403,12 +476,16 @@ function fillHiddenIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeH
     cardIds.splice(0, Infinity, ...reds);
   }
 
-  if (isJudgeRecoverySpell(spellId, host) && move.fromZone === 0x8 && move.toZone === 0x5 && move.moveType === 0x8) {
+  if (isJudgeRecoverySpell(spellId, host) && move.fromZone === 0x8 && move.toZone === 0x5) {
     if (hidden) {
-      const filled = recover3571(move, host);
-      if (filled.length === count) cardIds.splice(0, Infinity, ...filled);
+      const filled = recoverJudgeCard(move, host);
+      if (filled.length === count) {
+        cardIds.splice(0, Infinity, ...filled);
+        host.onJudgeCardRecovered?.(move.toId, filled);
+      }
     }
     judgmentsBySeat.delete(move.toId);
+    shownJudgeBySeat.delete(move.toId);
   }
 
   if ([0x1b68, 0x1b69].includes(spellId) && move.toZone === 0x5 && count === 1 && move.srcSeatId === host.myId) {
@@ -501,13 +578,3 @@ function fillClueIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHos
   }
 }
 
-function recover3571(move: MoveJudgeInput, host: MoveJudgeHost): number[] {
-  const color = colorBySeat.get(move.toId);
-  if (color !== COLOR_RED && color !== COLOR_BLACK) return [];
-  const judgments = judgmentsBySeat.get(move.toId);
-  if (!judgments?.length) return [];
-  const inZone = new Set(host.zoneCardIds(move.fromId, 0x8));
-  const wantRed = color === COLOR_RED;
-  const matched = judgments.filter((cardId) => inZone.has(cardId) && host.isRedCard(cardId) === wantRed);
-  return matched.length === move.cardCount ? matched : [];
-}

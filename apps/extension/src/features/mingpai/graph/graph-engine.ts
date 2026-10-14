@@ -129,11 +129,22 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
     listeners.forEach((listener) => listener(snapshot));
   }
 
-  /** 找到或建立这张牌对应的槽位，并保证它挂在 cardId 这个 key 上。 */
-  function slotFor(cardId: number): CardSlot {
-    let slot = getSlotsByKey(cardId)[0];
-    if (!slot) slot = new CardSlot(cardId, cardId, DEFAULT_ZONE);
-    else slot.key = cardId;
+  /**
+   * 找到或建立这张牌对应的槽位，并保证它挂在 cardId 这个 key 上。
+   * 已经有槽位时优先用落在目标区里的那一个：判定牌这类牌会同时在展示区和别处
+   * 各留一个格，挑错了会把展示区那一格搬进手牌，真正的格留在原处。
+   * 同一牌号多余的格降回占位，免得同一张牌在图上登记成两处。
+   */
+  function slotFor(cardId: number, preferredZoneId?: string): CardSlot {
+    const existing = getSlotsByKey(cardId);
+    const preferred = preferredZoneId
+      ? existing.filter((entry) => String(entry.zone) === preferredZoneId)
+      : [];
+    const slot = preferred[0] ?? existing[0] ?? new CardSlot(cardId, cardId, DEFAULT_ZONE);
+    existing.forEach((entry) => {
+      if (entry !== slot && entry.key > 0) entry.key = 0;
+    });
+    slot.key = cardId;
     return slot;
   }
 
@@ -273,7 +284,8 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
 
     observeKnownHandCard(cardId, seatId, tags = []) {
       if (!(cardId > 0)) return;
-      placeInZone(slotFor(cardId), formatZoneId(seatId, HAND_ZONE));
+      const zoneId = formatZoneId(seatId, HAND_ZONE);
+      placeInZone(slotFor(cardId, zoneId), zoneId);
       if (tags.length) mergeMingpaiCardTags(cardId, tags);
       publish();
     },

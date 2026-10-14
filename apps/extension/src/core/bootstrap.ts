@@ -23,6 +23,7 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
+import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
 import { createGameCardCatalog } from '../features/cards/game-card-catalog';
 import { locateGameScene } from '../features/seat-display/game-scene-locator';
 import { bindTurnStatusStoreToGameEvents, createTurnStatusStore } from '../features/turn-status/turn-status-store';
@@ -124,6 +125,8 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   lifecycle.register(classicRoomFilter.dispose);
   lifecycle.register(installSeatStateController(seatStateStore));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
+  // 微端里点进输入框时把系统键盘焦点交回 webview，否则中文输入法打不进去。
+  lifecycle.register(installMicroClientFocusBridge(window));
   lifecycle.register(mingpaiRuntime.dispose);
   lifecycle.register(installNativeMingpaiPreviewController(configStore, seatStateStore, gameCardCatalog, mingpaiEngine, gameEvents));
   lifecycle.register(installCountdownSecondsController(configStore));

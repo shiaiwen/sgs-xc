@@ -791,6 +791,12 @@ export function installSkinChangeController(
         const using = callMethod(manager, 'GetSelfUsingSkinID', generalID);
         if (using !== undefined) this.usingSkinID = using;
       }
+      // 本地换肤保存过就用本地那张，否则关掉窗口再打开或点空白处会回到原皮。
+      const saved = localOn() && isOwnGeneral(Number(generalID)) ? savedSkin(generalID) : null;
+      if (saved) {
+        this.usingSkinID = saved.skinID;
+        if ('usingDynamicState' in this) this.usingDynamicState = saved.isDynamic ? 1 : 0;
+      }
       return result;
     });
     patcher.wrap(prototype, 'UpdateInfo', (original) => function (this: UnknownRecord, generalID: unknown, ...rest: unknown[]) {

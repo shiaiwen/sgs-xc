@@ -14,24 +14,16 @@
 import {
   CardSlot,
   CardZone,
-  getMingpaiGroupIndex,
+  UNKNOWN_ZONE,
   getSlotsByKey,
   getZoneIds,
   hasReshufflePoolKey,
-  parseZoneId,
-  registerMingpaiGroups
+  parseZoneId
 } from './card-graph.ts';
-
-/** 组标签池：天干排完就用「组N」。 */
-const GROUP_LABELS = Array.from('甲乙丙丁戊己庚辛壬癸');
-/** 明牌组可能出现在手牌区与技能标记区。 */
-const GROUP_ZONE_IDS = new Set([4, 5]);
 
 export interface UncertainGroup {
   /** 组号（负奇数）。 */
   key: number;
-  /** 展示用标签。 */
-  label: string;
   /** 这一组在这批牌里出现的次数。 */
   count: number;
   /** 这一组可能包含的具体牌号。 */
@@ -84,32 +76,42 @@ export function expandGroupCandidates(
   return found;
 }
 
-/** 手牌区与技能标记区里所有「内容可枚举」的组号，降序。 */
-export function collectOpenGroupKeys(): number[] {
-  const keys: number[] = [];
+/**
+ * 已经落在具体牌号上的牌：某个区里有 key 等于自己牌号的槽位。
+ * 这样的牌已经是确定牌，不该再算进任何一组的候选。
+ * 判定展示区、处理区、技能临时区同样要算：那里的牌本来就是明着的
+ * （椒遇、3571 把判定牌按颜色收进手牌时，牌会先在展示区里确定）。
+ * unknown 区不算，那里挂的是组的链尾，不代表牌的位置。
+ */
+function placedCardIds(): Set<number> {
+  const placed = new Set<number>();
   for (const zoneId of getZoneIds()) {
-    const zone = parseZoneId(zoneId)?.zone;
-    if (zone === undefined || !GROUP_ZONE_IDS.has(zone)) continue;
+    if (zoneId === UNKNOWN_ZONE) continue;
     for (const slot of new CardZone(zoneId).cards) {
       const key = Number(slot?.key);
-      if (key < 0 && key % 2 !== 0 && !hasReshufflePoolKey(key)) keys.push(key);
+      if (key > 0) placed.add(key);
     }
   }
-  return [...new Set(keys)].sort((left, right) => right - left);
+  return placed;
 }
 
-/** 组标签：先登记本轮出现过的所有明组，再按登记顺序取天干。 */
-export function getGroupLabel(key: number): string {
-  registerMingpaiGroups(collectOpenGroupKeys());
-  const index = getMingpaiGroupIndex(Number(key));
-  const resolved = Number.isInteger(index) && (index as number) >= 0
-    ? index as number
-    : Math.max(0, Math.floor((Math.abs(Number(key)) - 3) / 2));
-  return GROUP_LABELS[resolved] ?? `组${resolved + 1}`;
+/** 某座位手牌区里已经确定牌面的牌号。 */
+function knownHandIds(seatId: number): Set<number> {
+  return new Set(CardZone.shoupai(seatId));
 }
 
-/** 这批槽位里所有不确定组。候选全都不具体的组不报。 */
-export function getUncertainGroups(cards: readonly CardSlot[]): UncertainGroup[] {
+/** 牌面本来就公开的区域：判定展示区、处理区、技能临时区。 */
+const REVEALED_CARD_ZONES = new Set([3, 8, 10]);
+
+/**
+ * 这批槽位里所有不确定组。候选全都不具体的组不报。
+ * `excludeCardIds` 用于把「牌的本身已经确定在手上」的牌号从候选里去掉：
+ * 手牌区里剩下的那个组还挂着这张牌，但它已经被认定为确定牌，不能再报成可能牌。
+ */
+export function getUncertainGroups(
+  cards: readonly CardSlot[],
+  excludeCardIds: ReadonlySet<number> = new Set<number>()
+): UncertainGroup[] {
   const counts = new Map<number, number>();
   for (const slot of cards) {
     const key = Number(slot?.key);
@@ -117,13 +119,16 @@ export function getUncertainGroups(cards: readonly CardSlot[]): UncertainGroup[]
     if (hasReshufflePoolKey(key)) continue;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
+  const placed = placedCardIds();
   return [...counts.entries()]
     .map(([key, count]) => {
       const candidates = [...expandGroupCandidates(key)].map(Number);
-      const candidateCardIds = candidates.filter((cardId) => Number.isFinite(cardId) && cardId > 0);
+      // 顺走、换走之后这张牌已经落在别处，从候选里去掉，免得和确定牌重复。
+      const candidateCardIds = candidates.filter((cardId) => (
+        Number.isFinite(cardId) && cardId > 0 && !placed.has(cardId)
+      ));
       return {
         key,
-        label: getGroupLabel(key),
         count,
         candidateCardIds,
         hasUnknownCandidate: candidates.some((cardId) => !(cardId > 0)) || groupHasUnknownCandidate(key)
@@ -135,16 +140,39 @@ export function getUncertainGroups(cards: readonly CardSlot[]): UncertainGroup[]
 
 /** 某个座位手牌区里的不确定组。 */
 export function getSeatUncertainGroups(seatId: number): UncertainGroup[] {
-  return getUncertainGroups(new CardZone(seatId, 5).cards);
+  return getUncertainGroups(new CardZone(seatId, 5).cards, knownHandIds(seatId));
 }
 
-/** 某个座位手牌区的可能牌集合（由不确定组展开而来）。 */
+/**
+ * 某个座位手牌区的可能牌集合（由不确定组展开而来）。
+ * 判定牌、技能临时区里的牌牌面本来就是公开的（郭照的判定牌一律明牌），
+ * 手上那一组如果还挂着这些牌号，也不再算可能牌。
+ */
 export function getSeatPossibleCardIds(seatId: number): number[] {
+  const known = knownHandIds(seatId);
+  const revealed = revealedCardIds();
   const ids = new Set<number>();
   for (const group of getSeatUncertainGroups(seatId)) {
-    group.candidateCardIds.forEach((cardId) => ids.add(cardId));
+    group.candidateCardIds.forEach((cardId) => {
+      if (known.has(cardId) || revealed.has(cardId)) return;
+      ids.add(cardId);
+    });
   }
   return [...ids];
+}
+
+/** 判定展示区、处理区、技能临时区里已经确定牌面的牌号。 */
+function revealedCardIds(): Set<number> {
+  const revealed = new Set<number>();
+  for (const zoneId of getZoneIds()) {
+    const zone = parseZoneId(zoneId)?.zone;
+    if (zone === undefined || !REVEALED_CARD_ZONES.has(zone)) continue;
+    for (const slot of new CardZone(zoneId).cards) {
+      const key = Number(slot?.key);
+      if (key > 0) revealed.add(key);
+    }
+  }
+  return revealed;
 }
 
 /** 某个座位手牌区里能确定牌面的牌号（手牌区 key>0 的槽位）。 */
@@ -174,6 +202,7 @@ export function parseZone4Key(zoneId: string): { seatId: number; spellId: number
 export function getZone4Rows(seatId: number): Zone4Row[] {
   const seat = Number(seatId);
   const rows: Zone4Row[] = [];
+  const inHand = knownHandIds(seat);
   for (const zoneId of getZoneIds()) {
     const info = parseZone4Key(zoneId);
     if (!info || info.seatId !== seat) continue;
@@ -182,7 +211,7 @@ export function getZone4Rows(seatId: number): Zone4Row[] {
       .filter((slot) => Number(slot?.key) > 0)
       .map((slot) => Number(slot.id))
       .filter((cardId) => Number.isFinite(cardId) && cardId > 0))];
-    const uncertainGroups = getUncertainGroups(cards);
+    const uncertainGroups = getUncertainGroups(cards, inHand);
     const possibleCardIds = [...new Set(uncertainGroups.flatMap((group) => group.candidateCardIds))]
       .filter((cardId) => !knownCardIds.includes(cardId));
     if (!knownCardIds.length && !possibleCardIds.length) continue;
