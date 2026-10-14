@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #f6f1e7;
+  --card: #fffdf8;
+  --ink: #1c1915;
+  --accent: #c45c26;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-noto-sans);
+  --font-serif: var(--font-noto-serif);
+}
+
+body {
+  background:
+    radial-gradient(circle at top, rgba(196, 92, 38, 0.08), transparent 32%),
+    var(--paper);
+  color: var(--ink);
+  font-family: var(--font-noto-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.prose {
+  color: color-mix(in srgb, var(--ink) 88%, white);
+  font-size: 1.05rem;
+  line-height: 1.85;
+}
+
+.prose > * + * {
+  margin-top: 1rem;
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  font-family: var(--font-noto-serif), serif;
+  color: var(--ink);
+  line-height: 1.35;
+  margin-top: 1.8rem;
+}
+
+.prose h1 {
+  font-size: 2rem;
+}
+
+.prose h2 {
+  font-size: 1.4rem;
+}
+
+.prose a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.25rem;
+}
+
+.prose ul {
+  list-style: disc;
+}
+
+.prose ol {
+  list-style: decimal;
+}
+
+.prose code {
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  padding: 0.1rem 0.35rem;
+  font-size: 0.9em;
+}
+
+.prose pre {
+  overflow-x: auto;
+  border-radius: 1rem;
+  background: var(--ink);
+  color: var(--paper);
+  padding: 1rem;
+}
+
+.prose pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.prose img {
+  display: block;
+  width: min(220px, 70%);
+  height: auto;
+  margin-top: 0.75rem;
+  background: white;
+  padding: 0.5rem;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.prose th,
+.prose td {
+  width: 50%;
+  padding: 0 0.5rem;
+  vertical-align: top;
+  text-align: center;
+  font-weight: normal;
+}
+
+.prose td img {
+  width: min(220px, 100%);
+  margin-inline: auto;
+}
+
+.prose blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
+  color: color-mix(in srgb, var(--ink) 70%, white);
+}
