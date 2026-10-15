@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   judgeOptTarget,
-  resetObfuscatedJudge,
+  resetSpellMoveState,
   type OptJudgeInput
-} from '../src/features/mingpai/obfuscated-judge.ts';
+} from '../src/features/mingpai/spell-move-judge.ts';
 
 /** 谋周瑜醉锋：看别人的手牌。 */
 const ZUIFENG = 8802;
@@ -25,7 +25,7 @@ function input(partial: Partial<OptJudgeInput>): OptJudgeInput {
 }
 
 test('按技能名放行的看手牌技能会记成明牌', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const reveals = judgeOptTarget(input({
     isHandLookSpell: (spellId: number) => spellId === ZUIFENG
   }));
@@ -36,7 +36,7 @@ test('按技能名放行的看手牌技能会记成明牌', () => {
 });
 
 test('名单里没有、名字也认不出的新技能，只要是我发动就看目标手牌', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const reveals = judgeOptTarget(input({ spellId: 8803 }));
   assert.equal(reveals.length, 1);
   assert.deepEqual(reveals[0].cardIds, [31, 32]);
@@ -44,19 +44,19 @@ test('名单里没有、名字也认不出的新技能，只要是我发动就�
 });
 
 test('面板提示类技能号走兜底也不显示', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   assert.deepEqual(judgeOptTarget(input({ spellId: 945 })), []);
   assert.deepEqual(judgeOptTarget(input({ spellId: 3440 })), []);
   assert.deepEqual(judgeOptTarget(input({ spellId: 11003 })), []);
 });
 
 test('别人发动的看牌不显示', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   assert.deepEqual(judgeOptTarget(input({ srcSeatId: 3 })), []);
 });
 
 test('参数里有非正数或目标不是座位时不显示', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   assert.deepEqual(judgeOptTarget(input({ params: [31, 0] })), []);
   assert.deepEqual(judgeOptTarget(input({ targetSeatId: 255 })), []);
   assert.deepEqual(judgeOptTarget(input({ targetSeatId: null })), []);

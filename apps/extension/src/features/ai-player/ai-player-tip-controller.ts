@@ -6,15 +6,150 @@ import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-sc
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import { clearSeatGeneralTips, collectSeatTipTargets } from '../extra-assist/seat-general-tips.ts';
-import { isAiClientId, readNestedClientId } from './ai-client.ts';
+import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
+import {
+  appendPlayNameDebugLog,
+  beginPlayNameScanBatch,
+  endPlayNameScanBatch,
+  isPlayNameSyncPaused,
+  isReplayLikeScene,
+  readSeatNickNameForDebug,
+  seedPlayNameDirectory,
+  syncSeatPlayName
+} from './play-name-sync.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
+export interface PlayNameDebugState {
+  pauseSync: boolean;
+  verbose: boolean;
+  forceFullSync: boolean;
+  log: string[];
+  maxLog: number;
+  scanCount: number;
+  lastScanAt: number;
+  lastScanMs: number;
+  lastError: string;
+  replayLike: boolean;
+  probe: () => ReturnType<typeof probePlayNameSeats>;
+  selfCheck: () => ReturnType<typeof runPlayNameSelfCheck>;
+  pause: () => void;
+  resume: () => void;
+  clearLog: () => void;
+}
+
+interface PlayNameDebugWindow extends GameRuntimeWindow {
+  __xcProbePlayName?: () => ReturnType<typeof probePlayNameSeats>;
+  __xcPlayNameDebug?: PlayNameDebugState;
+}
+
+/** 录像或局内排查：看每个座位有没有编号、名字开关在不在。 */
+export function probePlayNameSeats(globalObject: GameRuntimeWindow = window) {
+  const scene = asRecord(locateGameScene(globalObject));
+  if (!scene) {
+    return { scene: false as const, seats: [] as readonly object[] };
+  }
+  const flags: Record<string, unknown> = {};
+  for (const key of [
+    'isDouDiZhu', 'IsDouDiZhu', 'isReplay', 'IsReplay', 'isPlayBack', 'IsPlayBack',
+    'isRecord', 'IsRecord', 'modeName', 'ModeName'
+  ]) {
+    if (key in scene) flags[key] = scene[key];
+  }
+  const seatUis = readSeatUis(scene);
+  beginPlayNameScanBatch(globalObject, { forceFull: true });
+  try {
+    seedPlayNameDirectory(globalObject, seatUis);
+    for (let i = 0; i < seatUis.length; i += 1) {
+      syncSeatPlayName(seatUis[i], globalObject, i);
+    }
+  } finally {
+    endPlayNameScanBatch();
+  }
+  const seats = seatUis.map((seatUi, index) => {
+    const seat = asRecord(seatUi.seat);
+    const playerInfo = asRecord(seat?.playerInfo);
+    const clientId = playerInfo?.ClientId ?? playerInfo?.clientId;
+    const debug = readSeatNickNameForDebug(seatUi, globalObject, index);
+    return {
+      index,
+      isHide: seat?.isHide === true,
+      clientId: clientId ?? null,
+      playNameVisible: playNameVisible(clientId),
+      managerKeys: debug.managers,
+      hasOtherTopManager: Boolean(seatUi.otherTopManager),
+      hasTopManager: Boolean(seatUi.topManager),
+      playerName: debug.name,
+      nameLabelCount: debug.nameLabelCount,
+      clonedPlayName: debug.clonedPlayName,
+      mountStrategy: debug.mountStrategy,
+      playNameLabels: debug.playNameLabels
+    };
+  });
+  const acceptance = {
+    liveRankOrDdz: '真人局排位/斗地主应显示对面昵称',
+    replay: '录像尽量补显；游戏不支持时靠 mountStrategy C 挂头像上'
+  };
+  return { scene: true as const, flags, seatCount: seats.length, acceptance, seats };
+}
+
+/** 自动跑一轮昵称同步并返回探测结果，供本地排查。 */
+export function runPlayNameSelfCheck(globalObject: GameRuntimeWindow = window) {
+  const result = probePlayNameSeats(globalObject);
+  appendPlayNameDebugLog(globalObject, `selfCheck seats=${result.seatCount}`);
+  return result;
+}
+
 /** 安装对战 AI 开局提示、资料页人机提示和座位名称处理。 */
+/** 挂到 window 与 __XIAOCHAO_ENGINEERING__，控制台可反复调用。 */
+export function mountPlayNameProbe(globalObject: GameRuntimeWindow): () => ReturnType<typeof probePlayNameSeats> {
+  const run = () => probePlayNameSeats(globalObject);
+  const debugWindow = globalObject as PlayNameDebugWindow;
+  debugWindow.__xcProbePlayName = run;
+  const bridge = asRecord((globalObject as UnknownRecord).__XIAOCHAO_ENGINEERING__);
+  if (bridge) bridge.probePlayName = run;
+  return run;
+}
+
+/** 昵称同步调试：暂停轮询、看日志、手动 probe。 */
+export function mountPlayNameDebug(globalObject: GameRuntimeWindow): PlayNameDebugState {
+  const debugWindow = globalObject as PlayNameDebugWindow;
+  const existing = debugWindow.__xcPlayNameDebug;
+  if (existing) return existing;
+
+  const probe = mountPlayNameProbe(globalObject);
+  const state: PlayNameDebugState = {
+    pauseSync: false,
+    verbose: true,
+    forceFullSync: false,
+    log: [],
+    maxLog: 80,
+    scanCount: 0,
+    lastScanAt: 0,
+    lastScanMs: 0,
+    lastError: '',
+    replayLike: false,
+    probe,
+    selfCheck: () => runPlayNameSelfCheck(globalObject),
+    pause() { state.pauseSync = true; },
+    resume() { state.pauseSync = false; },
+    clearLog() { state.log.length = 0; }
+  };
+  debugWindow.__xcPlayNameDebug = state;
+  const bridge = asRecord((globalObject as UnknownRecord).__XIAOCHAO_ENGINEERING__);
+  if (bridge) {
+    bridge.playNameDebug = state;
+    bridge.runPlayNameSelfCheck = () => runPlayNameSelfCheck(globalObject);
+  }
+  appendPlayNameDebugLog(globalObject, 'playNameDebug 已挂载：selfCheck 可手动探测昵称');
+  return state;
+}
+
 export function installAiPlayerTipController(
   gameEvents: GameEventBus,
   globalObject: GameRuntimeWindow = window
 ): () => void {
+  mountPlayNameDebug(globalObject);
   let profileTipId = 0;
   let aiTipShownThisGame = false;
   let gameEnded = false;
@@ -27,7 +162,7 @@ export function installAiPlayerTipController(
       gameEnded = true;
     }
   });
-  const timer = globalObject.setInterval(scan, 500);
+  const timer = globalObject.setInterval(scan, 200);
   scan();
 
   return () => {
@@ -53,18 +188,36 @@ export function installAiPlayerTipController(
     const scene = asRecord(locateGameScene(globalObject));
     if (!scene) return;
     const seatUis = readSeatUis(scene);
-    // app.bak 的 figureOut 对 seatUIs 全量调用原生开关，并且只读 seat.playerInfo.ClientId。
-    // 这里保持同一数据来源和 4e9 边界，避免从座位对象的其他嵌套字段误取到不同账号 ID。
-    for (const seatUi of seatUis) {
-      const seat = asRecord(seatUi.seat);
-      const playerInfo = asRecord(seat?.playerInfo);
-      const clientId = playerInfo?.ClientId ?? playerInfo?.clientId;
-      const manager = asRecord(seatUi.otherTopManager);
-      const setPlayNameVisible = manager?.SetPlayNameVisible;
-      if (typeof setPlayNameVisible === 'function') {
-        const numericClientId = clientId == null || clientId === '' ? Number.NaN : Number(clientId);
-        setPlayNameVisible.call(manager, Number.isFinite(numericClientId) && numericClientId < 4e9);
+    const replayLike = isReplayLikeScene(globalObject);
+    const debugState = (globalObject as PlayNameDebugWindow).__xcPlayNameDebug;
+    if (debugState) debugState.replayLike = replayLike;
+
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const skipNameSync = isPlayNameSyncPaused(globalObject);
+    if (!skipNameSync) {
+      const forceFull = debugState?.forceFullSync === true;
+      beginPlayNameScanBatch(globalObject, { forceFull });
+      try {
+        seedPlayNameDirectory(globalObject, seatUis);
+        for (let i = 0; i < seatUis.length; i += 1) {
+          try { syncSeatPlayName(seatUis[i], globalObject, i); } catch { /* 单座失败不影响其他座 */ }
+        }
+      } finally {
+        endPlayNameScanBatch();
       }
+    }
+
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (debugState) {
+      debugState.scanCount += 1;
+      debugState.lastScanAt = Date.now();
+      debugState.lastScanMs = Math.round(t1 - t0);
+      appendPlayNameDebugLog(
+        globalObject,
+        skipNameSync
+          ? `scan skip nameSync replay=${replayLike} pause=${isPlayNameSyncPaused(globalObject)}`
+          : `scan nameSync ${seatUis.length} seats ${debugState.lastScanMs}ms replay=${replayLike}`
+      );
     }
 
     const seats = seatUis
@@ -202,6 +355,7 @@ function isAiHintMode(scene: UnknownRecord, globalObject: GameRuntimeWindow): bo
   );
 }
 
+/** 游戏把名字开关放在 otherTopManager，有的座位只挂在 topManager。 */
 function readSeatUis(scene: UnknownRecord): UnknownRecord[] {
   const container = asRecord(scene.seatContainer);
   const list = container?.seatUIs ?? container?.seatUis;

@@ -20,7 +20,7 @@ const PANEL_SHELL_CSS_SOURCE = `
   top: var(--xc-panel-top, auto) !important;
   right: var(--xc-panel-right, auto) !important;
   width: var(--xc-panel-width, 340px) !important;
-  height: var(--xc-panel-height, 720px) !important;
+  height: var(--xc-panel-height, 360px) !important;
   min-width: var(--xc-panel-min-width, 0px) !important;
   max-width: var(--xc-panel-max-width, none) !important;
   min-height: var(--xc-panel-min-height, 0px) !important;
@@ -37,12 +37,20 @@ const PANEL_SHELL_CSS_SOURCE = `
   clip-path: inset(0 round 8px);
   user-select: none;
   pointer-events: none;
-  transition: width .18s ease, height .18s ease, box-shadow .18s ease;
+  transition: box-shadow .18s ease;
+}
+#createIframe.createIframe.xiaochao-panel--collapsed {
+  width: 96px !important;
+  min-width: 96px !important;
+  max-width: 96px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
 }
 #createIframe.xiaochao-panel--collapsed {
   border: 1px solid rgba(220, 190, 119, .48);
-  border-radius: 14px;
-  clip-path: inset(0 round 14px);
+  border-radius: 10px;
+  clip-path: inset(0 round 10px);
   background: linear-gradient(180deg, rgba(67, 51, 31, .97) 0%, rgba(35, 28, 21, .98) 100%);
   box-shadow: 0 0 10px 2px rgba(255, 220, 120, .28), inset 0 1px 0 rgba(255, 242, 190, .18);
 }
@@ -56,7 +64,7 @@ const PANEL_SHELL_CSS_SOURCE = `
   opacity: .96;
 }
 #createIframe .xc-frame-header {
-  min-height: 26px;
+  min-height: 34px;
   margin: 0;
   display: flex;
   align-items: center;
@@ -65,17 +73,17 @@ const PANEL_SHELL_CSS_SOURCE = `
   pointer-events: auto;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-header {
-  min-height: 46px;
-  height: 46px;
-  padding: 0 2px 0 4px;
+  min-height: 32px;
+  height: 32px;
+  padding: 0 2px 0 6px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle {
   box-sizing: border-box;
-  width: 40px;
-  height: 40px;
+  width: 24px;
+  height: 24px;
   margin: 0 2px 0 0;
-  border: 2px solid rgba(224, 195, 124, .72);
-  border-radius: 11px;
+  border: 1px solid rgba(224, 195, 124, .72);
+  border-radius: 6px;
   background: linear-gradient(145deg, rgba(75, 61, 37, .95), rgba(38, 31, 22, .98));
   box-shadow: inset 0 1px 0 rgba(255, 242, 190, .2), 0 1px 4px rgba(0, 0, 0, .35);
   color: #f1dda2;
@@ -87,17 +95,17 @@ const PANEL_SHELL_CSS_SOURCE = `
   box-shadow: inset 0 1px 0 rgba(255, 242, 190, .28), 0 0 8px rgba(255, 220, 120, .24);
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle__arrow {
-  width: 12px;
-  height: 12px;
+  width: 7px;
+  height: 7px;
   border-width: 2px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle[data-collapsed="1"] .xc-frame-toggle__arrow--bottom-left {
-  left: 9px;
-  bottom: 9px;
+  left: 5px;
+  bottom: 5px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle[data-collapsed="1"] .xc-frame-toggle__arrow--top-right {
-  right: 9px;
-  top: 9px;
+  right: 5px;
+  top: 5px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-header__status {
   margin: 0;
@@ -251,26 +259,22 @@ const PANEL_SHELL_CSS_SOURCE = `
   pointer-events: auto;
 }
 #createIframe .xiaochao-panel__content::-webkit-scrollbar { width: 0; height: 0; display: none; }
-#createIframe .xiaochao-tools-entry { flex: 0 0 auto; overflow: hidden; padding-top: 0; }
-#createIframe .xiaochao-tools-entry .xiaochao-settings-section {
+#createIframe .xiaochao-others-entry { flex: 0 0 auto; overflow: hidden; padding-top: 0; }
+#createIframe .xiaochao-others-entry .xiaochao-settings-section {
   margin: 4px 0 0;
 }
-#createIframe .xiaochao-tools-entry__actions {
+#createIframe .xiaochao-others-entry__actions {
   padding: 1px 0;
 }
-#createIframe .xiaochao-tools-entry__actions .xiaochao-settings-section {
+#createIframe .xiaochao-others-entry__actions .xiaochao-settings-section {
   margin: 0;
 }
-#createIframe .xiaochao-tools-entry__actions .xiaochao-block-entry {
+#createIframe .xiaochao-others-entry__actions .xiaochao-block-entry {
   width: calc(100% - 8px);
   min-height: 28px;
   margin: 3px 4px;
   padding: 0 10px;
   font-size: 12px;
-}
-#createIframe .xiaochao-rogue-entry { flex: 0 0 auto; overflow: hidden; padding-top: 0; }
-#createIframe .xiaochao-rogue-entry .xiaochao-settings-section {
-  margin: 4px 0 0;
 }
 #createIframe .xiaochao-settings-grid.xiaochao-rogue-switch-grid {
   grid-template-columns: 1fr 1fr;
@@ -390,7 +394,14 @@ const PANEL_SHELL_CSS_SOURCE = `
   min-width: 0;
   max-width: calc(50% - 2px);
 }
-#createIframe #frame-resize-handle { pointer-events: auto; }
+#createIframe #frame-resize-handle {
+  pointer-events: auto;
+  flex: 0 0 10px;
+  height: 10px;
+  cursor: ns-resize;
+  touch-action: none;
+  background: linear-gradient(180deg, transparent 0 3px, rgba(242, 222, 156, .55) 4px 6px, transparent 7px);
+}
 .xiaochao-dock-preview {
   position: fixed;
   z-index: 2147483599;
@@ -427,7 +438,10 @@ const PANEL_SHELL_CSS_SOURCE = `
   position: fixed;
   z-index: 2147483647;
   box-sizing: border-box;
-  max-width: min(280px, calc(100vw - 16px));
+  display: inline-block;
+  width: max-content !important;
+  max-width: min(280px, calc(100vw - 16px)) !important;
+  right: auto !important;
   padding: 5px 8px;
   border: 1px solid rgba(242, 222, 156, .5);
   border-radius: 5px;
@@ -439,6 +453,7 @@ const PANEL_SHELL_CSS_SOURCE = `
   white-space: pre-line;
   pointer-events: none;
   user-select: none;
+  transition: none !important;
 }
 .xiaochao-dialog {
   position: fixed;
@@ -494,6 +509,18 @@ const PANEL_SHELL_CSS_SOURCE = `
   background: rgba(242, 222, 156, .08);
   color: #fff1bd;
 }
+/* 对话框定位：BaseDialog 用 JS 读取 #createIframe 的 getBoundingClientRect 后设置 fixed 位置。 */
+.xiaochao-dialog-backdrop {
+  position: fixed;
+  z-index: 2147483601;
+  background: rgba(0, 0, 0, .48);
+  backdrop-filter: blur(1px);
+  pointer-events: auto;
+}
+.xiaochao-dialog {
+  pointer-events: auto;
+  z-index: 2147483602;
+}
 .xiaochao-dialog__content {
   box-sizing: border-box;
   max-height: calc(100vh - 110px);
@@ -512,7 +539,7 @@ const PANEL_SHELL_CSS_SOURCE = `
 #createIframe .xiaochao-settings-section,
 .xiaochao-dialog .xiaochao-settings-section {
   box-sizing: border-box;
-  margin: 0 0 6px;
+  margin: 0 0 8px;
 }
 #createIframe [data-migrated-to-vue="true"],
 #createIframe .switch-container-row[hidden] {
@@ -549,6 +576,33 @@ const PANEL_SHELL_CSS_SOURCE = `
   font-size: 10px;
   line-height: 1;
 }
+#createIframe .xiaochao-collapsible-header {
+  width: 100%;
+  border: 0;
+  background: linear-gradient(90deg, rgba(117, 84, 38, .32), rgba(44, 36, 28, .08) 72%, transparent);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+#createIframe .xiaochao-collapsible-header:hover {
+  background: linear-gradient(90deg, rgba(117, 84, 38, .48), rgba(44, 36, 28, .14) 72%, transparent);
+}
+#createIframe .xiaochao-collapsible-header__arrow {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  color: #d6c59c;
+  transition: transform .18s ease;
+}
+#createIframe .xiaochao-collapsible-header__arrow.is-open {
+  transform: rotate(180deg);
+}
+#createIframe .xiaochao-collapsible-header__arrow svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 #createIframe .xiaochao-settings-section__body,
 .xiaochao-dialog .xiaochao-settings-section__body {
   overflow: hidden;
@@ -564,7 +618,7 @@ const PANEL_SHELL_CSS_SOURCE = `
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-gap: 0;
-  padding: 1px 6px;
+  padding: 4px 8px;
 }
 #createIframe .xiaochao-setting-switch,
 .xiaochao-dialog .xiaochao-setting-switch {
@@ -721,7 +775,7 @@ const PANEL_SHELL_CSS_SOURCE = `
 .xiaochao-block-select-bar + .xiaochao-block-group { margin-top: 0; }
 .xiaochao-block-group__title {
   box-sizing: border-box;
-  min-height: 26px;
+  min-height: 28px;
   margin: 0;
   padding: 4px 8px;
   border-left: 3px solid rgba(255, 215, 94, .65);
@@ -744,7 +798,7 @@ const PANEL_SHELL_CSS_SOURCE = `
 }
 .xiaochao-block-switch__label {
   display: block;
-  margin: 0 10px 2px;
+  margin: 0 10px 4px;
   color: #f2de9c;
   font-size: 12.5px;
   white-space: nowrap;

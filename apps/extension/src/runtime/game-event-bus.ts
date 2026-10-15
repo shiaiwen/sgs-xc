@@ -18,6 +18,8 @@ export type GameEvent =
   }
   | { type: 'game-reconnected' }
   | { type: 'deck-shuffled' }
+  /** MsgHeartAliveRep。自动领取用它判断是否跨天。 */
+  | { type: 'heart-alive' }
   | { type: 'spell-damage-resolved'; seatId: number; spellId: number; damage: number }
   | {
     type: 'turn-started';
@@ -184,6 +186,7 @@ export function createGameEventBus(): GameEventBus {
 
 function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
   if (!event || typeof event.type !== 'string') return null;
+  if (event.type === 'heart-alive') return Object.freeze({ type: 'heart-alive' });
   if (event.type === 'game-started' || event.type === 'game-ended'
     || event.type === 'game-reconnected' || event.type === 'deck-shuffled') {
     return Object.freeze({

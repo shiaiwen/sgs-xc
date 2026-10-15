@@ -662,7 +662,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     for (const type of MONTH_CARD_TYPES) {
       const card = asRecord(call(welfare, 'GetCardDataByType', type));
       if (card?.bActive && card.bReward) {
-        claims.onceToday(`yueka:reward:${type}:${String(card.rewardDays)}`, () => call(welfare, 'SendClientPrivilegeRewardReq', card.rewardDays, type));
+        claims.throttled(`yueka:reward:${type}:${String(card.rewardDays)}`, () => call(welfare, 'SendClientPrivilegeRewardReq', card.rewardDays, type));
       }
       if (card?.bActive && type === 3) {
         tasks.later(() => {
@@ -671,12 +671,12 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
           list.forEach((canAward, index) => {
             if (!canAward) return;
             const day = Number(card.days) + index + 1;
-            claims.onceToday(`yueka:addAward:${type}:${day}`, () => call(welfare, 'SendClientPrivilegeRewardReq', day, type));
+            claims.throttled(`yueka:addAward:${type}:${day}`, () => call(welfare, 'SendClientPrivilegeRewardReq', day, type));
           });
         }, 5000);
       }
       if (call(welfare, 'CanShowPrivilegeDaliyReward', type)) {
-        claims.onceToday(`yueka:daily:${type}`, () => call(welfare, 'PrivilegeCardDaliyRewardReq', type));
+        claims.throttled(`yueka:daily:${type}`, () => call(welfare, 'PrivilegeCardDaliyRewardReq', type));
       }
     }
   }
@@ -742,7 +742,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       (Array.isArray(awards) ? awards : []).forEach((award) => {
         const day = Number(asRecord(award)?.days ?? asRecord(award)?.day);
         if (!Number.isFinite(day) || day <= 0 || day > signDays || claimedDays.has(day) || blocked(award)) return;
-        claims.onceToday(`festivalSign:old:${String(signId)}:${day}`, () => (
+        claims.throttled(`festivalSign:old:${String(signId)}:${day}`, () => (
           has(activity, 'SendClientFestivalSignGetRewardReq') ? call(activity, 'SendClientFestivalSignGetRewardReq', signId, day) : false
         ));
       });
@@ -766,7 +766,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         const date = asRecord(award)?.date;
         if (!date || !has(activity, 'GetFesSignAwdState') || Number(call(activity, 'GetFesSignAwdState', award)) !== 2) return;
         if (blocked(award)) return;
-        claims.onceToday(`festivalSign:new:${String(signId)}:${String(date)}`, () => (
+        claims.throttled(`festivalSign:new:${String(signId)}:${String(date)}`, () => (
           has(activity, 'SendNewClientFestivalSignGetRewardReq') ? call(activity, 'SendNewClientFestivalSignGetRewardReq', signId, date) : false
         ));
       });
@@ -837,7 +837,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         const day = accumulatedAwardDay(award, awardIndex + 1);
         if (!Number.isFinite(day) || day <= 0) return;
         if (accumulatedAwardState(activity, signId, award, day, awardIndex, data) !== 2 || blocked(award)) return;
-        claims.onceToday(`accumulatedSign:${String(signId)}:${day}`, () => {
+        claims.throttled(`accumulatedSign:${String(signId)}:${day}`, () => {
           for (const method of ACCUMULATED_REWARD_METHODS) {
             if (has(activity, method)) return call(activity, method, signId, day, award);
           }
@@ -874,7 +874,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   function clickSign(item: UnknownRecord, prefix: string, id: unknown): boolean {
     if (!has(item, 'OnSignClick')) return false;
-    return claims.onceToday(`${prefix}:${String(id)}`, () => call(item, 'OnSignClick'));
+    return claims.throttled(`${prefix}:${String(id)}`, () => call(item, 'OnSignClick'));
   }
 
   async function clickDailySign(view: UnknownRecord, skipTrialCard: boolean, checkIn: boolean): Promise<boolean> {
@@ -935,13 +935,13 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       for (const goodsId of FREE_SHOP_GOODS) {
         const goods = goodsConfig(goodsId);
         if (goods && has(shop, 'CheckGoodsLimit') && call(shop, 'CheckGoodsLimit', goods) === false) {
-          claims.onceToday(`shop:free:${goodsId}`, () => buyFreeShopGoods(goodsId));
+          claims.throttled(`shop:free:${goodsId}`, () => buyFreeShopGoods(goodsId));
         }
       }
       const officer = manager('OfficerManager');
-      if (call(officer, 'CanGetOfficerWeekReward')) claims.onceToday('officer:week', () => call(officer, 'sendGetWeekReward'));
+      if (call(officer, 'CanGetOfficerWeekReward')) claims.throttled('officer:week', () => call(officer, 'sendGetWeekReward'));
       if (call(officer, 'CanGetOfficerDayReward') && !deps.options().skipHuanLeDou) {
-        claims.onceToday('officer:day', () => call(officer, 'sendGetDayReward'));
+        claims.throttled('officer:day', () => call(officer, 'sendGetDayReward'));
       }
     } catch (error) {
       console.error('[自动领取] 签到失败:', error);
@@ -958,14 +958,14 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     if (!generalManager) return;
     for (const series of deps.configData()?.seriesList ?? []) {
       if (call(generalManager, 'LampRewardCanAward', series) && !call(generalManager, 'LampHasReward', series)) {
-        claims.onceToday(`generalLamp:${series}`, () => call(generalManager, 'LampRewardReq', series));
+        claims.throttled(`generalLamp:${series}`, () => call(generalManager, 'LampRewardReq', series));
       }
     }
     const atlas = asRecord(asRecord(generalManager.atlasGeneralDict)?._maps) ?? {};
     Object.entries(atlas)
       .filter(([, canAward]) => canAward)
       .map(([id]) => Number(id))
-      .forEach((id) => claims.onceToday(`generalAtlas:${id}`, () => call(generalManager, 'GeneralAtlasRewardReq', id)));
+      .forEach((id) => claims.throttled(`generalAtlas:${id}`, () => call(generalManager, 'GeneralAtlasRewardReq', id)));
   }
 
   // ---------- 武将包 ----------
@@ -986,10 +986,10 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         }, waitMs);
       }
     } else {
-      const claimed = claims.onceToday(`wujiang:bag:${DAILY_GENERAL_BAG.id}:${DAILY_GENERAL_BAG.type}`, () => (
+      const opened = claims.throttled(`wujiang:bag:${DAILY_GENERAL_BAG.id}:${DAILY_GENERAL_BAG.type}`, () => (
         call(bagWindow, 'onNewOpenBag', DAILY_GENERAL_BAG.id, DAILY_GENERAL_BAG.type)
       ));
-      if (claimed) windows.closeOpened('GeneralOpenResultWindow', 8, 500);
+      if (opened) windows.closeOpened('GeneralOpenResultWindow', 8, 500);
     }
     windows.release('GeneralOpenWindow', 5000);
   }

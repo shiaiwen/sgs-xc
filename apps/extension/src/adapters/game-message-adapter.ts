@@ -46,6 +46,8 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
   const payload = protocolBody(rawPayload);
   const className = readString(payload, ['ClassName', 'className']);
   if (!className) return [];
+  // 心跳不带座位。自动领取用它判断北京时间是否跨天。
+  if (className === 'MsgHeartAliveRep') return [{ type: 'heart-alive' }];
   if (className === 'decodeMsgGameStart' || className === 'MsgGameStart') {
     return [{ type: 'game-started', freshGame: true }];
   }
@@ -314,7 +316,7 @@ function isEmptyList(value: unknown): boolean {
 /**
  * GsCRoleOptTargetNtf：SeatID=操作者，SrcSeatID=施法者，
  * targetSeatID=被看座位（255=牌堆），Param/Params 含义由技能决定。
- * 这里只搬字段，不解释；解释在 mingpai/obfuscated-judge.ts。
+ * 这里只搬字段，不解释；解释在 mingpai/spell-move-judge.ts。
  */
 function translateOptTarget(payload: UnknownRecord): GameEvent | null {
   const spellId = readNonNegativeInteger(payload, ['SpellID', 'SpellId', 'spellID', 'spellId']);

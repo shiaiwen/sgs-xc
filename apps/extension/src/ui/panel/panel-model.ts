@@ -4,11 +4,11 @@
 
 import { computed, ref, type Ref } from 'vue';
 
-/** 一级页面。原“配置”页已并入“常规”（id 仍为 cards，兼容已保存的选中状态）。 */
+/** 一级页面。原“配置”页已并入“常规”（id 仍为 cards，兼容已保存的选中状态）。
+ * “山河图”和“工具”合并为“其他”，避免两个标签页内容稀疏。 */
 export const XIAOCHAO_PANEL_TABS = [
   { id: 'cards', label: '常规' },
-  { id: 'rogue', label: '山河图' },
-  { id: 'tools', label: '工具' }
+  { id: 'others', label: '其他' }
 ] as const;
 
 export type XiaochaoPanelTabId = typeof XIAOCHAO_PANEL_TABS[number]['id'];

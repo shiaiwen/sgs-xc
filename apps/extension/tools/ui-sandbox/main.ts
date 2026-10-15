@@ -10,6 +10,7 @@ import type { RecentCardStore } from '../../src/features/recent-cards/recent-car
 import type { DeckRecordStore } from '../../src/features/deck-record/deck-record-store.ts';
 import type { GameCardCatalog } from '../../src/features/cards/game-card-catalog.ts';
 import type { SkillAssistStore } from '../../src/features/skill-assist/skill-assist-store.ts';
+import type { PeixiuRouteStore } from '../../src/features/extra-assist/peixiu-route-store.ts';
 
 const memory = { ...getDefaultConfig(), 'panel.collapsed': false, 'panel.dockedRight': false };
 const configStore = createConfigStore({
@@ -119,6 +120,12 @@ mountXiaochaoApp(
   deckRecordStore,
   gameCardCatalog,
   skillAssistStore,
+  {
+    getSnapshot: () => ({ active: false, mapName: '', variants: [] }),
+    publish: () => {},
+    clear: () => {},
+    subscribe: emptySubscribe({ active: false, mapName: '', variants: [] })
+  } as unknown as PeixiuRouteStore,
   turnStatusStore,
   null,
   () => ({ found: true, count: 3 }),
@@ -127,6 +134,8 @@ mountXiaochaoApp(
       window.alert('沙盒：打开集市（无游戏）');
       return true;
     },
+    getShopPreview: () => [],
+    subscribeShopPreview: () => () => {},
     filterMessage: () => {},
     dispose: () => {}
   }

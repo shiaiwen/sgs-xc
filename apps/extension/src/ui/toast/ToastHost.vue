@@ -44,7 +44,8 @@ defineProps<{ notices: readonly ToastNotice[] }>();
 
 .xc-notify {
   display: flex;
-  max-width: 100%;
+  width: max-content;
+  max-width: calc(100vw - 32px);
   align-items: center;
   gap: 9px;
   box-sizing: border-box;
@@ -94,5 +95,9 @@ defineProps<{ notices: readonly ToastNotice[] }>();
 
 .xc-notify-leave-active {
   position: absolute;
+  left: 50%;
+  translate: -50% 0;
+  width: max-content;
+  max-width: calc(100vw - 32px);
 }
 </style>

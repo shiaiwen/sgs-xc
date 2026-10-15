@@ -1,7 +1,6 @@
-<script setup>
-/** 通用模态对话框外壳（确认重置配置等）。 */
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { calculateDialogPosition } from './dialog-position';
+<script setup lang="ts">
+/** 通用对话框：定位在小抄面板区域内，不占用整个窗口。 */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 const props = defineProps({
   open: {
@@ -11,10 +10,6 @@ const props = defineProps({
   title: {
     type: String,
     required: true,
-  },
-  anchorSelector: {
-    type: String,
-    default: '#createIframe',
   },
   closeOnBackdrop: {
     type: Boolean,
@@ -27,32 +22,40 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['close']);
-const dialogElement = ref();
 const titleId = `xiaochao-dialog-title-${Math.random().toString(36).slice(2)}`;
-let previouslyFocusedElement;
+let previouslyFocusedElement: Element | null = null;
 
-watch(() => props.open, synchronizeNativeDialog);
+const panelRect = ref<DOMRect | null>(null);
+
+function refreshPanelRect() {
+  const panel = document.querySelector<HTMLElement>('#createIframe');
+  panelRect.value = panel?.getBoundingClientRect() ?? null;
+}
+
+watch(() => props.open, (open) => {
+  if (open) {
+    previouslyFocusedElement = document.activeElement;
+    refreshPanelRect();
+  } else if (previouslyFocusedElement?.isConnected) {
+    (previouslyFocusedElement as HTMLElement).focus?.();
+    previouslyFocusedElement = null;
+  }
+});
 
 onMounted(() => {
-  synchronizeNativeDialog();
-  window.addEventListener('resize', updatePosition);
+  window.addEventListener('keydown', handleEscape);
+  window.addEventListener('resize', refreshPanelRect);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', updatePosition);
-  closeNativeDialog();
+  window.removeEventListener('keydown', handleEscape);
+  window.removeEventListener('resize', refreshPanelRect);
 });
 
-/** Vue 状态是唯一真源；原生 dialog 只负责 top-layer、焦点圈定和 Esc。 */
-function synchronizeNativeDialog() {
-  const dialog = dialogElement.value;
-  if (!dialog) return;
-  if (props.open && !dialog.open) {
-    previouslyFocusedElement = document.activeElement;
-    dialog.showModal();
-    nextTick(updatePosition);
-  } else if (!props.open && dialog.open) {
-    closeNativeDialog();
+function handleEscape(event: KeyboardEvent) {
+  if (props.open && event.key === 'Escape') {
+    event.preventDefault();
+    requestClose();
   }
 }
 
@@ -60,51 +63,53 @@ function requestClose() {
   emit('close');
 }
 
-function handleCancel(event) {
-  event.preventDefault();
-  requestClose();
+function handleBackdropClick() {
+  if (props.closeOnBackdrop) requestClose();
 }
 
-function handleBackdropClick(event) {
-  if (props.closeOnBackdrop && event.target === dialogElement.value) requestClose();
-}
+const backdropStyle = computed(() => {
+  const rect = panelRect.value;
+  if (!rect) return {};
+  return {
+    position: 'fixed',
+    top: `${rect.top}px`,
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  } as Record<string, string>;
+});
 
-function closeNativeDialog() {
-  const dialog = dialogElement.value;
-  if (dialog?.open) dialog.close();
-  if (previouslyFocusedElement?.isConnected) previouslyFocusedElement.focus();
-  previouslyFocusedElement = undefined;
-}
-
-function updatePosition() {
-  const dialog = dialogElement.value;
-  if (!dialog?.open) return;
-  const anchor = document.querySelector(props.anchorSelector);
-  const anchorBounds = anchor?.getBoundingClientRect() || {
-    left: 0,
-    right: window.innerWidth,
-    top: 0,
-    bottom: window.innerHeight,
-  };
-  const dialogBounds = dialog.getBoundingClientRect();
-  const position = calculateDialogPosition(
-    anchorBounds,
-    { width: dialogBounds.width, height: dialogBounds.height },
-    { width: window.innerWidth, height: window.innerHeight }
-  );
-  dialog.style.left = `${position.left}px`;
-  dialog.style.top = `${position.top}px`;
-}
+const dialogStyle = computed(() => {
+  const rect = panelRect.value;
+  if (!rect) return {};
+  return {
+    position: 'fixed',
+    top: `${rect.top + rect.height / 2}px`,
+    left: `${rect.left + rect.width / 2}px`,
+    transform: 'translate(-50%, -50%)',
+    width: `min(320px, ${rect.width - 24}px)`,
+    maxHeight: `${rect.height - 48}px`,
+    zIndex: '2147483602',
+  } as Record<string, string>;
+});
 </script>
 
 <template>
   <Teleport to="body">
-    <dialog
-      ref="dialogElement"
+    <div
+      v-if="open"
+      class="xiaochao-dialog-backdrop"
+      aria-hidden="true"
+      :style="backdropStyle"
+      @click="handleBackdropClick"
+    />
+    <div
+      v-if="open"
+      role="dialog"
+      aria-modal="true"
       :class="['xiaochao-dialog', dialogClass]"
       :aria-labelledby="titleId"
-      @cancel="handleCancel"
-      @click="handleBackdropClick"
+      :style="dialogStyle"
     >
       <header class="xiaochao-dialog__header">
         <h2 :id="titleId" class="xiaochao-dialog__title">{{ title }}</h2>
@@ -123,6 +128,6 @@ function updatePosition() {
       <footer v-if="$slots.footer" class="xiaochao-dialog__footer">
         <slot name="footer" />
       </footer>
-    </dialog>
+    </div>
   </Teleport>
 </template>

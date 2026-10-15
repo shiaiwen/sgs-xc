@@ -32,7 +32,10 @@ import { createDeckRecordInteraction } from '../features/deck-record/deck-record
 import { installNativeDeckRecordController } from '../features/deck-record/native-deck-record-controller';
 import { installCountdownSecondsController } from '../features/countdown/countdown-seconds-controller';
 import { installCardLabelController } from '../features/cards/card-label-controller';
-import { installAiPlayerTipController } from '../features/ai-player/ai-player-tip-controller';
+import {
+  installAiPlayerTipController,
+  mountPlayNameProbe
+} from '../features/ai-player/ai-player-tip-controller';
 import { installChooseFigureController } from '../features/identity-drill/choose-figure-controller';
 import { installCardConfigSource } from '../adapters/card-config-source';
 import { installNativeRecentCardController } from '../features/recent-cards/native-recent-card-controller';
@@ -131,7 +134,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   lifecycle.register(installNativeMingpaiPreviewController(configStore, seatStateStore, gameCardCatalog, mingpaiEngine, gameEvents));
   lifecycle.register(installCountdownSecondsController(configStore));
   lifecycle.register(installCardLabelController(configStore));
-  lifecycle.register(installAiPlayerTipController(gameEvents));
+  lifecycle.register(installAiPlayerTipController(gameEvents, window));
   lifecycle.register(installChooseFigureController(window, gameEvents));
   lifecycle.register(installHandSortController(configStore));
   lifecycle.register(installSelectionToolsController());
@@ -249,6 +252,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     getCardConfigSize: () => cardConfigSource.size(),
     mountPanelShell
   });
+  mountPlayNameProbe(window);
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
   void bridge.waitForGameRuntime({
     probe: () => bridge.getMissingGameRuntimeDependencies({ globalObject: window }),
@@ -274,9 +278,10 @@ const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
 
 function readSavedPanelHeight(): number {
   try {
-    const saved = Number(localStorage.getItem('XC::mainFrameExpandedHeight'));
-    return Number.isFinite(saved) && saved >= 160 ? Math.round(saved) : 480;
+    const saved = Number(localStorage.getItem('XC::panelExpandedHeight'));
+    // 0 表示没有保存过高度，让面板按内容自适应。
+    return Number.isFinite(saved) && saved >= 160 ? Math.round(saved) : 0;
   } catch {
-    return 480;
+    return 0;
   }
 }

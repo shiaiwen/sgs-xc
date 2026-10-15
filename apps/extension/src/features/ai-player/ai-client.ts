@@ -18,6 +18,17 @@ export function isAiClientId(clientId: unknown): boolean {
   return aiKind(clientId, false) !== 0;
 }
 
+/**
+ * 真人显示名字，人机隐藏。
+ * 编号还没读到时返回 null，调用方不要据此把名字关掉。
+ */
+export function playNameVisible(clientId: unknown): boolean | null {
+  if (clientId == null || clientId === '') return null;
+  const id = Number(clientId);
+  if (!Number.isFinite(id)) return null;
+  return !isAiClientId(id);
+}
+
 const CLIENT_ID_KEYS = [
   'ClientId', 'clientId', 'ClientID', 'clientID', 'client_id', 'clientid'
 ] as const;

@@ -19,20 +19,20 @@ import { MINGPAI_ZONE } from './mingpai-zones.ts';
 import { applyCardReveals } from './reveal-sink.ts';
 import {
   correctMoveCard,
-  getObfuscated3483PileCount,
+  getSpell3483PileCount,
   hasShownJudgeCard,
-  isObfuscatedSameZoneShow,
+  isInPlaceCardShow,
   judgeOptTarget,
   judgeSpellOpt,
-  noteObfuscatedCurrentSeat,
-  noteObfuscatedSeatColor,
-  noteObfuscatedUseSpell,
+  noteCurrentTurnSeat,
+  noteSeatCardColor,
+  noteSpellShownCards,
   recordJudgeColorGain,
-  resetObfuscatedJudge,
+  resetSpellMoveState,
   takeJudgeCardId,
   takeHiddenZoneCards,
   takeQiDiscardCards
-} from './obfuscated-judge.ts';
+} from './spell-move-judge.ts';
 import { isXinyouCardGain, XINYOU_TAG, xinyouTagExpires } from './xinyou-tag.ts';
 import {
   advanceSeatGridTrace,
@@ -130,7 +130,7 @@ export function installMingpaiController(
       // 断线后一切都要重建：牌堆顺序、判定纠偏、炁的转移状态、牌面标签全部丢掉，
       // 再按本局总牌表把整副牌当作牌堆里的未知牌，最后用场上仍公开的手牌归位。
       dropUntrustedOrder();
-      resetObfuscatedJudge();
+      resetSpellMoveState();
       lastJiaoyuDatas = '';
       resetQiTransferState();
       seatStateStore.resetKnownHands();
@@ -140,7 +140,7 @@ export function installMingpaiController(
       return;
     }
     if (event.type === 'game-ended') {
-      resetObfuscatedJudge();
+      resetSpellMoveState();
       lastJiaoyuDatas = '';
       // 同房间结算/再开不切场景，只能靠协议清空；不要 store.clear() 把 inGame 打成 false，
       // 否则下一帧场景轮询又会当成新的 game-started，并把残留 CardUi 写回引擎。
@@ -153,7 +153,7 @@ export function installMingpaiController(
     }
     if (event.type === 'game-started') {
       // 开局一律丢掉上一局缓存。热重载恢复只留给 game-reconnected。
-      resetObfuscatedJudge();
+      resetSpellMoveState();
       lastJiaoyuDatas = '';
       clearTempZoneGrids();
       resetQiTransferState();
@@ -217,7 +217,7 @@ export function installMingpaiController(
       return;
     }
     if (event.type === 'seat-state-changed' && event.stateId === 0xdf3) {
-      noteObfuscatedSeatColor(event.seatId, Math.trunc(event.value / 100));
+      noteSeatCardColor(event.seatId, Math.trunc(event.value / 100));
     }
     if (event.type === 'seat-state-changed' && event.stateId === QI_STATE_ID) {
       updateQiSeatState(event.seatId, event.value);
@@ -256,7 +256,7 @@ export function installMingpaiController(
         clearPersistentTag(cardId, JIAOYU_TAG);
       });
     }
-    if (event.type === 'phase-changed') noteObfuscatedCurrentSeat(event.seatId);
+    if (event.type === 'phase-changed') noteCurrentTurnSeat(event.seatId);
     if (event.type === 'phase-changed' && xinyouTagExpires(event.phase)) {
       clearAllXinyouTags();
     }
@@ -264,7 +264,7 @@ export function installMingpaiController(
       recordQiTransferSpell(event.seatId, event.targetSeatIds);
     }
     if (event.type === 'spell-targeted') {
-      noteObfuscatedUseSpell(
+      noteSpellShownCards(
         event.spellId,
         event.seatId,
         event.cardIds,
@@ -439,7 +439,7 @@ export function installMingpaiController(
       fromPosition: corrected.fromPosition,
       toPosition: corrected.toPosition
     };
-    if (isObfuscatedSameZoneShow({ ...event, srcSeatId: event.srcSeatId ?? null }) && applySameZoneShow(event)) {
+    if (isInPlaceCardShow({ ...event, srcSeatId: event.srcSeatId ?? null }) && applySameZoneShow(event)) {
       return;
     }
 
@@ -488,7 +488,7 @@ export function installMingpaiController(
     // 从技能临时区、处理区出来时这些牌本来就在明面上，直接用引擎的落位结果。
     const engineMovedCardIds = engine.applyMovement(
       event.spellId === SPELL_3483
-        ? { ...event, pilePackCount: getObfuscated3483PileCount() }
+        ? { ...event, pilePackCount: getSpell3483PileCount() }
         : event,
       recoveredCardIds
     );

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-/** 版本更新提示：展示远程更新信息与打开下载页。 */
-import { onBeforeUnmount, ref } from 'vue';
+/** 版本更新入口：和工具栏按钮同一格式，图标负责检查并打开更新页。 */
+import { computed, onBeforeUnmount, ref } from 'vue';
 import type { UpdateNoticeController, UpdateNoticeSnapshot } from '../../features/update-notice';
 import { getXiaochaoVersion, XIAOCHAO_UPDATE_PAGE_URL } from '../../features/update-notice';
 
@@ -29,6 +29,20 @@ const unsubscribe = props.updateNoticeController?.subscribe((next) => {
 
 onBeforeUnmount(() => unsubscribe?.());
 
+const label = computed(() => {
+  if (checking.value) return '正在检查';
+  if (snapshot.value.hasUpdate) return '去更新';
+  return hint.value || `小抄 ${snapshot.value.currentVersion}`;
+});
+
+const tooltip = computed(() => {
+  if (snapshot.value.hasUpdate && snapshot.value.latestVersion) {
+    return `线上 ${snapshot.value.latestVersion}，打开更新页`;
+  }
+  if (snapshot.value.latestVersion) return `线上 ${snapshot.value.latestVersion}`;
+  return '检查门户上的版本';
+});
+
 function openPage(): void {
   void props.updateNoticeController?.openUpdatePage();
 }
@@ -52,61 +66,38 @@ async function onVersionClick(): Promise<void> {
 </script>
 
 <template>
-  <section class="xiaochao-settings-section" aria-label="小抄版本">
-    <div class="xiaochao-settings-section__body">
-      <div class="xiaochao-version-row">
-        <span>小抄 {{ snapshot.currentVersion }}</span>
-        <button
-          type="button"
-          class="xiaochao-version-row__update"
-          :data-tooltip="snapshot.latestVersion ? `线上 ${snapshot.latestVersion}` : '检查门户上的版本'"
-          @click="onVersionClick"
-        >
-          {{ checking ? '正在检查' : snapshot.hasUpdate ? '有更新' : '检查更新' }}
-        </button>
-        <span v-if="hint">{{ hint }}</span>
-      </div>
-    </div>
-  </section>
+  <button
+    type="button"
+    class="xiaochao-block-entry xiaochao-block-entry--center xiaochao-version-entry"
+    :data-tooltip="tooltip"
+    @click="onVersionClick"
+  >
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        v-if="snapshot.hasUpdate"
+        d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"
+      />
+      <path
+        v-else
+        d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.36-2.64L3 16m0 0h5m-5 0v5M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.36 2.64L21 8m0 0h-5m5 0V3"
+      />
+    </svg>
+    <span>{{ label }}</span>
+  </button>
 </template>
 
 <style scoped>
-.xiaochao-version-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin: 4px 0 2px;
-  color: #f2de9c;
-  font-size: 13px;
-  line-height: 1.4;
+.xiaochao-version-entry {
+  gap: 6px;
 }
-.xiaochao-version-row__update {
-  padding: 1px 7px;
-  border: 1px solid rgba(217, 0, 0, 0.55);
-  border-radius: 10px;
-  background: rgba(217, 0, 0, 0.16);
-  color: #ffb4b4;
-  font-size: 11px;
-  cursor: pointer;
-}
-.xiaochao-version-dialog__lead,
-.xiaochao-version-dialog__notes {
-  margin: 0 0 8px;
-  color: #c9c1b1;
-  font-size: 13px;
-  line-height: 1.45;
-}
-.xiaochao-version-dialog__button {
-  padding: 4px 10px;
-  border: 1px solid rgba(242, 222, 156, 0.45);
-  border-radius: 4px;
-  background: rgba(57, 47, 34, 0.85);
-  color: #f2de9c;
-  cursor: pointer;
-}
-.xiaochao-version-dialog__button--primary {
-  border-color: rgba(242, 222, 156, 0.7);
-  background: rgba(90, 72, 48, 0.95);
+.xiaochao-version-entry svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
 }
 </style>

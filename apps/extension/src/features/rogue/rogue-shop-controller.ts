@@ -17,6 +17,13 @@ type UnknownRecord = Record<string, unknown>;
 /** 集市窗口名，对应 GameEventDispatcher.ShowWindow("RogueJiShiWindow")。 */
 export const ROGUE_SHOP_WINDOW = 'RogueJiShiWindow';
 
+/** 当前场景是山河图地图或山河图对局时，集市才允许打开和改数据。 */
+const SHANHE_SCENE_NAMES = new Set([
+  'RogueSmallMapScene',
+  'RogueLikeBigMapScene',
+  'RogueLikeGameScene'
+]);
+
 /**
  * 集市同步缺 shopData 时，用 RogueLikeDataReq 请求完整山河数据。
  * `0x3f` 为原版默认 dataMark 掩码。
@@ -108,6 +115,30 @@ export function readShopData(payload: UnknownRecord): UnknownRecord | null {
     ?? asRecord(payload.data)
     ?? asRecord(payload.Data);
   return asRecord(allData?.shopData) ?? asRecord(allData?.ShopData);
+}
+
+function sceneLabel(scene: UnknownRecord | null): string {
+  return String(scene?.SceneName ?? scene?.sceneName ?? scene?.name ?? '');
+}
+
+function modeText(scene: UnknownRecord | null, globalObject: LayaRuntimeWindow): string {
+  const parts: unknown[] = [scene?.modeName, scene?.ModeName, scene?.gameModeName];
+  const context = asRecord(globalObject.GameContext)
+    ?? asRecord(globalObject.Laya?.Browser?.window?.GameContext);
+  try {
+    const vo = typeof context?.GetModeVO === 'function' ? asRecord(context.GetModeVO()) : null;
+    parts.push(vo?.ModeName, vo?.modeName, vo?.Name, vo?.name);
+  } catch {
+    // 读不到模式名时只认场景名。
+  }
+  return parts.filter((part) => typeof part === 'string').join(' ');
+}
+
+/** 只认山河图场景或模式名里带山河图。 */
+export function isShanHeTuMode(locator: LayaObjectLocator, globalObject: LayaRuntimeWindow): boolean {
+  const scene = locator.scene();
+  if (SHANHE_SCENE_NAMES.has(sceneLabel(scene))) return true;
+  return modeText(scene, globalObject).includes('山河图');
 }
 
 function isRplotReady(rplot: Record<string, RoguePlotMeta> | null | undefined): boolean {
@@ -293,6 +324,10 @@ export function installRogueShopController(
   }
 
   function openShop(): boolean {
+    if (!isShanHeTuMode(locator, globalObject)) {
+      showToast('只有山河图里才能打开集市');
+      return false;
+    }
     enablePerspectiveFromManager();
     const dispatcher = locator.dispatcher();
     if (!dispatcher) {
@@ -321,6 +356,7 @@ export function installRogueShopController(
 
   function filterMessage(payload: UnknownRecord, className: string): void {
     if (className !== 'decodeRogueLikeDataSync') return;
+    if (!isShanHeTuMode(locator, globalObject)) return;
 
     // ClassName 在外层；allData / dataMark / shopData 由 readShopData / hasRogueShopSyncFlag 解 ProtoObj。
     const shopFlag = hasRogueShopSyncFlag(payload);

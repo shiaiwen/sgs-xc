@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   correctMoveCard,
-  noteObfuscatedUseSpell,
-  resetObfuscatedJudge,
+  noteSpellShownCards,
+  resetSpellMoveState,
   type MoveJudgeInput
-} from '../src/features/mingpai/obfuscated-judge.ts';
+} from '../src/features/mingpai/spell-move-judge.ts';
 import { createSeatStateStore } from '../src/features/seat-display/seat-state-store.ts';
 
 /** 7016 / 7017：自己亮出的牌随后暗置进手牌。 */
@@ -40,8 +40,8 @@ function move(partial: Partial<MoveJudgeInput>): MoveJudgeInput {
 }
 
 test('7016 暗置进手牌时，用自己刚亮出的牌号按顺序补上', () => {
-  resetObfuscatedJudge();
-  noteObfuscatedUseSpell(SELF_HAND_GAIN, 1, [21, 22], 1, [], 0);
+  resetSpellMoveState();
+  noteSpellShownCards(SELF_HAND_GAIN, 1, [21, 22], 1, [], 0);
 
   const first = correctMoveCard(move({
     cardCount: 1, cardIds: [0], spellId: SELF_HAND_GAIN, srcSeatId: 1
@@ -55,8 +55,8 @@ test('7016 暗置进手牌时，用自己刚亮出的牌号按顺序补上', () 
 });
 
 test('别人亮出的 7016 不记入自己的补号表', () => {
-  resetObfuscatedJudge();
-  noteObfuscatedUseSpell(SELF_HAND_GAIN, 2, [31, 32], 1, [], 0);
+  resetSpellMoveState();
+  noteSpellShownCards(SELF_HAND_GAIN, 2, [31, 32], 1, [], 0);
   const gained = correctMoveCard(move({
     cardCount: 1, cardIds: [0], spellId: SELF_HAND_GAIN, srcSeatId: 1
   }), host);

@@ -10,10 +10,14 @@ export interface OfficialCardView {
   ui: UnknownRecord;
   owner: UnknownRecord;
   cardId: number;
+  /** 包住牌面的外框，缩放在这一层，不改游戏牌面自己的比例。 */
+  holder: UnknownRecord;
 }
 
 export const OFFICIAL_CARD_BASE_WIDTH = 93;
 export const OFFICIAL_CARD_BASE_HEIGHT = 130;
+/** 详情牌一律原尺寸画完，再整张缩到一半。 */
+export const OFFICIAL_CARD_DETAIL_SCALE = 0.5;
 
 let cachedCardProvider: { scene: UnknownRecord; provider: UnknownRecord } | null = null;
 
@@ -69,26 +73,56 @@ export function createOfficialCardView(
     ui.mouseEnabled = false;
     ui.mouseThrough = true;
     ui.NeedToolTip = cardId > 0;
-    const actualWidth = Math.max(1, Math.round(width));
-    const actualHeight = Math.max(1, Math.round(height));
-    // size 只改布局盒，牌面仍按 93×130 绘制；缩放必须走 SetActualSize。
-    if (typeof ui.SetActualSize === 'function') call(ui, 'SetActualSize', actualWidth, actualHeight);
-    else call(ui, 'size', actualWidth, actualHeight);
     const x = Number.isFinite(position?.x) ? Number(position!.x) : 0;
     const y = Number.isFinite(position?.y) ? Number(position!.y) : 0;
-    call(ui, 'pos', x, y);
-    const drawHost = resolveDrawHost(host);
-    if (!drawHost) {
-      releaseOfficialCardView({ ui, owner: container, cardId });
+    const holder = createDetailHolder(x, y);
+    if (!holder) {
+      call(container, 'ReturnNormalCardUi', ui);
       return null;
     }
+    call(host, 'addChild', holder);
+    const drawHost = resolveDrawHost(holder);
+    if (!drawHost) {
+      call(holder, 'removeSelf');
+      call(holder, 'destroy', false);
+      releaseOfficialCardView({ ui, owner: container, cardId, holder });
+      return null;
+    }
+    ui.scaleX = 1;
+    ui.scaleY = 1;
+    if (typeof ui.SetActualSize === 'function') call(ui, 'SetActualSize', OFFICIAL_CARD_BASE_WIDTH, OFFICIAL_CARD_BASE_HEIGHT);
+    call(ui, 'pos', 0, 0);
     (ui.Draw as Function).call(ui, drawHost);
     suppressOfficialCardSkillTags(ui);
-    return { ui, owner: container, cardId };
+    return { ui, owner: container, cardId, holder };
   } catch {
     if (ui) releaseOfficialCardView({ ui, owner: container, cardId });
     return null;
   }
+}
+
+/** 详情牌缩完后外框该占的宽高。 */
+export function readOfficialCardBox(view: OfficialCardView): { width: number; height: number } {
+  const scale = Math.abs(Number(view.holder.scaleX) || OFFICIAL_CARD_DETAIL_SCALE);
+  return {
+    width: Math.max(1, Math.round(OFFICIAL_CARD_BASE_WIDTH * scale)),
+    height: Math.max(1, Math.round(OFFICIAL_CARD_BASE_HEIGHT * scale))
+  };
+}
+
+function createDetailHolder(x: number, y: number): UnknownRecord | null {
+  const Sprite = asRecord((globalThis as UnknownRecord).Laya)?.Sprite;
+  if (typeof Sprite !== 'function') return null;
+  const holder = asRecord(new (Sprite as unknown as new () => object)());
+  if (!holder) return null;
+  holder.name = 'xcOfficialCardDetailHolder';
+  holder.mouseEnabled = false;
+  holder.mouseThrough = true;
+  holder.scaleX = OFFICIAL_CARD_DETAIL_SCALE;
+  holder.scaleY = OFFICIAL_CARD_DETAIL_SCALE;
+  call(holder, 'pos', x, y);
+  call(holder, 'size', OFFICIAL_CARD_BASE_WIDTH, OFFICIAL_CARD_BASE_HEIGHT);
+  return holder;
 }
 
 /** 覆盖层不展示牌面自带的技能来源标签；不改写局内手牌对象上的 tagArr1。 */
@@ -244,11 +278,16 @@ export function releaseOfficialCardView(view: OfficialCardView | null | undefine
     call(view.ui, 'clear');
     call(view.ui, 'removeSelf');
     view.ui.alpha = 1;
+    view.ui.scaleX = 1;
+    view.ui.scaleY = 1;
     view.ui.mouseEnabled = true;
     view.ui.mouseThrough = false;
     call(view.ui, 'AddCardTag');
     view.ui.Card = null;
     call(view.ui, 'UpdateTag');
+    detachOfficialDrawLayer(view.holder);
+    call(view.holder, 'removeSelf');
+    if (view.holder.name === 'xcOfficialCardDetailHolder') call(view.holder, 'destroy', false);
     call(view.owner, 'ReturnNormalCardUi', view.ui);
   } catch {
     // 场景切换时对象池可能已释放。

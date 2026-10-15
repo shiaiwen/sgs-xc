@@ -78,9 +78,11 @@ const props = defineProps<{
   rogueController: RogueController | null;
   updateNoticeController: UpdateNoticeController | null;
 }>();
-/** 折叠态沿用 app.bak 的单行状态胶囊。 */
-const COLLAPSED_PANEL_HEIGHT = '48px';
-const COLLAPSED_PANEL_WIDTH = '120px';
+/** 折叠态只保留标题栏，做成状态胶囊。 */
+const COLLAPSED_PANEL_HEIGHT = '34px';
+const COLLAPSED_PANEL_WIDTH = '96px';
+const EXPANDED_PANEL_MIN_HEIGHT = 160;
+const DEFAULT_EXPANDED_PANEL_HEIGHT = 640;
 const savedTabId = props.configStore.get('panel.activeTab');
 const initialTabId: XiaochaoPanelTabId = XIAOCHAO_PANEL_TABS.some((tab) => tab.id === savedTabId)
   ? savedTabId
@@ -98,9 +100,9 @@ const panelElement = ref<HTMLElement>();
 const isDockedRight = ref(props.configStore.get('panel.dockedRight'));
 const isDockPreviewVisible = ref(false);
 const isDockPreviewActive = ref(false);
-const toolsHasUpdate = ref(props.updateNoticeController?.getSnapshot().hasUpdate ?? false);
+const othersHasUpdate = ref(props.updateNoticeController?.getSnapshot().hasUpdate ?? false);
 const stopUpdateNotice = props.updateNoticeController?.subscribe((snapshot) => {
-  toolsHasUpdate.value = snapshot.hasUpdate;
+  othersHasUpdate.value = snapshot.hasUpdate;
 });
 const isResetDialogOpen = ref(false);
 
@@ -118,14 +120,16 @@ let stopResizing: (() => void) | undefined;
 onMounted(() => {
   const shell = panelElement.value;
   if (!shell) return;
+  const initialHeight = resolveExpandedHeight(props.layout.height);
   setOwnedPanelLayout(shell, {
     top: `${props.layout.top}px`,
     right: `${props.layout.right}px`,
     width: props.layout.width,
-    height: `${props.layout.height}px`
+    height: `${initialHeight}px`,
+    maxHeight: 'none'
   });
   shell.style.fontFamily = props.layout.fontFamily;
-  expandedHeight = `${props.layout.height}px`;
+  expandedHeight = `${initialHeight}px`;
   expandedWidth = props.layout.width;
   if (isDockedRight.value) applyRightDock(shell);
   else restoreSavedPosition(shell);
@@ -145,7 +149,10 @@ function toggleCollapsed(): void {
   const shell = panelElement.value;
   if (!shell) return;
   if (!panel.isCollapsed.value) {
-    expandedHeight = getOwnedPanelLayoutValue(shell, 'height') || `${shell.offsetHeight}px`;
+    if (!isDockedRight.value) {
+      const currentHeight = getOwnedPanelLayoutValue(shell, 'height') || `${shell.offsetHeight}px`;
+      if (currentHeight !== '100vh') expandedHeight = currentHeight;
+    }
     expandedWidth = getOwnedPanelLayoutValue(shell, 'width') || props.layout.width;
     applyCollapsedDimensions(shell);
   } else {
@@ -155,7 +162,7 @@ function toggleCollapsed(): void {
       minWidth: undefined,
       maxWidth: undefined,
       minHeight: undefined,
-      maxHeight: undefined
+      maxHeight: 'none'
     });
   }
   panel.toggleCollapsed();
@@ -235,7 +242,12 @@ function handleDragStart(event: PointerEvent): void {
     if (!dragStarted && !hasExceededDragThreshold(deltaX, deltaY)) return;
     if (!dragStarted) {
       dragStarted = true;
-      if (startedDocked) detachFromRightDock(shell, moveEvent.clientX, moveEvent.clientY);
+      if (startedDocked) {
+        // 先离开贴边再收成胶囊，避免折叠时又被拉回右边并套上整屏高度。
+        isDockedRight.value = false;
+        if (!panel.isCollapsed.value) toggleCollapsed();
+        detachFromRightDock(shell, moveEvent.clientX, moveEvent.clientY);
+      }
       setOwnedPanelLayout(shell, { right: 'auto' });
       shell.classList.add('xiaochao-panel--dragging');
       isDockPreviewVisible.value = true;
@@ -270,9 +282,11 @@ function handleDragStart(event: PointerEvent): void {
     if (!dragStarted) return stopDragging?.();
     const bounds = shell.getBoundingClientRect();
     if (shouldDockToRight(upEvent.clientX, bounds.right, window.innerWidth)) {
+      // 拖到右边时如果是胶囊，先展开再固定。
+      if (panel.isCollapsed.value) panel.toggleCollapsed();
       applyRightDock(shell);
     } else {
-      persistFloatingPosition(shell);
+      finishAwayFromDock(shell, upEvent.clientX, upEvent.clientY);
     }
     stopDragging?.();
   };
@@ -290,8 +304,26 @@ function handleDragStart(event: PointerEvent): void {
     stopDragging = undefined;
   };
   const handleInterruptedDrag = () => {
-    if (dragStarted) persistFloatingPosition(shell);
+    if (dragStarted) finishAwayFromDock(shell, latestMoveEvent?.clientX ?? startX, latestMoveEvent?.clientY ?? startY);
     stopDragging?.();
+  };
+  /** 从右侧拖开、没有再次吸附时，收成标题胶囊并停在指针附近。 */
+  const finishAwayFromDock = (target: HTMLElement, pointerX: number, pointerY: number) => {
+    if (startedDocked && !panel.isCollapsed.value) toggleCollapsed();
+    if (startedDocked && panel.isCollapsed.value) {
+      applyCollapsedDimensions(target);
+      const position = constrainPanelPosition(
+        { left: pointerX - target.offsetWidth / 2, top: pointerY - 15 },
+        { width: target.offsetWidth, height: target.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight }
+      );
+      setOwnedPanelLayout(target, {
+        left: `${position.left}px`,
+        top: `${position.top}px`
+      });
+    }
+    persistFloatingPosition(target);
+    if (panel.isCollapsed.value) applyCollapsedDimensions(target);
   };
   window.addEventListener('pointermove', handleMove);
   window.addEventListener('pointerup', handleUp, { once: true });
@@ -302,12 +334,22 @@ function handleDragStart(event: PointerEvent): void {
 
 function applyRightDock(shell: HTMLElement): void {
   isDockedRight.value = true;
-  setOwnedPanelLayout(shell, {
-    left: 'auto',
-    right: '0px',
-    top: '0px',
-    height: panel.isCollapsed.value ? COLLAPSED_PANEL_HEIGHT : '100vh'
-  });
+  if (panel.isCollapsed.value) {
+    applyCollapsedDimensions(shell);
+    setOwnedPanelLayout(shell, { left: 'auto', right: '0px', top: '0px' });
+  } else {
+    setOwnedPanelLayout(shell, {
+      left: 'auto',
+      right: '0px',
+      top: '0px',
+      width: expandedWidth,
+      height: '100vh',
+      minWidth: undefined,
+      maxWidth: undefined,
+      minHeight: undefined,
+      maxHeight: undefined
+    });
+  }
   props.configStore.set('panel.dockedRight', true);
   syncDockedGameLayout(shell);
 }
@@ -315,13 +357,20 @@ function applyRightDock(shell: HTMLElement): void {
 function detachFromRightDock(shell: HTMLElement, pointerX: number, pointerY: number): void {
   isDockedRight.value = false;
   const width = shell.offsetWidth;
-  const height = Math.min(props.layout.height, window.innerHeight);
   // 必须先归还游戏宽度，再把面板切回悬浮坐标。
   restoreFullGameArea();
+  if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
+  else {
+    const savedHeight = Number.parseFloat(expandedHeight) || 0;
+    const height = Math.min(savedHeight > 0 ? savedHeight : 320, window.innerHeight);
+    setOwnedPanelLayout(shell, {
+      width: expandedWidth,
+      height: `${height}px`,
+      maxHeight: 'none'
+    });
+  }
   setOwnedPanelLayout(shell, {
     right: 'auto',
-    width: expandedWidth,
-    height: `${height}px`,
     left: `${Math.max(0, pointerX - width / 2)}px`,
     top: `${Math.max(0, pointerY - 15)}px`
   });
@@ -358,6 +407,7 @@ function keepPanelInsideViewport(): void {
   const shell = panelElement.value;
   if (!shell) return;
   if (isDockedRight.value) return applyRightDock(shell);
+  if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
   const bounds = shell.getBoundingClientRect();
   const position = constrainPanelPosition(bounds, bounds, {
     width: window.innerWidth,
@@ -375,21 +425,35 @@ function syncDockedGameLayout(shell: HTMLElement): void {
   }
 }
 
+function resolveExpandedHeight(savedHeight: number): number {
+  const preferred = savedHeight >= 480 ? savedHeight : DEFAULT_EXPANDED_PANEL_HEIGHT;
+  return Math.min(preferred, Math.max(EXPANDED_PANEL_MIN_HEIGHT, window.innerHeight - 16));
+}
+
+function rememberExpandedHeight(heightPx: number): void {
+  expandedHeight = `${heightPx}px`;
+  try {
+    localStorage.setItem('XC::panelExpandedHeight', String(Math.round(heightPx)));
+  } catch {
+    // 写不进本地存储时，这次会话里仍然使用刚调好的高度。
+  }
+}
+
 /** 调整面板高度；限制在标题栏以下和当前窗口可见区域以内。 */
 function handleResizeStart(event: PointerEvent): void {
-  if (event.button !== 0 || !panelElement.value) return;
+  if (event.button !== 0 || !panelElement.value || isDockedRight.value) return;
   const shell = panelElement.value;
   const startY = event.clientY;
   const startHeight = shell.offsetHeight;
-  const maximumHeight = Math.max(160, window.innerHeight - shell.offsetTop);
+  const maximumHeight = Math.max(EXPANDED_PANEL_MIN_HEIGHT, window.innerHeight - shell.offsetTop);
 
   const handleMove = (moveEvent: PointerEvent) => {
     const nextHeight = Math.min(
       maximumHeight,
-      Math.max(160, startHeight + moveEvent.clientY - startY)
+      Math.max(EXPANDED_PANEL_MIN_HEIGHT, startHeight + moveEvent.clientY - startY)
     );
-    expandedHeight = `${nextHeight}px`;
-    setOwnedPanelLayout(shell, { height: expandedHeight });
+    rememberExpandedHeight(nextHeight);
+    setOwnedPanelLayout(shell, { height: expandedHeight, maxHeight: 'none' });
   };
   const handleUp = () => stopResizing?.();
   stopResizing = () => {
@@ -426,7 +490,7 @@ function handleResizeStart(event: PointerEvent): void {
     <PanelTabs
       v-show="!isCollapsed"
       :active-tab-id="panel.activeTabId.value"
-      :tools-has-update="toolsHasUpdate"
+      :others-has-update="othersHasUpdate"
       @select="panel.selectTab"
     />
     <main
@@ -446,14 +510,14 @@ function handleResizeStart(event: PointerEvent): void {
       <GameAssistSettingsSection :config-store="configStore" />
       <div class="xiaochao-quick-tools" aria-label="快捷工具">
         <BlockSettingsSection :config-store="configStore" />
-        <ClearRedDotSection :clear-red-dots="clearRedDots" />
         <SkinBackgroundSettingsSection :config-store="configStore" />
         <AutoTaskSettingsSection :config-store="configStore" />
+        <ClearRedDotSection :clear-red-dots="clearRedDots" />
       </div>
     </main>
     <main
-      v-show="!isCollapsed && panel.activeTabId.value === 'rogue'"
-      class="xiaochao-panel__content xiaochao-rogue-entry"
+      v-show="!isCollapsed && panel.activeTabId.value === 'others'"
+      class="xiaochao-panel__content xiaochao-others-entry"
     >
       <RogueSettingsSection
         :config-store="configStore"
@@ -461,14 +525,9 @@ function handleResizeStart(event: PointerEvent): void {
         :get-shop-preview="() => rogueController?.getShopPreview() ?? []"
         :subscribe-shop-preview="(listener) => rogueController?.subscribeShopPreview(listener) ?? (() => {})"
       />
-    </main>
-    <main
-      v-show="!isCollapsed && panel.activeTabId.value === 'tools'"
-      class="xiaochao-panel__content xiaochao-tools-entry"
-    >
-      <VersionNoticeSection :update-notice-controller="updateNoticeController" />
       <section class="xiaochao-settings-section" aria-label="工具栏">
-        <div class="xiaochao-settings-section__body xiaochao-tools-entry__actions">
+        <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">
+          <VersionNoticeSection :update-notice-controller="updateNoticeController" />
           <GuanxingEntry :platform="platform" />
           <button
             type="button"
@@ -492,10 +551,10 @@ function handleResizeStart(event: PointerEvent): void {
     <main
       id="iframe-source"
       class="xiaochao-panel__content"
-      :style="{ display: isCollapsed || panel.activeTabId.value === 'cards' || panel.activeTabId.value === 'tools' || panel.activeTabId.value === 'rogue' ? 'none' : '' }"
+      :style="{ display: isCollapsed || panel.activeTabId.value === 'cards' || panel.activeTabId.value === 'others' ? 'none' : '' }"
     />
     <div
-      v-show="!isCollapsed"
+      v-show="!isCollapsed && !isDockedRight"
       id="frame-resize-handle"
       data-tooltip="拖动调整高度"
       @pointerdown.stop="handleResizeStart"

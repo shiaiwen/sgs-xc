@@ -45,7 +45,7 @@ const VIEWPORT_MARGIN = 12;
 const STRIP_OFFSET_X = 2;
 const STRIP_OFFSET_Y = 10;
 const POPUP_OFFSET = 14;
-const POPUP_CARD_SCALE = 0.85;
+const POPUP_CARD_SCALE = 0.5;
 const POPUP_PADDING = 8;
 const POPUP_TITLE_HEIGHT = 26;
 const HIDE_DELAY_MS = 120;
@@ -432,9 +432,15 @@ export function installNativeMingpaiPreviewController(
           const row = Math.floor(index / section.columns);
           const x = POPUP_PADDING + column * (cardWidth + cardGap);
           const y = top + POPUP_TITLE_HEIGHT + row * (cardHeight + cardGap);
-          const view = createOfficialCardView(created, cardId, cardWidth, cardHeight);
+          const view = createOfficialCardView(
+            created,
+            cardId,
+            OFFICIAL_CARD_BASE_WIDTH,
+            OFFICIAL_CARD_BASE_HEIGHT,
+            undefined,
+            { x, y }
+          );
           if (view) {
-            call(view.ui, 'pos', x, y);
             popupCards.push(view);
           } else {
             const tile = createTile(cardId, section.possible, entry.tagsByCardId.get(cardId) ?? []);

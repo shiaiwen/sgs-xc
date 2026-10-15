@@ -76,9 +76,11 @@ function showTooltip(target) {
   if (!nextText) return;
   activeTarget = target;
   text.value = nextText;
-  moveIntoTopLayerHost(target);
   isVisible.value = true;
-  nextTick(refreshPosition);
+  nextTick(() => {
+    moveIntoTopLayerHost(target);
+    refreshPosition();
+  });
 }
 
 /** 模态 dialog 位于浏览器顶层，body 下的提示层会被盖住，需随目标进入同一个 dialog。 */
@@ -116,7 +118,7 @@ function refreshPosition() {
 <template>
   <Teleport to="body">
     <div
-      v-show="isVisible"
+      v-if="isVisible"
       ref="tooltipElement"
       class="xiaochao-tooltip"
       :class="`xiaochao-tooltip--${placement}`"

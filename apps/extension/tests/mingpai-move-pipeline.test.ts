@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   CardSlot,
   CardZone,
+  DRAW_PILE_TOP,
   initCardGraph
 } from '../src/features/mingpai/graph/card-graph.ts';
 import { applyGraphMove, type GraphMoveMessage } from '../src/features/mingpai/graph/move-pipeline.ts';
@@ -97,6 +98,34 @@ test('手牌回牌堆先把牌堆未知段打包，再把回来的牌挂到那�
   assert.equal(result.handling, 'hand-to-pile');
   assert.equal(result.moved.length, 1);
   assert.equal(pile.cards.length, 3);
+});
+
+test('从牌堆顶摸牌不抽走放在牌堆底的牌', () => {
+  freshGraph();
+  const pile = new CardZone(255, 1);
+  const top = new CardSlot(0, 201, '1-255');
+  const bottom = new CardSlot(301, 301, '1-255');
+  pile.cards.push(top, bottom);
+  const host = globalThis as { Uc1cryZVg?: { yKZ6cyV?: number } };
+  const previous = host.Uc1cryZVg;
+  host.Uc1cryZVg = { yKZ6cyV: DRAW_PILE_TOP };
+  try {
+    const result = applyGraphMove(move({
+      fromId: 255,
+      fromZone: 1,
+      fromPosition: DRAW_PILE_TOP,
+      toId: 1,
+      toZone: 5,
+      moveType: 1,
+      cardCount: 1,
+      cardIds: [401]
+    }));
+    assert.equal(result.handling, 'zone-move');
+    assert.equal(pile.cards.includes(bottom), true);
+    assert.equal(pile.cards.at(-1)?.key, 301);
+  } finally {
+    host.Uc1cryZVg = previous;
+  }
 });
 
 test('3208 从技能临时区取回时先打包其余牌', () => {

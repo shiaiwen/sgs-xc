@@ -61,12 +61,21 @@ const POST_GAME_THROTTLE_MS = 30000;
 const MANAGER_WAIT_ATTEMPTS = 30;
 const MANAGER_WAIT_INTERVAL = 1000;
 const SCHEDULE_DELAY_MS = 2000;
-const DAY_POLL_INTERVAL_MS = 60_000;
+const ACCOUNT_POLL_MS = 1000;
 const LAST_TASK_DATE_KEY = 'XC::lastTaskDate';
 
+function isUsableAccountId(value: unknown): boolean {
+  if (value == null) return false;
+  const text = String(value).trim();
+  return text.length > 0 && text !== '0';
+}
+
+function isPresent(value: unknown): boolean {
+  return value != null && String(value).trim().length > 0;
+}
+
 /**
- * 自动领取：登录 / 局结束 / 开关 / 跨天后调度一轮任务、活动、邮件、福利等。
- * 调度登录、局结束和跨天任务。
+ * 自动领取：账号资料到达、局结束、开关、心跳跨天后调度一轮任务、活动、邮件、福利等。
  */
 export function installAutoTaskController(
   configStore: XiaochaoConfigStore,
@@ -96,6 +105,7 @@ export function installAutoTaskController(
   let pending: AutoTaskPayload | null = null;
   let postGameScheduledAt = 0;
   let lastDayIndex = readStoredDayIndex();
+  let loginAccountId = '';
 
   const runner = createAutoTaskRunner({
     locator,
@@ -246,6 +256,35 @@ export function installAutoTaskController(
     if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule(reason, true);
   }
 
+  function readArrivedAccountId(): string {
+    try {
+      const ctor = globalObject.Laya?.ClassUtils?.getClass?.('UserData') as { Self?: unknown } | undefined;
+      const self = ctor?.Self;
+      if (!self || typeof self !== 'object') return '';
+      const record = self as Record<string, unknown>;
+      const id = record.clientId ?? record.ClientId ?? record.ClientID;
+      const nickname = record.nickname ?? record.NickName;
+      if (!isUsableAccountId(id) || !isPresent(nickname)) return '';
+      return String(id).trim();
+    } catch {
+      return '';
+    }
+  }
+
+  // 账号资料到了领一轮。同一账号再到达不重复领，换号再领。
+  // 总开关关着只记住账号，不领。管理器未就绪由调度自己等，避免启动时再领一轮。
+  function noteAccountArrival(): void {
+    const id = readArrivedAccountId();
+    if (!id || id === loginAccountId) return;
+    loginAccountId = id;
+    if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('login', true);
+  }
+
+  function watchAccount(): void {
+    noteAccountArrival();
+    tasks.later(watchAccount, ACCOUNT_POLL_MS);
+  }
+
   function onGameEnded(): void {
     if (!configStore.get(AUTO_TASK_ENABLED_KEY)) return;
     const day = beijingDayIndex(now());
@@ -258,13 +297,12 @@ export function installAutoTaskController(
     }
   }
 
-  // 登录：管理器就绪后触发一轮领取。
-  void tasks.poll(() => managersReady() || null, Infinity, 1000).then((ready) => {
-    if (ready && configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('login', true);
-  });
+  watchAccount();
 
   unsubscribes.push(gameEvents.subscribe((event) => {
     if (event.type === 'game-ended') onGameEnded();
+    // 心跳到达后按北京时间看日期。变了才领，并写入 XC::lastTaskDate。
+    if (event.type === 'heart-alive') onCrossDay('heartbeat');
   }));
 
   ALL_AUTO_TASK_KEYS.forEach((key) => {
@@ -279,10 +317,6 @@ export function installAutoTaskController(
       }
     }));
   });
-
-  // 跨天：每分钟查一次北京时间日期（替代心跳 MsgHeartAliveRep）。
-  const dayTimer = setInterval(() => onCrossDay('heartbeat'), DAY_POLL_INTERVAL_MS);
-  unsubscribes.push(() => clearInterval(dayTimer));
 
   watchSceneSwitch(locator, patcher, tasks, () => {
     if (configStore.get(AUTO_TASK_ENABLED_KEY)) runner.scheduleLowBeanFree('scene');

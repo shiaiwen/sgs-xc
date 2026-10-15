@@ -5,6 +5,10 @@
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import {
   createOfficialCardView,
+  OFFICIAL_CARD_BASE_HEIGHT,
+  OFFICIAL_CARD_BASE_WIDTH,
+  OFFICIAL_CARD_DETAIL_SCALE,
+  readOfficialCardBox,
   releaseOfficialCardView,
   type OfficialCardView
 } from '../cards/official-card-renderer.ts';
@@ -78,32 +82,36 @@ export function installNativeRecentCardController(
     const enabled = configStore.get('display.deckHudEnabled');
     const snapshot = recentCardStore.getSnapshot();
     const cardId = enabled ? Number(snapshot.displayedCardId || 0) : 0;
-    const roundHeight = Math.max(43, Number(roundInfo.height || 43));
-    const totalHeight = roundHeight + 24;
-    const scale = Math.max(.5, Math.min(.68, totalHeight / 130));
-    const width = Math.ceil(93 * scale);
-    const height = Math.ceil(130 * scale);
+    if (displayedCardId !== cardId) {
+      clearCard();
+      if (cardId > 0) cardView = createOfficialCardView(root, cardId, OFFICIAL_CARD_BASE_WIDTH, OFFICIAL_CARD_BASE_HEIGHT, nextScene);
+      displayedCardId = cardView ? cardId : 0;
+    }
+    const face = cardView ? readOfficialCardBox(cardView) : {
+      width: Math.round(OFFICIAL_CARD_BASE_WIDTH * OFFICIAL_CARD_DETAIL_SCALE),
+      height: Math.round(OFFICIAL_CARD_BASE_HEIGHT * OFFICIAL_CARD_DETAIL_SCALE)
+    };
+    const width = face.width;
+    const height = face.height;
     const x = Number(roundInfo.x || 0) - width - 5;
     const y = Number(roundInfo.y || 0);
     const modeText = snapshot.displayMode === 'current' ? '当前' : '玩家';
     root.visible = enabled;
+    root.scaleX = 1;
+    root.scaleY = 1;
     const layoutSignature = `${x}:${y}:${width}:${height}`;
-    if (lastLayoutSignature !== layoutSignature) {
+    const layoutChanged = lastLayoutSignature !== layoutSignature;
+    if (layoutChanged) {
       call(root, 'pos', x, y);
       call(root, 'size', width, height);
       lastLayoutSignature = layoutSignature;
     }
 
-    if (displayedCardId !== cardId) {
-      clearCard();
-      if (cardId > 0) cardView = createOfficialCardView(root, cardId, width, height, nextScene);
-      displayedCardId = cardView ? cardId : 0;
-    }
-    if (lastModeText !== modeText || !placeholder || !label) {
-      placeholder = updatePlaceholder(root, placeholder, `${modeText}\n用牌`, width, height);
-      label = updateModeLabel(root, label, modeText, width, height);
+    if (layoutChanged || lastModeText !== modeText || !placeholder) {
+      placeholder = updatePlaceholder(root, placeholder, modeText, width, height);
       lastModeText = modeText;
     }
+    if (label) label.visible = false;
     hitArea = updateHitArea(root, hitArea, width, height, () => {
       const nextMode = recentCardStore.getSnapshot().displayMode === 'current' ? 'player' : 'current';
       recentCardStore.setDisplayMode(nextMode);
@@ -111,7 +119,7 @@ export function installNativeRecentCardController(
       sync();
     });
     if (placeholder) placeholder.visible = !cardView;
-    if (label) label.visible = Boolean(cardView);
+    if (label) label.visible = false;
   };
 
   const stopStore = recentCardStore.subscribe(sync);
@@ -202,7 +210,7 @@ function updateModeLabel(host: UnknownRecord, existing: UnknownRecord | null, te
     call(textNode, 'pos', 0, 0);
   }
   call(label, 'size', labelWidth, labelHeight);
-  call(label, 'pos', -Math.max(3, Math.round(Math.min(cardWidth, cardHeight) * .05)), Math.max(0, cardHeight - labelHeight - 6));
+  call(label, 'pos', 2, Math.max(0, cardHeight - labelHeight - 4));
   return label;
 }
 

@@ -362,8 +362,11 @@ function sameZoneShow(move: GraphMoveMessage): GraphMoveResult {
 function ordinaryZoneMove(move: GraphMoveMessage): GraphMoveResult {
   const source = sourceZone(move);
   const target = targetZone(move);
+  // 顶、底已经标明时按那一头取。牌号齐全时再套布局下标，会把「从顶摸」改成从数组末尾抽，
+  // 观星放在牌堆底的牌就会被摸走。
   if (move.fromZone === PILE_ZONE && move.toZone === 5 && move.moveType === DRAW_TO_HAND_MOVE_TYPE
-    && move.cardCount > 0 && positiveCount(move.cardIds) === move.cardCount) {
+    && move.cardCount > 0 && positiveCount(move.cardIds) === move.cardCount
+    && move.fromPosition !== DRAW_PILE_TOP && move.fromPosition !== DRAW_PILE_BOTTOM) {
     const anchor = readDealAnchorPosition();
     if (anchor !== null) source.pos = anchor;
   }

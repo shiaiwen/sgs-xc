@@ -37,7 +37,7 @@ export const ROGUE_SWITCH_SETTINGS: readonly RogueSwitchSetting[] = [
 
 /** 打开山河图集市窗口。 */
 export const ROGUE_OPEN_SHOP_LABEL = '打开集市';
-export const ROGUE_OPEN_SHOP_TOOLTIP = '打开山河图集市窗口（RogueJiShiWindow）';
+export const ROGUE_OPEN_SHOP_TOOLTIP = '只在山河图里打开集市窗口';
 
 /** 「集市预览」区域标题。 */
 export const ROGUE_SHOP_PREVIEW_LABEL = '集市透视';

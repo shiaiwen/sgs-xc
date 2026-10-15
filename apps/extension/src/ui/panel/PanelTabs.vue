@@ -1,7 +1,7 @@
 <script setup>
 /**
- * 主面板一级 Tab：常规 / 山河图 / 工具。
- * 工具 Tab 在有版本更新时可显示高亮（toolsHasUpdate）。
+ * 主面板一级 Tab：常规 / 其他。
+ * “其他”页在有版本更新时可显示高亮（othersHasUpdate）。
  */
 import { XIAOCHAO_PANEL_TABS } from './panel-model';
 
@@ -10,7 +10,7 @@ defineProps({
     type: String,
     required: true,
   },
-  toolsHasUpdate: {
+  othersHasUpdate: {
     type: Boolean,
     default: false,
   },
@@ -34,7 +34,7 @@ defineEmits(['select']);
       :aria-selected="tab.id === activeTabId"
       :class="{
         active: tab.id === activeTabId,
-        'xc-main-tab--update': tab.id === 'tools' && toolsHasUpdate
+        'xc-main-tab--update': tab.id === 'others' && othersHasUpdate
       }"
       @click="$emit('select', tab.id)"
     >

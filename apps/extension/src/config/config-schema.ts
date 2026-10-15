@@ -90,14 +90,16 @@ const booleanDefinition = (
 
 const PANEL_TAB_LABELS: Record<string, XiaochaoPanelTabId> = {
   cards: 'cards',
-  rogue: 'rogue',
+  others: 'others',
+  rogue: 'others',
+  tools: 'others',
   settings: 'cards',
-  tools: 'tools',
   卡牌: 'cards',
   常规: 'cards',
-  山河图: 'rogue',
+  山河图: 'others',
   配置: 'cards',
-  工具: 'tools'
+  工具: 'others',
+  其他: 'others'
 };
 
 /** 所有配置键、默认值、旧键迁移和输入校验的唯一声明位置。 */

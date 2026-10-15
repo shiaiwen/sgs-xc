@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   correctMoveCard,
-  isObfuscatedSameZoneShow,
+  isInPlaceCardShow,
   judgeOptTarget,
   judgeSpellOpt,
-  noteObfuscatedSeatColor,
-  resetObfuscatedJudge
-} from '../src/features/mingpai/obfuscated-judge.ts';
+  noteSeatCardColor,
+  resetSpellMoveState
+} from '../src/features/mingpai/spell-move-judge.ts';
 
 const host = {
   myId: 0,
@@ -18,7 +18,7 @@ const host = {
   handCardIds: () => []
 };
 
-function move(partial: Partial<import('../src/features/mingpai/obfuscated-judge.ts').MoveJudgeInput>): import('../src/features/mingpai/obfuscated-judge.ts').MoveJudgeInput {
+function move(partial: Partial<import('../src/features/mingpai/spell-move-judge.ts').MoveJudgeInput>): import('../src/features/mingpai/spell-move-judge.ts').MoveJudgeInput {
   return {
     cardCount: 1,
     cardIds: [],
@@ -38,7 +38,7 @@ function move(partial: Partial<import('../src/features/mingpai/obfuscated-judge.
 }
 
 test('整段看牌记入目标手牌', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const reveals = judgeOptTarget({
     spellId: 4,
     param: 0,
@@ -55,7 +55,7 @@ test('整段看牌记入目标手牌', () => {
 });
 
 test('目标不是牌堆时，放到牌堆顶的看牌不进手牌', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const reveals = judgeOptTarget({
     spellId: 0xf3f,
     param: 0,
@@ -71,8 +71,8 @@ test('目标不是牌堆时，放到牌堆顶的看牌不进手牌', () => {
 });
 
 test('3571 暗置回手时，只补仍在展示区且颜色相符的牌', () => {
-  resetObfuscatedJudge();
-  noteObfuscatedSeatColor(2, 1);
+  resetSpellMoveState();
+  noteSeatCardColor(2, 1);
   correctMoveCard(move({
     cardCount: 1,
     cardIds: [11],
@@ -99,14 +99,14 @@ test('3571 暗置回手时，只补仍在展示区且颜色相符的牌', () => 
 });
 
 test('操作回报里展示自己的手牌', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const reveals = judgeSpellOpt(0xe4b, 0, 1, [8, 9]);
   assert.equal(reveals[0]?.zone, 'hand');
   assert.deepEqual(reveals[0]?.cardIds, [8, 9]);
 });
 
 test('3694 放进牌堆的牌不记成明牌，位置改到底', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const moved = correctMoveCard(move({
     cardCount: 1,
     cardIds: [8],
@@ -122,7 +122,7 @@ test('3694 放进牌堆的牌不记成明牌，位置改到底', () => {
 });
 
 test('3483 从临时区进牌堆时，顶底对调，暗牌不沿用手牌号', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const moved = correctMoveCard(move({
     cardCount: 1,
     cardIds: [0],
@@ -138,7 +138,7 @@ test('3483 从临时区进牌堆时，顶底对调，暗牌不沿用手牌号', 
 });
 
 test('牌堆上换了位置不算原地展示', () => {
-  const shown = isObfuscatedSameZoneShow(move({
+  const shown = isInPlaceCardShow(move({
     fromId: 255,
     toId: 255,
     fromZone: 1,

@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   correctMoveCard,
-  noteObfuscatedSeatColor,
+  noteSeatCardColor,
   recordJudgeColorGain,
-  resetObfuscatedJudge,
+  resetSpellMoveState,
   type MoveJudgeInput
-} from '../src/features/mingpai/obfuscated-judge.ts';
+} from '../src/features/mingpai/spell-move-judge.ts';
 
 /** 椒遇：判定牌也按座位颜色回手，技能号由宿主放宽。 */
 const JIAOYU = 8801;
@@ -41,8 +41,8 @@ function move(partial: Partial<MoveJudgeInput>): MoveJudgeInput {
 }
 
 test('宿主放宽后，椒遇的判定牌也按颜色补回手牌', () => {
-  resetObfuscatedJudge();
-  noteObfuscatedSeatColor(2, 1);
+  resetSpellMoveState();
+  noteSeatCardColor(2, 1);
   correctMoveCard(move({
     cardCount: 1,
     cardIds: [11],
@@ -69,8 +69,8 @@ test('宿主放宽后，椒遇的判定牌也按颜色补回手牌', () => {
 });
 
 test('没有放宽的宿主只认 3571，椒遇的判定牌补不回来', () => {
-  resetObfuscatedJudge();
-  noteObfuscatedSeatColor(2, 1);
+  resetSpellMoveState();
+  noteSeatCardColor(2, 1);
   const strictHost = { ...host, isJudgeRecoverySpell: undefined };
   correctMoveCard(move({
     cardCount: 1,
@@ -98,8 +98,8 @@ test('没有放宽的宿主只认 3571，椒遇的判定牌补不回来', () => 
 });
 
 test('判定牌进展示区不看 MoveType，回手时仍按颜色补号', () => {
-  resetObfuscatedJudge();
-  noteObfuscatedSeatColor(2, 1);
+  resetSpellMoveState();
+  noteSeatCardColor(2, 1);
   correctMoveCard(move({
     cardCount: 1,
     cardIds: [11],
@@ -126,7 +126,7 @@ test('判定牌进展示区不看 MoveType，回手时仍按颜色补号', () =>
 });
 
 test('技能私有数据直接给出判定牌号时，回手不再依赖颜色', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   const gainedCardId = recordJudgeColorGain(2, [1, 11]);
   assert.equal(gainedCardId, 11);
   const gained = correctMoveCard(move({
@@ -144,7 +144,7 @@ test('技能私有数据直接给出判定牌号时，回手不再依赖颜色',
 });
 
 test('私有数据只有颜色时，回手退回展示区里剩下的判定牌', () => {
-  resetObfuscatedJudge();
+  resetSpellMoveState();
   assert.equal(recordJudgeColorGain(2, [1]), null);
   const gained = correctMoveCard(move({
     cardCount: 1,

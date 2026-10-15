@@ -52,7 +52,7 @@ const BUTTON_GAP = 8;
 const BUTTON_RADIUS = 4;
 const BUTTON_FONT_SIZE = 12;
 const BUTTON_ROW_GAP = 2;
-const POPUP_CARD_SCALE = 0.72;
+const POPUP_CARD_SCALE = 0.5;
 const POPUP_PADDING = 10;
 const POPUP_MAX_WIDTH = 740;
 const POPUP_TITLE_HEIGHT = 29;
@@ -365,8 +365,8 @@ function createCardListPopup(
       const view = createOfficialCardView(
         popup,
         cardId,
-        cardWidth,
-        cardHeight,
+        OFFICIAL_CARD_BASE_WIDTH,
+        OFFICIAL_CARD_BASE_HEIGHT,
         scene,
         { x: POPUP_PADDING + overlapGap * index, y: POPUP_TITLE_HEIGHT }
       );

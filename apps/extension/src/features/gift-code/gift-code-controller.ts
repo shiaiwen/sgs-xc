@@ -27,14 +27,44 @@ export interface GiftCodeControllerOptions {
 const DEFAULT_ENDPOINT = 'https://95chong.cn/api/game-gift-codes';
 const ATTEMPT_SUFFIX = '::XC_GAME_GIFT_CODE_ATTEMPTS';
 const ACCOUNT_POLL_MS = 1_000;
-const LOGIN_DELAY_MS = 1_000;
+const LOGIN_DELAY_MS = 3_000;
 const EXCHANGE_INTERVAL_MS = 2_000;
 const WINDOW_RELEASE_MS = 2_000;
+const ACCOUNT_STABLE_MS = 1_000;
+
+const INPUT_CANDIDATES = [
+  'giftInput',
+  'codeInput',
+  'txtInput',
+  'txtCode',
+  'inputTxt',
+  'input',
+  'm_Input',
+  '_input',
+  'mInput'
+];
+
+const SUBMIT_CANDIDATES = [
+  'getClicked',
+  'onOkClick',
+  'onClick',
+  'onSubmit',
+  'submit',
+  'click',
+  'onExchange',
+  'exchange'
+];
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
+}
+
+function isValidAccountId(value: unknown): boolean {
+  if (value == null) return false;
+  const text = String(value).trim();
+  return text.length > 0 && text !== '0';
 }
 
 /** 账号编号。当前用户在 UserData.Self.clientId，类表上不一定能直接拿到。 */
@@ -54,7 +84,7 @@ function accountId(
     ?? manager?.ClientId
     ?? manager?.userID
     ?? manager?.UserID;
-  return value == null || value === '' ? '' : String(value);
+  return isValidAccountId(value) ? String(value).trim() : '';
 }
 
 /**
@@ -125,6 +155,41 @@ function writeAttempts(
   }
 }
 
+/** 判断一个对象是不是可写 text 的输入框。 */
+function isTextInput(value: unknown): value is UnknownRecord {
+  const record = asRecord(value);
+  return record != null && typeof record.text === 'string';
+}
+
+/** 在兑换窗实例上找到输入框和提交方法。 */
+function findExchangeControls(exchange: UnknownRecord): { input: UnknownRecord; submit: () => void } | null {
+  for (const key of INPUT_CANDIDATES) {
+    const candidate = exchange[key];
+    if (isTextInput(candidate)) {
+      for (const submitKey of SUBMIT_CANDIDATES) {
+        const submit = exchange[submitKey];
+        if (typeof submit === 'function') {
+          return { input: candidate, submit: submit as () => void };
+        }
+      }
+    }
+  }
+  // 兜底：扫描所有属性，找第一个带 text 的对象和第一个像提交的方法。
+  let fallbackInput: UnknownRecord | null = null;
+  let fallbackSubmit: (() => void) | null = null;
+  for (const key of Object.keys(exchange)) {
+    const value = exchange[key];
+    if (!fallbackInput && isTextInput(value)) fallbackInput = value;
+    if (!fallbackSubmit && typeof value === 'function' && /(?:click|submit|exchange|ok)/i.test(key)) {
+      fallbackSubmit = value as () => void;
+    }
+  }
+  if (fallbackInput && fallbackSubmit) {
+    return { input: fallbackInput, submit: fallbackSubmit };
+  }
+  return null;
+}
+
 /** 安装礼包码控制器；返回 dispose（清定时器与窗口引用）。 */
 export function installGiftCodeController(options: GiftCodeControllerOptions = {}): () => void {
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
@@ -147,11 +212,10 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
 
   function currentAccountId(): string {
     const cachedId = cachedUserDataSelf?.clientId ?? cachedUserDataSelf?.ClientId ?? cachedUserDataSelf?.ClientID;
-    if (cachedId == null || cachedId === '') {
-      const found = readUserDataSelf(globalObject);
-      const foundId = found?.clientId ?? found?.ClientId ?? found?.ClientID;
-      if (foundId != null && foundId !== '') cachedUserDataSelf = found;
-    }
+    if (isValidAccountId(cachedId)) return accountId(cachedUserDataSelf, locator);
+    const found = readUserDataSelf(globalObject);
+    const foundId = found?.clientId ?? found?.ClientId ?? found?.ClientID;
+    if (isValidAccountId(foundId)) cachedUserDataSelf = found;
     return accountId(cachedUserDataSelf, locator);
   }
 
@@ -196,14 +260,21 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
     for (const code of pending) {
       if (tasks.disposed || currentAccountId() !== id) return 'retry';
       const exchange = windows.get('GiftExchangeWindow');
-      const input = asRecord(exchange?.giftInput);
-      if (!exchange || !input || typeof exchange.getClicked !== 'function') {
-        console.warn('[礼包码] 游戏兑换窗口尚未就绪，稍后重试');
+      const controls = exchange ? findExchangeControls(exchange) : null;
+      if (!exchange || !controls) {
+        const keys = exchange ? Object.keys(exchange).filter((k) => {
+          const v = exchange[k];
+          return typeof v === 'function' || isTextInput(v);
+        }).slice(0, 30) : [];
+        console.warn('[礼包码] 游戏兑换窗口尚未就绪，稍后重试；可用属性:', keys);
         return 'retry';
       }
       try {
-        input.text = code;
-        (exchange.getClicked as () => void).call(exchange);
+        // 部分窗口需要挂到舞台/弹出才能触发网络请求。
+        if (typeof exchange.popup === 'function') exchange.popup.call(exchange);
+        else if (typeof exchange.show === 'function') exchange.show.call(exchange);
+        controls.input.text = code;
+        controls.submit.call(exchange);
         attempts.add(code);
         writeAttempts(storage, id, attempts);
         console.info('[礼包码] 已尝试兑换:', code);
@@ -235,10 +306,12 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
     const firstSeen = seenAt.get(id);
     if (firstSeen == null) {
       seenAt.set(id, now);
-      console.info(`[礼包码] 当前账号 ${id}，稍后自动兑换`);
-      if (loginDelayMs > 0) return;
+      console.info(`[礼包码] 读到账号 ${id}，${loginDelayMs}ms 后自动兑换`);
+      return;
     }
-    if (now - firstSeen < loginDelayMs) return;
+    // 账号切走后重登要重新等待。
+    if (now - firstSeen < Math.max(loginDelayMs, ACCOUNT_STABLE_MS)) return;
+    if (id === '0' || !id) return;
     runningId = id;
     void redeemAccount(id).then((result) => {
       if (result === 'done') finished.add(id);

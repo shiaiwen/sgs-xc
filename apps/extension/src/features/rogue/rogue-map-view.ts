@@ -27,13 +27,50 @@ function layaClass(name: string): (new () => object) | null {
   return typeof ctor === 'function' ? ctor as new () => object : null;
 }
 
+/** 中文按整字宽、英文按半字宽估算，避免客户端自动换行把短句拆乱。 */
+function wrapPanelText(text: string, fontSize: number): string {
+  const inner = ROGUE_MAP_STYLE.panelWidth - ROGUE_MAP_STYLE.labelPad * 2 - 4;
+  const maxUnits = Math.max(1, inner / Math.max(1, fontSize));
+  const lines: string[] = [];
+  let line = '';
+  let units = 0;
+  for (const ch of text) {
+    if (ch === '\n') {
+      lines.push(line);
+      line = '';
+      units = 0;
+      continue;
+    }
+    const width = ch.charCodeAt(0) > 255 ? 1 : 0.55;
+    if (line && units + width > maxUnits) {
+      lines.push(line);
+      line = ch;
+      units = width;
+    } else {
+      line += ch;
+      units += width;
+    }
+  }
+  if (line || lines.length === 0) lines.push(line);
+  return lines.join('\n');
+}
+
+function labelBlockHeight(node: UnknownRecord, text: string, fontSize: number): number {
+  const lines = Math.max(1, text.split('\n').length);
+  const estimated = lines * (fontSize + 2) + 6;
+  const measured = Number(node.height);
+  return Number.isFinite(measured) && measured > estimated ? measured : estimated;
+}
+
 function createLabel(text: string, color: string, fontSize: number, bold = false): UnknownRecord | null {
   const Label = layaClass('Label') ?? layaClass('Text');
   if (!Label) return null;
   const node = asRecord(new Label());
   if (!node) return null;
+  const wrapped = wrapPanelText(text, fontSize);
   node.width = ROGUE_MAP_STYLE.panelWidth;
-  node.wordWrap = true;
+  node.wordWrap = false;
+  node.overflow = 'visible';
   node.align = 'left';
   node.valign = 'top';
   node.leading = 2;
@@ -41,8 +78,9 @@ function createLabel(text: string, color: string, fontSize: number, bold = false
   node.color = color;
   node.fontSize = fontSize;
   node.bold = bold;
-  node.text = text;
+  node.text = wrapped;
   node.mouseEnabled = false;
+  node.__xcWrappedText = wrapped;
   return node;
 }
 
@@ -130,7 +168,7 @@ export function createCityOverlayNodes(
   );
   if (title) {
     call(box, 'addChild', title);
-    contentHeight += Number(title.height) || ROGUE_MAP_STYLE.titleSize + 8;
+    contentHeight += labelBlockHeight(title, String(title.__xcWrappedText ?? panel.title), ROGUE_MAP_STYLE.titleSize);
   }
 
   const lines = panel.lines ?? [];
@@ -169,7 +207,7 @@ export function createCityOverlayNodes(
     const label = createLabel(line.text, color, size, true);
     if (!label) continue;
     call(box, 'addChild', label);
-    contentHeight += Number(label.height) || size + 6;
+    contentHeight += labelBlockHeight(label, String(label.__xcWrappedText ?? line.text), size);
   }
 
   const panelHeight = contentHeight + ROGUE_MAP_STYLE.topSpacer;

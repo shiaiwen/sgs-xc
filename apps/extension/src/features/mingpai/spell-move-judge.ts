@@ -1,7 +1,7 @@
 /**
- * 看牌、移牌卡号、暗牌补号。
- * 条件与技能号保持混淆脚本里的原分支，只把「亮牌」收成明牌条能吃的结果。
- * 分区对象的增删仍由现有引擎做。
+ * 看牌和移牌的补号。
+ * 协议经常不带具体牌号，这里按技能、来源区和去向区把已经亮过的牌填回去。
+ * 分区里牌的增删仍由明牌引擎做，这里只产出「这张牌是哪张」。
  */
 
 import {
@@ -16,7 +16,96 @@ const TOP = DRAW_PILE_POSITION.TOP;
 const BOTTOM = DRAW_PILE_POSITION.BOTTOM;
 const UNSPECIFIED = DRAW_PILE_POSITION.UNSPECIFIED;
 
-const SPELL_3571 = 0xdf3;
+/** 协议分区。 */
+const ZONE_NONE = 0;
+const ZONE_DRAW = 1;
+const ZONE_DISCARD = 2;
+const ZONE_JUDGE = 3;
+const ZONE_SKILL = 4;
+const ZONE_HAND = 5;
+const ZONE_SHOW = 8;
+const ZONE_TEMP = 10;
+const ZONE_RECYCLE = 11;
+
+/** 协议移牌类型。 */
+const MOVE_DEAL = 1;
+const MOVE_PUT = 8;
+const MOVE_GAIN = 11;
+const MOVE_DRAW = 13;
+const MOVE_PLACE = 15;
+const MOVE_GIVE = 18;
+const MOVE_SWAP = 19;
+const MOVE_REVEAL = 21;
+const OPT_CHOOSE = 22;
+const OPT_BOTTOM = 50;
+const OPT_SKIP = 73;
+
+/** 判定牌按座位颜色收回手牌。 */
+const SPELL_JUDGE_RECOVERY = 3571;
+/** 弃牌堆暗置进手，用先前亮出的牌补号。 */
+const SPELL_DISCARD_TO_HAND = 3511;
+/** 自己亮出的牌随后暗置进手，一次一张。 */
+const SPELL_SELF_HAND_GAIN = [7016, 7017] as const;
+/** 先亮目标手牌，再按选项把亮出的或其余手牌交给自己。 */
+const SPELL_HAND_EXCHANGE = 361;
+/** 周旋：手牌暗置进自己的技能区。 */
+const SPELL_ZHOUXUAN = 3065;
+/** 弃牌堆暗置进手。 */
+const SPELL_DISCARD_GAIN = 3157;
+/** 弃牌堆暗置放回牌堆顶。 */
+const SPELL_DISCARD_TO_TOP = [3750, 3753] as const;
+/** 手牌暂存到技能区，再按原顺序换回。 */
+const SPELL_HAND_HOLD = 3483;
+/** 手牌亮出后进临时区，再进牌堆或弃牌堆。 */
+const SPELL_HAND_STACK = 3488;
+/** 弃牌堆里的红牌暗置放回牌堆。 */
+const SPELL_RED_BACK_TO_DRAW = 3543;
+/** 无来源区放进牌堆时改放到底部，并清掉牌号。 */
+const SPELL_FORCE_BOTTOM = 3694;
+/** 临时区暗牌进手时，其余临时区牌不再按旧顺序补。 */
+const SPELL_DROP_TEMP = 3208;
+/** 牌堆位置没写明时，按牌堆顶取。 */
+const SPELL_FROM_DRAW_TOP = [3208, 7011, 987, 988, 3903] as const;
+/** 牌堆底一次取三张进临时区。 */
+const SPELL_DRAW_BOTTOM_THREE = 3776;
+/** 牌堆底一张进手。 */
+const SPELL_DRAW_BOTTOM_ONE = 3101;
+/** 牌堆顶一张进技能区。 */
+const SPELL_DRAW_TOP_TO_SKILL = 795;
+/** 牌号列表头两张是下标，不是牌。 */
+const SPELL_INDEXED_CARDS = 713;
+/** 放回牌堆顶时要剔掉的特殊牌。 */
+const SPECIAL_PILE_CARDS = [4400, 4401] as const;
+/** 看牌结果直接当手牌。 */
+const SPELL_SHOW_HAND = 3659;
+/** 看牌结果直接当牌堆顶，有一种操作类型除外。 */
+const SPELL_SHOW_DECK = 3744;
+/** 指定操作类型时，看牌结果当牌堆顶。 */
+const SPELL_SHOW_DECK_TYPED = 3868;
+/** 分两次看牌堆，第二次才亮出来。 */
+const SPELL_DEFERRED_PILE = 7009;
+/** 看牌结果倒序后当牌堆底。 */
+const SPELL_SHOW_DECK_BOTTOM = 3336;
+/** 看牌堆，并记下还要再亮一次。 */
+const SPELL_PILE_PREVIEW = [7010, 7011] as const;
+/** 看牌堆顶一张。 */
+const SPELL_PEEK_ONE = 943;
+/** 参数第一位是张数，后面是自己的部分手牌。 */
+const SPELL_PARTIAL_OWN_HAND = 898;
+/** 参数成对出现，取每一对里的牌号；目标是牌堆就当牌堆顶。 */
+const SPELL_PAIRED_LOOK = 3266;
+/** 参数末尾若干张是目标的部分手牌。 */
+const SPELL_PARTIAL_TARGET_HAND = [987, 988] as const;
+/** 自己看牌堆，张数在参数第一位。 */
+const SPELL_OWN_PILE_LOOK = 3903;
+/** 当前回合座位交出的一张手牌，随后可能放回牌堆。 */
+const SPELL_GIVE_ONE = 780;
+
+/** 看别人手牌：参数里直接是牌号。 */
+const HAND_LOOK_SPELLS = [4, 5, 921, 372, 811, 357, 3119, 501, 3437, 4025] as const;
+/** 看别人手牌：只有参数位为 0 时，后面的数才是牌号。 */
+const HAND_LOOK_WHEN_IDLE = [851, 361, 774, 3310, 3876] as const;
+
 /** 这些技能号的看牌消息只是面板提示，参数不是牌号，兜底时要排除。 */
 const PANEL_ONLY_OPT_TARGET_IDS = new Set([945, 3440, 11003, 2900, 2022]);
 const COLOR_RED = 1;
@@ -81,57 +170,56 @@ const shownJudgeBySeat = new Map<number, number[]>();
 /** 最近一次在展示区露面的判定牌号，椒遇回手时用来把牌认成确定牌。 */
 let lastJudgeCardId: number | null = null;
 const shownBySpell = new Map<number, number[]>();
-const shown3488 = new Map<number, number>();
-let stack3488 = 0;
+const shownCard3488 = new Map<number, number>();
+let stackedCard3488 = 0;
 let pileShowLeft = 0;
 let currentSeatId: number | null = null;
-let given780: number | null = null;
-let xiashu: { casterSeatId: number; targetSeatId: number; shown: number[]; choice: number } | null = null;
+let givenCardBy780: number | null = null;
+let handExchange361: { casterSeatId: number; targetSeatId: number; shown: number[]; choice: number } | null = null;
 const zhouxuanPending = new Map<number, number[]>();
 const qingyiPending = new Map<number, number[]>();
 const qianfuPending = new Map<string, number[]>();
 /**
- * 3483 的两半状态：`count3483` 是「牌堆顶要打包几张」，`handCards3483` 是暂存到技能区的那批手牌。
- * 目前只有写入端；对应的读取端（牌堆归还的暂存计划与按 key 换回）还没接，
- * 见 `graph/temporary-zone-grid.ts` 里已备好的 planPendingDeckReturn / applyPendingDeckReturn / swapZoneCardsByKey。
+ * 手牌暂存技能：pilePackCount3483 是牌堆顶要打包几张，storedHand3483 是暂存进技能区的手牌。
+ * 打包张数由移牌入口读取；暂存手牌在离开技能区时清掉。
  */
-let count3483 = 0;
-let handCards3483: number[] = [];
+let pilePackCount3483 = 0;
+let storedHand3483: number[] = [];
 
-export function resetObfuscatedJudge(): void {
+export function resetSpellMoveState(): void {
   judgmentsBySeat.clear();
   colorBySeat.clear();
   shownJudgeBySeat.clear();
   lastJudgeCardId = null;
   shownBySpell.clear();
-  shown3488.clear();
-  stack3488 = 0;
+  shownCard3488.clear();
+  stackedCard3488 = 0;
   pileShowLeft = 0;
   currentSeatId = null;
-  given780 = null;
-  xiashu = null;
+  givenCardBy780 = null;
+  handExchange361 = null;
   zhouxuanPending.clear();
   qingyiPending.clear();
   qianfuPending.clear();
-  count3483 = 0;
-  handCards3483 = [];
+  pilePackCount3483 = 0;
+  storedHand3483 = [];
 }
 
-export function noteObfuscatedCurrentSeat(seatId: number): void {
+export function noteCurrentTurnSeat(seatId: number): void {
   currentSeatId = seatId;
 }
 
 /** 3483：牌堆顶这一步要打包几张；由看牌回报写，移牌管线在牌堆 → 技能区那一步取。 */
-export function getObfuscated3483PileCount(): number {
-  return count3483;
+export function getSpell3483PileCount(): number {
+  return pilePackCount3483;
 }
 
-export function noteObfuscatedSeatColor(seatId: number, color: number): void {
+export function noteSeatCardColor(seatId: number, color: number): void {
   if (color === COLOR_RED || color === COLOR_BLACK) colorBySeat.set(seatId, color);
 }
 
 /** UseSpell 亮出的牌，供后面的暗置移动补号。 */
-export function noteObfuscatedUseSpell(
+export function noteSpellShownCards(
   spellId: number,
   srcSeatId: number,
   cardIds: readonly number[],
@@ -140,26 +228,27 @@ export function noteObfuscatedUseSpell(
   effectIndex: number | null = null
 ): void {
   const known = cardIds.filter((cardId) => cardId > 0);
-  if (spellId === 0xdb7 && known.length && srcSeatId === myId) shownBySpell.set(spellId, known);
+  if (spellId === SPELL_DISCARD_TO_HAND && known.length && srcSeatId === myId) shownBySpell.set(spellId, known);
   // 7016 / 7017：自己亮出的牌随后暗置进手牌，一次一张，按亮出的顺序取。
-  if ((spellId === 0x1b68 || spellId === 0x1b69) && known.length && srcSeatId === myId) {
+  if ((spellId === SPELL_SELF_HAND_GAIN[0] || spellId === SPELL_SELF_HAND_GAIN[1]) && known.length && srcSeatId === myId) {
     shownBySpell.set(spellId, known);
   }
-  if (spellId === 0x169) {
+  if (spellId === SPELL_HAND_EXCHANGE) {
     const targets = targetSeatIds.filter((seatId) => seatId !== srcSeatId);
     if (targetSeatIds.length === 1 && targets.length === 1) {
-      xiashu = { casterSeatId: srcSeatId, targetSeatId: targets[0] ?? srcSeatId, shown: [], choice: 0 };
+      handExchange361 = { casterSeatId: srcSeatId, targetSeatId: targets[0] ?? srcSeatId, shown: [], choice: 0 };
     }
   }
-  if (spellId === 0xbf9 && effectIndex === 1 && known.length) zhouxuanPending.set(srcSeatId, known);
-  if (spellId === 0xc55 && known.length) qingyiPending.set(srcSeatId, known);
-  if (spellId === 0xea6 || spellId === 0xea9) {
+  if (spellId === SPELL_ZHOUXUAN && effectIndex === 1 && known.length) zhouxuanPending.set(srcSeatId, known);
+  if (spellId === SPELL_DISCARD_GAIN && known.length) qingyiPending.set(srcSeatId, known);
+  if (spellId === SPELL_DISCARD_TO_TOP[0] || spellId === SPELL_DISCARD_TO_TOP[1]) {
     const key = `${spellId}-${srcSeatId}`;
     qianfuPending.delete(key);
     if (effectIndex === 2 && targetSeatIds.length === 0 && known.length) qianfuPending.set(key, known);
   }
 }
 
+/** 看牌面板：按技能号决定这些牌号是手牌还是牌堆。 */
 export function judgeOptTarget(input: OptJudgeInput): CardReveal[] {
   const spellId = input.spellId;
   const param = input.param;
@@ -167,7 +256,7 @@ export function judgeOptTarget(input: OptJudgeInput): CardReveal[] {
   const src = input.srcSeatId;
   const target = input.targetSeatId;
   const myId = input.myId;
-  if ([0x1b68, 0x1b69].includes(spellId) && params.length > 0 && src === myId) {
+  if ([SPELL_SELF_HAND_GAIN[0], SPELL_SELF_HAND_GAIN[1]].includes(spellId) && params.length > 0 && src === myId) {
     shownBySpell.set(spellId, [...params]);
   }
   const reveals: CardReveal[] = [];
@@ -181,29 +270,29 @@ export function judgeOptTarget(input: OptJudgeInput): CardReveal[] {
   // 看牌技能给的牌号多数在 Params 里，少数只给 CardIDs，两边都收。
   const lookIds = params.length ? [...params] : [...(input.cardIds ?? [])];
   if (
-    ([0x4, 0x5, 0x399, 0x174, 0x32b, 0x165, 0xc2f, 0x1f5, 0xd6d, 0xfb9].includes(spellId) && lookIds.length > 0
-      || [0x353, 0x169, 0x306, 0xcee, 0xf24].includes(spellId) && param === 0 && params.length > 0
+    (HAND_LOOK_SPELLS.includes(spellId as typeof HAND_LOOK_SPELLS[number]) && lookIds.length > 0
+      || (HAND_LOOK_WHEN_IDLE.includes(spellId as typeof HAND_LOOK_WHEN_IDLE[number]) || spellId === SPELL_HAND_EXCHANGE) && param === 0 && params.length > 0
       || input.isHandLookSpell?.(spellId) === true && lookIds.length > 0)
   ) {
     showHand(target, lookIds, false);
-  } else if (spellId === 0x3af && param === 0 && params.length === 1) {
+  } else if (spellId === SPELL_PEEK_ONE && param === 0 && params.length === 1) {
     showDeck(params);
-  } else if (spellId === 0x382 && param === 0 && params.length > 2) {
+  } else if (spellId === SPELL_PARTIAL_OWN_HAND && param === 0 && params.length > 2) {
     showHand(src, params.slice(1, (params[0] ?? 0) + 1), true);
-  } else if ((spellId === 0x3db || spellId === 0x3dc) && param === 1 && params.length > 2) {
+  } else if ((spellId === SPELL_PARTIAL_TARGET_HAND[0] || spellId === SPELL_PARTIAL_TARGET_HAND[1]) && param === 1 && params.length > 2) {
     showHand(target, params.slice(-(params[1] ?? 0)), true);
-  } else if (spellId === 0xf3f && param === 0 && params.length > 2 && target === DRAW_PILE_OWNER && src === myId) {
+  } else if (spellId === SPELL_OWN_PILE_LOOK && param === 0 && params.length > 2 && target === DRAW_PILE_OWNER && src === myId) {
     const count = params[0] ?? 0;
     showDeck(params.slice(2, 2 + count));
-  } else if (spellId === 0xcc2 && param === 0 && params.length > 0 && target !== null && src === myId) {
+  } else if (spellId === SPELL_PAIRED_LOOK && param === 0 && params.length > 0 && target !== null && src === myId) {
     const ids = params.filter((_, index) => index % 3 === 1);
     if (target === DRAW_PILE_OWNER) showDeck(ids);
     else showHand(target, ids, true);
-  } else if (spellId === 0xd9b && param === 1 && params.length > 2) {
+  } else if (spellId === SPELL_HAND_HOLD && param === 1 && params.length > 2) {
     showHand(target, params.slice(-(params[1] ?? 0)), true);
-  } else if (spellId === 0xd9b && param === 1 && (params[0] ?? 0) > 0) {
-    count3483 = params[0] ?? 0;
-  } else if ((spellId === 0x1b62 || spellId === 0x1b63) && params.length > 0 && target === DRAW_PILE_OWNER && src === myId) {
+  } else if (spellId === SPELL_HAND_HOLD && param === 1 && (params[0] ?? 0) > 0) {
+    pilePackCount3483 = params[0] ?? 0;
+  } else if ((spellId === SPELL_PILE_PREVIEW[0] || spellId === SPELL_PILE_PREVIEW[1]) && params.length > 0 && target === DRAW_PILE_OWNER && src === myId) {
     pileShowLeft = params.length;
     showDeck(params, true);
   }
@@ -220,33 +309,35 @@ export function judgeOptTarget(input: OptJudgeInput): CardReveal[] {
   return reveals;
 }
 
+/** 技能操作回报：记下选项，或把回报里的牌号当成手牌、牌堆顶、牌堆底。 */
 export function judgeSpellOpt(spellId: number, optType: number, seatId: number, datas: readonly number[]): CardReveal[] {
-  if (spellId === 0x169 && xiashu && optType === 0x16 && seatId === xiashu.casterSeatId && (datas[0] === 1 || datas[0] === 2)) {
-    xiashu.choice = datas[0] ?? 0;
+  if (spellId === SPELL_HAND_EXCHANGE && handExchange361 && optType === OPT_CHOOSE && seatId === handExchange361.casterSeatId && (datas[0] === 1 || datas[0] === 2)) {
+    handExchange361.choice = datas[0] ?? 0;
   }
-  if (spellId === 0xe4b) return handReveal(seatId, [...datas], true);
-  if (spellId === 0xea0 && optType !== 0x49) return deckReveal([...datas], 'top');
-  if (spellId === 0xf1c && optType === 0x32) return deckReveal([...datas], 'top');
-  if (spellId === 0x1b61) {
+  if (spellId === SPELL_SHOW_HAND) return handReveal(seatId, [...datas], true);
+  if (spellId === SPELL_SHOW_DECK && optType !== OPT_SKIP) return deckReveal([...datas], 'top');
+  if (spellId === SPELL_SHOW_DECK_TYPED && optType === OPT_BOTTOM) return deckReveal([...datas], 'top');
+  if (spellId === SPELL_DEFERRED_PILE) {
     pileShowLeft -= 0.5;
     if (!(pileShowLeft > 0)) return deckReveal([...datas], 'top');
   }
-  if (spellId === 0xd08 && optType === 0x32) return deckReveal([...datas].reverse(), 'bottom');
+  if (spellId === SPELL_SHOW_DECK_BOTTOM && optType === OPT_BOTTOM) return deckReveal([...datas].reverse(), 'bottom');
   return [];
 }
 
 /** 座位和区都没变，且不是牌堆换位或装备区参数变化，按原地展示处理。 */
-export function isObfuscatedSameZoneShow(move: MoveJudgeInput): boolean {
+export function isInPlaceCardShow(move: MoveJudgeInput): boolean {
   const moved = move.fromId !== move.toId
     || move.fromZone !== move.toZone
-    || (move.fromPosition !== move.toPosition && move.toZone === 0x1)
-    || (move.fromZoneParam !== move.toZoneParam && move.toZone === 0x4);
+    || (move.fromPosition !== move.toPosition && move.toZone === ZONE_DRAW)
+    || (move.fromZoneParam !== move.toZoneParam && move.toZone === ZONE_SKILL);
   if (moved) return false;
-  if (move.spellId === 0x1b63 && move.moveType === 0x13) return false;
-  if (move.spellId === 0xea0 && move.moveType === 0x15) return false;
+  if (move.spellId === SPELL_PILE_PREVIEW[1] && move.moveType === MOVE_SWAP) return false;
+  if (move.spellId === SPELL_SHOW_DECK && move.moveType === MOVE_REVEAL) return false;
   return move.cardIds.some((cardId) => cardId > 0);
 }
 
+/** 移牌入口：丢掉无效移动，纠正牌堆顶底，再给没带牌号的移动补上已经亮过的牌。 */
 export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): MoveJudgeResult {
   let cardIds = move.cardIds.slice();
   let fromPosition = move.fromPosition;
@@ -258,10 +349,10 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
   const fromId = move.fromId;
   const toId = move.toId;
   const moveType = move.moveType;
-  const ignored = count === 0 || moveType === 0 || toZone === 0xb || move.isSend === true;
+  const ignored = count === 0 || moveType === ZONE_NONE || toZone === ZONE_RECYCLE || move.isSend === true;
   if (ignored) return { ignore: true, cardIds, fromPosition, toPosition, dropOtherTemporary: false };
 
-  if (spellId === 0x2c9 && moveType === 0x15 && count === cardIds.length - 2) {
+  if (spellId === SPELL_INDEXED_CARDS && moveType === MOVE_REVEAL && count === cardIds.length - 2) {
     const index = cardIds.splice(0, 1)[0] ?? 0;
     cardIds.splice(index, 1);
   }
@@ -270,32 +361,32 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
 
   record3571Judgments(move, cardIds, host);
 
-  if (fromZone === 0x1 && fromPosition === UNSPECIFIED && [0xc88, 0x1b63, 0x3db, 0x3dc, 0xf3f].includes(spellId)) {
+  if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && [SPELL_DROP_TEMP, SPELL_PILE_PREVIEW[1], SPELL_PARTIAL_TARGET_HAND[0], SPELL_PARTIAL_TARGET_HAND[1], SPELL_OWN_PILE_LOOK].includes(spellId)) {
     fromPosition = TOP;
   }
-  if (fromZone === 0x1 && fromPosition === UNSPECIFIED && toZone === 0xa && spellId === 0xec0 && count === 3) {
+  if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_TEMP && spellId === SPELL_DRAW_BOTTOM_THREE && count === 3) {
     fromPosition = BOTTOM;
   }
-  if (fromZone === 0x1 && fromPosition === UNSPECIFIED && moveType === 0xd && count === 1) fromPosition = TOP;
-  if (fromZone === 0x1 && fromPosition === UNSPECIFIED && toZone === 0x4 && moveType === 0x8 && spellId === 0x31b && count === 1) {
+  if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && moveType === MOVE_DRAW && count === 1) fromPosition = TOP;
+  if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_SKILL && moveType === MOVE_PUT && spellId === SPELL_DRAW_TOP_TO_SKILL && count === 1) {
     fromPosition = TOP;
   }
-  if (fromZone === 0x1 && fromPosition === UNSPECIFIED && toZone === 0x5 && spellId === 0xc1d && count === 1) {
+  if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_HAND && spellId === SPELL_DRAW_BOTTOM_ONE && count === 1) {
     fromPosition = BOTTOM;
   }
   if (
-    fromZone === 0x1 && fromPosition === UNSPECIFIED && toZone === 0x5 && !host.nationWar
-    && [0x1b68, 0x1b69].includes(spellId) && count === 1
+    fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_HAND && !host.nationWar
+    && [SPELL_SELF_HAND_GAIN[0], SPELL_SELF_HAND_GAIN[1]].includes(spellId) && count === 1
   ) fromPosition = TOP;
   if (
-    fromZone === 0x1 && fromPosition === TOP + 1 && toZone === 0x5 && spellId === 0 && moveType === 1 && count === 4
+    fromZone === ZONE_DRAW && fromPosition === TOP + 1 && toZone === ZONE_HAND && spellId === 0 && moveType === MOVE_DEAL && count === 4
     && cardIds.every((cardId) => host.cardType(cardId) === 8)
   ) fromPosition = UNSPECIFIED;
-  if (toZone === 0x1 && toId === DRAW_PILE_OWNER && toPosition === TOP && cardIds.some((cardId) => cardId === 0x1130 || cardId === 0x1131)) {
+  if (toZone === ZONE_DRAW && toId === DRAW_PILE_OWNER && toPosition === TOP && cardIds.some((cardId) => cardId === SPECIAL_PILE_CARDS[0] || cardId === SPECIAL_PILE_CARDS[1])) {
     toPosition = UNSPECIFIED;
   }
-  if (toZone === 0x1 && toId === DRAW_PILE_OWNER && toPosition === TOP) {
-    cardIds = cardIds.filter((cardId) => cardId !== 0x1130 && cardId !== 0x1131);
+  if (toZone === ZONE_DRAW && toId === DRAW_PILE_OWNER && toPosition === TOP) {
+    cardIds = cardIds.filter((cardId) => cardId !== SPECIAL_PILE_CARDS[0] && cardId !== SPECIAL_PILE_CARDS[1]);
   }
 
   fillHiddenIds(move, cardIds, host);
@@ -314,7 +405,7 @@ export function takeQiDiscardCards(
   ownerOf: (cardId: number) => number | null,
   victimSeatId: number | null
 ): number[] | null {
-  if (move.fromZone !== 0x2 || move.toZone !== 0x5) return null;
+  if (move.fromZone !== ZONE_DISCARD || move.toZone !== ZONE_HAND) return null;
   if (move.cardIds.some((cardId) => cardId > 0)) return null;
   if (victimSeatId === null || move.cardCount <= 0) return null;
   const owned = discardCardIds.filter((cardId) => cardId > 0 && ownerOf(cardId) === victimSeatId);
@@ -328,32 +419,32 @@ function adjustZoneTransfer(move: MoveJudgeInput): MoveJudgeResult {
   let dropOtherTemporary = false;
   const hidden = !cardIds.some((cardId) => cardId > 0);
   const spellId = move.spellId;
-  if (spellId === 0xe6e && move.fromZone === 0 && move.toZone === 0x1 && toPosition === TOP + 1 && move.moveType === 0x13) {
+  if (spellId === SPELL_FORCE_BOTTOM && move.fromZone === 0 && move.toZone === ZONE_DRAW && toPosition === TOP + 1 && move.moveType === MOVE_SWAP) {
     toPosition = BOTTOM;
     cardIds = cardIds.map(() => 0);
   }
-  if (spellId === 0xc88 && move.fromZone === 0xa && move.toZone === 0x5 && hidden) {
+  if (spellId === SPELL_DROP_TEMP && move.fromZone === ZONE_TEMP && move.toZone === ZONE_HAND && hidden) {
     fromPosition = BOTTOM;
     dropOtherTemporary = true;
   }
-  if (spellId === 0xd9b) {
-    if (move.fromZone === 0xa && move.toZone === 0xa && hidden) {
+  if (spellId === SPELL_HAND_HOLD) {
+    if (move.fromZone === ZONE_TEMP && move.toZone === ZONE_TEMP && hidden) {
       fromPosition = BOTTOM;
       toPosition = TOP;
-    } else if (move.fromZone === 0x1 && move.toZone === 0xa && fromPosition === UNSPECIFIED && hidden) {
+    } else if (move.fromZone === ZONE_DRAW && move.toZone === ZONE_TEMP && fromPosition === UNSPECIFIED && hidden) {
       fromPosition = BOTTOM;
-      count3483 = 0;
-    } else if (move.fromZone === 0x5 && move.toZone === 0xa) {
-      handCards3483 = cardIds.filter((cardId) => cardId > 0);
-    } else if (move.fromZone === 0xa && move.toZone === 0x1 && fromPosition === UNSPECIFIED) {
+      pilePackCount3483 = 0;
+    } else if (move.fromZone === ZONE_HAND && move.toZone === ZONE_TEMP) {
+      storedHand3483 = cardIds.filter((cardId) => cardId > 0);
+    } else if (move.fromZone === ZONE_TEMP && move.toZone === ZONE_DRAW && fromPosition === UNSPECIFIED) {
       if (toPosition === TOP) toPosition = BOTTOM;
       else if (toPosition === BOTTOM) toPosition = TOP;
       if (hidden) cardIds = cardIds.map(() => 0);
-      handCards3483 = [];
-    } else if (move.fromZone === 0xa && move.toZone === 0x5) {
-      handCards3483 = [];
-    } else if (move.fromZone === 0xa) {
-      handCards3483 = [];
+      storedHand3483 = [];
+    } else if (move.fromZone === ZONE_TEMP && move.toZone === ZONE_HAND) {
+      storedHand3483 = [];
+    } else if (move.fromZone === ZONE_TEMP) {
+      storedHand3483 = [];
     }
   }
   return { ignore: false, cardIds, fromPosition, toPosition, dropOtherTemporary };
@@ -361,15 +452,15 @@ function adjustZoneTransfer(move: MoveJudgeInput): MoveJudgeResult {
 
 /** 判定牌按座位颜色回手的技能：默认只有 3571，宿主可以放宽到椒遇等同类技能。 */
 function isJudgeRecoverySpell(spellId: number, host: MoveJudgeHost): boolean {
-  return host.isJudgeRecoverySpell ? host.isJudgeRecoverySpell(spellId) : spellId === SPELL_3571;
+  return host.isJudgeRecoverySpell ? host.isJudgeRecoverySpell(spellId) : spellId === SPELL_JUDGE_RECOVERY;
 }
 
 function record3571Judgments(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHost): void {
   if (!isJudgeRecoverySpell(move.spellId, host)
-    || move.fromZone !== 0x3 || move.toZone !== 0x8) return;
+    || move.fromZone !== ZONE_JUDGE || move.toZone !== ZONE_SHOW) return;
   const seat = move.srcSeatId;
   const known = cardIds.map(Number).filter((cardId) => cardId > 0);
-  if (seat === null || !Number.isInteger(seat) || seat < 0 || seat >= 0xff || known.length !== move.cardCount) return;
+  if (seat === null || !Number.isInteger(seat) || seat < 0 || seat >= DRAW_PILE_OWNER || known.length !== move.cardCount) return;
   const previous = judgmentsBySeat.get(seat) ?? [];
   judgmentsBySeat.set(seat, [...new Set([...previous, ...known])]);
 }
@@ -379,7 +470,7 @@ function noteShownJudgeCard(seatId: number, cardIds: readonly number[]): void {
   const known = cardIds.map(Number).filter((cardId) => cardId > 0);
   if (!known.length) return;
   lastJudgeCardId = known[known.length - 1] ?? null;
-  if (!Number.isInteger(seatId) || seatId < 0 || seatId >= 0xff) return;
+  if (!Number.isInteger(seatId) || seatId < 0 || seatId >= DRAW_PILE_OWNER) return;
   const previous = shownJudgeBySeat.get(seatId) ?? [];
   shownJudgeBySeat.set(seatId, [...new Set([...previous, ...known])]);
 }
@@ -406,7 +497,7 @@ export function hasShownJudgeCard(seatId: number): boolean {
  * 也不能让它掉成「可能牌」。
  */
 function recoverJudgeCard(move: MoveJudgeInput, host: MoveJudgeHost): number[] {
-  const inZone = host.zoneCardIds(move.fromId, 0x8).filter((cardId) => cardId > 0);
+  const inZone = host.zoneCardIds(move.fromId, ZONE_SHOW).filter((cardId) => cardId > 0);
   if (!inZone.length) return [];
   const wanted = move.cardCount > 0 ? move.cardCount : inZone.length;
   const color = colorBySeat.get(move.toId);
@@ -428,7 +519,7 @@ function recoverJudgeCard(move: MoveJudgeInput, host: MoveJudgeHost): number[] {
 
 /** 判定牌回到手上、协议又不给卡号时，用这块座位色补号。技能私有数据没颜色就只留个座位色。 */
 export function recordJudgeColorGain(seatId: number, datas: readonly number[]): number | null {
-  if (!Number.isInteger(seatId) || seatId < 0 || seatId >= 0xff) return null;
+  if (!Number.isInteger(seatId) || seatId < 0 || seatId >= DRAW_PILE_OWNER) return null;
   const values = datas.map(Number).filter(Number.isFinite);
   const color = values[0];
   if (color === COLOR_RED || color === COLOR_BLACK) colorBySeat.set(seatId, color);
@@ -444,39 +535,39 @@ function fillHiddenIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeH
   const hidden = known === 0;
   const count = move.cardCount;
 
-  if (isJudgeRecoverySpell(spellId, host) && move.toZone === 0x8) noteShownJudgeCard(move.srcSeatId ?? move.fromId, cardIds);
+  if (isJudgeRecoverySpell(spellId, host) && move.toZone === ZONE_SHOW) noteShownJudgeCard(move.srcSeatId ?? move.fromId, cardIds);
 
-  if (spellId === 0xda0 && move.fromZone === 0x5 && move.toZone === 0x5 && move.moveType === 0x15 && known === 1) {
+  if (spellId === SPELL_HAND_STACK && move.fromZone === ZONE_HAND && move.toZone === ZONE_HAND && move.moveType === MOVE_REVEAL && known === 1) {
     const shown = cardIds.find((cardId) => cardId > 0) ?? 0;
-    if (shown) shown3488.set(move.fromId, shown);
-  } else if (spellId === 0xda0 && move.fromZone === 0x5 && move.toZone === 0xa && move.moveType === 0xb && hidden) {
-    cardIds[0] = shown3488.get(move.fromId) ?? 0;
-    stack3488 = cardIds[0] ?? 0;
+    if (shown) shownCard3488.set(move.fromId, shown);
+  } else if (spellId === SPELL_HAND_STACK && move.fromZone === ZONE_HAND && move.toZone === ZONE_TEMP && move.moveType === MOVE_GAIN && hidden) {
+    cardIds[0] = shownCard3488.get(move.fromId) ?? 0;
+    stackedCard3488 = cardIds[0] ?? 0;
   } else if (
-    spellId === 0xda0 && move.fromZone === 0xa && (move.toZone === 0x1 || move.toZone === 0x2)
-    && move.moveType === 0xb && hidden
+    spellId === SPELL_HAND_STACK && move.fromZone === ZONE_TEMP && (move.toZone === ZONE_DRAW || move.toZone === ZONE_DISCARD)
+    && move.moveType === MOVE_GAIN && hidden
   ) {
-    cardIds[0] = stack3488 || 0;
-    stack3488 = 0;
+    cardIds[0] = stackedCard3488 || 0;
+    stackedCard3488 = 0;
   }
 
-  const pending3511 = shownBySpell.get(0xdb7);
-  if (spellId === 0xdb7 && move.fromZone === 0x2 && move.toZone === 0x5 && pending3511 && count === pending3511.length && hidden) {
+  const pending3511 = shownBySpell.get(SPELL_DISCARD_TO_HAND);
+  if (spellId === SPELL_DISCARD_TO_HAND && move.fromZone === ZONE_DISCARD && move.toZone === ZONE_HAND && pending3511 && count === pending3511.length && hidden) {
     pending3511.forEach((cardId, index) => {
       cardIds[index] = cardId;
     });
-    shownBySpell.delete(0xdb7);
+    shownBySpell.delete(SPELL_DISCARD_TO_HAND);
   }
 
-  if (spellId === 0xdd7 && move.fromZone === 0x2 && move.toZone === 0x1 && hidden) {
-    const reds = host.zoneCardIds(DRAW_PILE_OWNER, 0x2)
+  if (spellId === SPELL_RED_BACK_TO_DRAW && move.fromZone === ZONE_DISCARD && move.toZone === ZONE_DRAW && hidden) {
+    const reds = host.zoneCardIds(DRAW_PILE_OWNER, ZONE_DISCARD)
       .filter((cardId) => host.isRedCard(cardId) === true)
       .reverse()
       .slice(0, count);
     cardIds.splice(0, Infinity, ...reds);
   }
 
-  if (isJudgeRecoverySpell(spellId, host) && move.fromZone === 0x8 && move.toZone === 0x5) {
+  if (isJudgeRecoverySpell(spellId, host) && move.fromZone === ZONE_SHOW && move.toZone === ZONE_HAND) {
     if (hidden) {
       const filled = recoverJudgeCard(move, host);
       if (filled.length === count) {
@@ -488,11 +579,11 @@ function fillHiddenIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeH
     shownJudgeBySeat.delete(move.toId);
   }
 
-  if ([0x1b68, 0x1b69].includes(spellId) && move.toZone === 0x5 && count === 1 && move.srcSeatId === host.myId) {
+  if ([SPELL_SELF_HAND_GAIN[0], SPELL_SELF_HAND_GAIN[1]].includes(spellId) && move.toZone === ZONE_HAND && count === 1 && move.srcSeatId === host.myId) {
     const pending = shownBySpell.get(spellId);
     if (cardIds[0] && pending?.includes(cardIds[0])) {
       pending.splice(pending.indexOf(cardIds[0]), 1);
-    } else if (hidden && pending && (move.fromZone === 0x5 || pending.length === 2 || pending.length === 1)) {
+    } else if (hidden && pending && (move.fromZone === ZONE_HAND || pending.length === 2 || pending.length === 1)) {
       cardIds[0] = pending.shift() ?? 0;
     }
   }
@@ -516,7 +607,7 @@ export function takeHiddenZoneCards(
     return cards.slice(position, position + count);
   }
   const clearsZone = count === zoneLength || zoneLength === 1;
-  const allianceHand = move.spellId === 121 && move.moveType === 11 && move.fromZone === 5 && move.toZone === 10;
+  const allianceHand = move.spellId === 121 && move.moveType === MOVE_GAIN && move.fromZone === ZONE_HAND && move.toZone === ZONE_TEMP;
   if ((clearsZone || allianceHand) && cards.length > 0 && cards.length <= count) {
     return [...cards, ...Array.from({ length: count - cards.length }, () => 0)];
   }
@@ -527,19 +618,19 @@ function fillClueIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHos
   const known = cardIds.filter((cardId) => cardId > 0);
   const hidden = known.length === 0;
   const count = move.cardCount;
-  if (xiashu && move.spellId === 0x169) {
+  if (handExchange361 && move.spellId === SPELL_HAND_EXCHANGE) {
     if (
-      move.moveType === 0x15 && move.fromZone === 0x5 && move.toZone === 0x5
-      && move.fromId === xiashu.targetSeatId && move.toId === xiashu.targetSeatId
+      move.moveType === MOVE_REVEAL && move.fromZone === ZONE_HAND && move.toZone === ZONE_HAND
+      && move.fromId === handExchange361.targetSeatId && move.toId === handExchange361.targetSeatId
       && known.length === count
     ) {
-      xiashu.shown = known;
+      handExchange361.shown = known;
     } else if (
-      move.moveType === 0x12 && move.fromZone === 0x5 && move.toZone === 0x5
-      && move.fromId === xiashu.targetSeatId && move.toId === xiashu.casterSeatId
+      move.moveType === MOVE_GIVE && move.fromZone === ZONE_HAND && move.toZone === ZONE_HAND
+      && move.fromId === handExchange361.targetSeatId && move.toId === handExchange361.casterSeatId
     ) {
-      const state = xiashu;
-      xiashu = null;
+      const state = handExchange361;
+      handExchange361 = null;
       if (hidden && (state.choice === 1 || state.choice === 2) && state.shown.length) {
         const hand = host.handCardIds(state.targetSeatId).filter((cardId) => cardId > 0);
         const shownInHand = state.shown.filter((cardId) => hand.includes(cardId));
@@ -552,28 +643,28 @@ function fillClueIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHos
       }
     }
   }
-  if (move.spellId === 0xbf9 && move.moveType === 0xf && move.fromZone === 0x5 && move.toZone === 0x4 && move.toZoneParam === 0xbf9 && move.toId === move.fromId) {
+  if (move.spellId === SPELL_ZHOUXUAN && move.moveType === MOVE_PLACE && move.fromZone === ZONE_HAND && move.toZone === ZONE_SKILL && move.toZoneParam === SPELL_ZHOUXUAN && move.toId === move.fromId) {
     const pending = zhouxuanPending.get(move.fromId);
     zhouxuanPending.delete(move.fromId);
     if (hidden && pending && pending.length === count) cardIds.splice(0, Infinity, ...pending);
   }
-  if (move.spellId === 0xc55 && move.fromZone === 0x2 && move.toZone === 0x5) {
+  if (move.spellId === SPELL_DISCARD_GAIN && move.fromZone === ZONE_DISCARD && move.toZone === ZONE_HAND) {
     const pending = qingyiPending.get(move.toId);
     qingyiPending.delete(move.toId);
     if (hidden && pending && pending.length === count) cardIds.splice(0, Infinity, ...pending);
   }
-  if ((move.spellId === 0xea6 || move.spellId === 0xea9) && move.fromZone === 0x2 && move.toZone === 0x1 && move.toPosition === TOP && move.moveType === 0xf && move.srcSeatId !== null) {
+  if ((move.spellId === SPELL_DISCARD_TO_TOP[0] || move.spellId === SPELL_DISCARD_TO_TOP[1]) && move.fromZone === ZONE_DISCARD && move.toZone === ZONE_DRAW && move.toPosition === TOP && move.moveType === MOVE_PLACE && move.srcSeatId !== null) {
     const key = `${move.spellId}-${move.srcSeatId}`;
     const pending = qianfuPending.get(key);
     qianfuPending.delete(key);
     if (hidden && pending && pending.length === count) cardIds.splice(0, Infinity, ...pending);
   }
-  if (move.spellId === 0x30c && move.fromZone === 0x5 && move.fromPosition === UNSPECIFIED && count === 1) {
-    if (move.toZone === 0x5 && move.fromId === currentSeatId) {
-      given780 = known[0] ?? null;
-    } else if (move.toZone === 0x1 && move.fromId !== currentSeatId && given780 !== null && host.handCardIds(move.fromId).includes(given780)) {
-      if (hidden) cardIds[0] = given780;
-      given780 = null;
+  if (move.spellId === SPELL_GIVE_ONE && move.fromZone === ZONE_HAND && move.fromPosition === UNSPECIFIED && count === 1) {
+    if (move.toZone === ZONE_HAND && move.fromId === currentSeatId) {
+      givenCardBy780 = known[0] ?? null;
+    } else if (move.toZone === ZONE_DRAW && move.fromId !== currentSeatId && givenCardBy780 !== null && host.handCardIds(move.fromId).includes(givenCardBy780)) {
+      if (hidden) cardIds[0] = givenCardBy780;
+      givenCardBy780 = null;
     }
   }
 }
