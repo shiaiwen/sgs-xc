@@ -214,7 +214,30 @@ export default defineConfig({
     outDir: 'dist/userscript',
     emptyOutDir: true,
     target: 'chrome100',
-    sourcemap: true,
-    minify: 'oxc'
+    sourcemap: false,
+    cssMinify: 'lightningcss',
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        passes: 3,
+        ecma: 2020,
+        module: false,
+        toplevel: true,
+        drop_debugger: true,
+        pure_getters: true,
+        hoist_funs: true,
+        unsafe_arrows: true,
+        unsafe_comps: true,
+        unsafe_math: true,
+        unsafe_methods: true
+      },
+      mangle: {
+        toplevel: true
+      },
+      format: {
+        comments: false,
+        ecma: 2020
+      }
+    }
   }
 });
