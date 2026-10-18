@@ -50,7 +50,7 @@ const DEFAULT_ZONE = formatZoneId(GLOBAL_OWNER, RECYCLE_ZONE);
 const DRAW_PILE_ZONE_ID = formatZoneId(GLOBAL_OWNER, DRAW_PILE_ZONE);
 const TEMPORARY_CARD_ZONES = new Set([3, 8, 10]);
 
-type EngineMovement = KnownCardMovement & { spellId?: number; moveType?: number };
+type EngineMovement = KnownCardMovement & { spellId?: number; moveType?: number; srcSeatId?: number | null };
 
 /** 整张图的槽位放在 zones 里的投影长度上限，避免快照无限长。 */
 const MAX_SNAPSHOT_PILE = 64;
@@ -80,6 +80,10 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
   initCardGraph([], DEFAULT_ZONE);
   const skillZones = new Map<string, number[]>();
   const listeners = new Set<(snapshot: Readonly<MingpaiEngineSnapshot>) => void>();
+  /** 寸目：这个座位摸牌从牌堆底拿，不能抽走牌堆顶的明牌。 */
+  const bottomDrawSeats = new Set<number>();
+  /** 刚有一张牌放到牌堆顶，紧接着的摸牌也从底上拿。 */
+  let skipTopOnNextDraw = false;
   /** 还在这一局里：洗牌要把已不可信的牌打包成不可知组。 */
   let isGameStart = true;
   /** 这一局已经结算过一次。 */
@@ -187,6 +191,40 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
     getUnknownZoneSlots().delete(slot);
   }
 
+  function seatFrom(movement: EngineMovement): number | null {
+    const src = movement.srcSeatId;
+    if (typeof src === 'number' && src >= 0 && src < 255) return src;
+    if (movement.fromId >= 0 && movement.fromId < 255) return movement.fromId;
+    return null;
+  }
+
+  function rememberBottomDraw(movement: EngineMovement): void {
+    if (movement.spellId === 816 || movement.spellId === 815 || movement.spellId === 14163) {
+      const seat = seatFrom(movement) ?? (movement.toId >= 0 && movement.toId < 255 ? movement.toId : null);
+      if (seat !== null) bottomDrawSeats.add(seat);
+    }
+    if (movement.toZone === DRAW_PILE_ZONE && movement.toPosition === DRAW_PILE_TOP && movement.cardCount === 1) {
+      skipTopOnNextDraw = true;
+    }
+  }
+
+  /** 寸目摸牌改从牌堆底，并丢掉刚放上顶的那张牌号，避免被当成摸走。 */
+  function drawFromBottom(movement: EngineMovement, cardIds: number[]): { movement: EngineMovement; cardIds: number[] } {
+    const drawing = movement.fromZone === DRAW_PILE_ZONE && movement.toZone === 5 && movement.toId >= 0 && movement.toId < 255;
+    const cunmu = drawing && (movement.spellId === 816 || bottomDrawSeats.has(movement.toId) || skipTopOnNextDraw);
+    if (!cunmu) return { movement, cardIds };
+    skipTopOnNextDraw = false;
+    const topKeys = new Set(
+      new CardZone(DRAW_PILE_ZONE_ID).cards
+        .filter((slot) => slot.pileEdge === 'top' && slot.key > 0)
+        .map((slot) => slot.key)
+    );
+    return {
+      movement: { ...movement, fromPosition: DRAW_PILE_BOTTOM },
+      cardIds: cardIds.map((cardId) => topKeys.has(cardId) ? 0 : cardId)
+    };
+  }
+
   function payloadFor(movement: EngineMovement): GraphMoveMessage {
     return {
       cardCount: movement.cardCount,
@@ -201,6 +239,7 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
       toZoneParam: movement.toZoneParam,
       moveType: movement.moveType ?? 1,
       spellId: movement.spellId ?? 0,
+      srcSeatId: movement.srcSeatId ?? null,
       pilePackCount: movement.pilePackCount
     };
   }
@@ -376,9 +415,11 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
 
     applyMovement(movement, effectiveCardIds) {
       const resolved = effectiveCardIds.some((cardId) => cardId > 0)
-        ? effectiveCardIds
-        : movement.cardIds;
-      const message = payloadFor({ ...movement, cardIds: [...resolved] });
+        ? [...effectiveCardIds]
+        : [...movement.cardIds];
+      const adjusted = drawFromBottom(movement, resolved);
+      rememberBottomDraw(adjusted.movement);
+      const message = payloadFor({ ...adjusted.movement, cardIds: adjusted.cardIds });
       moveState.isGameStart = isGameStart;
       moveState.isPassed = isPassed;
       const result = applyGraphMove(message, moveState);
@@ -414,6 +455,8 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
 
     resetAllCardsUnknown(cardIds) {
       initCardGraph(uniquePositive(cardIds), formatZoneId(GLOBAL_OWNER, DISCARD_ZONE));
+      bottomDrawSeats.clear();
+      skipTopOnNextDraw = false;
       skillZones.clear();
       isGameStart = true;
       isPassed = false;
@@ -423,6 +466,8 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
 
     resetAllCardsToDrawPile(cardIds) {
       initCardGraph(uniquePositive(cardIds), DRAW_PILE_ZONE_ID);
+      bottomDrawSeats.clear();
+      skipTopOnNextDraw = false;
       skillZones.clear();
       isGameStart = true;
       isPassed = false;

@@ -70,6 +70,8 @@ const SPELL_FROM_DRAW_TOP = [3208, 7011, 987, 988, 3903] as const;
 const SPELL_DRAW_BOTTOM_THREE = 3776;
 /** 牌堆底一张进手。 */
 const SPELL_DRAW_BOTTOM_ONE = 3101;
+/** 寸目：摸牌改为从牌堆底摸。 */
+const SPELL_DRAW_BOTTOM_INSTEAD = 816;
 /** 牌堆顶一张进技能区。 */
 const SPELL_DRAW_TOP_TO_SKILL = 795;
 /** 牌号列表头两张是下标，不是牌。 */
@@ -373,11 +375,17 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
     && (moveType === MOVE_DEAL || moveType === MOVE_DRAW)
     && fromPosition === UNSPECIFIED
   ) fromPosition = TOP;
-  if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && moveType === MOVE_DRAW && count === 1) fromPosition = TOP;
+  if (
+    fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && moveType === MOVE_DRAW && count === 1
+    && spellId !== SPELL_DRAW_BOTTOM_INSTEAD
+  ) fromPosition = TOP;
   if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_SKILL && moveType === MOVE_PUT && spellId === SPELL_DRAW_TOP_TO_SKILL && count === 1) {
     fromPosition = TOP;
   }
   if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_HAND && spellId === SPELL_DRAW_BOTTOM_ONE && count === 1) {
+    fromPosition = BOTTOM;
+  }
+  if (fromZone === ZONE_DRAW && toZone === ZONE_HAND && spellId === SPELL_DRAW_BOTTOM_INSTEAD) {
     fromPosition = BOTTOM;
   }
   if (
@@ -388,6 +396,9 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
     fromZone === ZONE_DRAW && fromPosition === TOP + 1 && toZone === ZONE_HAND && spellId === 0 && moveType === MOVE_DEAL && count === 4
     && cardIds.every((cardId) => host.cardType(cardId) === 8)
   ) fromPosition = UNSPECIFIED;
+  if (toZone === ZONE_DRAW && (spellId === 815 || spellId === 14163)) {
+    toPosition = TOP;
+  }
   if (toZone === ZONE_DRAW && toId === DRAW_PILE_OWNER && toPosition === TOP && cardIds.some((cardId) => cardId === SPECIAL_PILE_CARDS[0] || cardId === SPECIAL_PILE_CARDS[1])) {
     toPosition = UNSPECIFIED;
   }

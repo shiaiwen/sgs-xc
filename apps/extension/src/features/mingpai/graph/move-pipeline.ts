@@ -164,7 +164,11 @@ export function applyGraphMove(move: GraphMoveMessage, state: GraphMoveState = {
   if (move.toZone === RECYCLE_ZONE || move.fromZone === RECYCLE_ZONE) return recycleBranch(move);
   if (isDealIntoPile(move)) return dealIntoPile(move, state);
   if (move.fromZone === 5 && move.toZone === 1 && move.spellId === 0 && move.moveType === DEAL_MOVE_TYPE) {
-    return handToDrawPile(move);
+    // 整手回牌堆才打包藏起来。单独放上一张已经亮过的牌要留在牌堆顶，不能跟整堆混成未知牌。
+    const placedKnown = move.cardCount === 1
+      && move.toPosition === DRAW_PILE_TOP
+      && move.cardIds.some((cardId) => cardId > 0);
+    if (!placedKnown) return handToDrawPile(move);
   }
   if (move.fromZone === SHUFFLE_FROM_ZONE && move.toZone === SHUFFLE_TO_ZONE
     && move.moveType === SHUFFLE_MOVE_TYPE) {

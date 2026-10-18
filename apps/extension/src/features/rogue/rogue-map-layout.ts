@@ -3,6 +3,7 @@
  */
 
 import {
+  ROGUE_LINE_BREAK,
   ROGUE_MAP_STYLE,
   type RogueMapPanelLayout,
   type RogueRect
@@ -155,7 +156,7 @@ export function estimatePanelHeight(title: string, lines: Array<{ text: string; 
   let hasReward = false;
   let hasGeneralBlock = false;
   for (const line of lines) {
-    const rows = Math.max(1, line.text.split('\n').length);
+    const rows = Math.max(1, line.text.split(ROGUE_LINE_BREAK).length);
     if (line.kind === 'stats') body += rows * (ROGUE_MAP_STYLE.detailSize + 6);
     else if (line.kind === 'general') {
       hasGeneralBlock = true;

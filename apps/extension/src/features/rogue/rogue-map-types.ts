@@ -1,5 +1,16 @@
 /** 山河地图透视用的类型与常量。 */
 
+/**
+ * 山河文案的换行。用码点现造，不在源码里写换行符，
+ * 压缩成一行时不会把按行拆分弄成按字拆分。
+ */
+export const ROGUE_LINE_BREAK = String.fromCharCode(10);
+
+/** 按山河换行拆开，空行丢掉。 */
+export function splitRogueLines(text: string): string[] {
+  return String(text || '').split(ROGUE_LINE_BREAK).map((line) => line.trim()).filter(Boolean);
+}
+
 export interface RogueCitySpot {
   id: string | number;
   event: string | number;

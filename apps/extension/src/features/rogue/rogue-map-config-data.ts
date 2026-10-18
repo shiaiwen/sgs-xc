@@ -2,12 +2,13 @@
  * 山河地图配置表解析：从 hd_roguelike 等原始数据构建城市/事件/奖励结构。
  */
 
-import type {
-  RogueChooseMeta,
-  RogueCityMeta,
-  RogueFightMeta,
-  RogueMapConfigData,
-  RoguePlotMeta
+import {
+  ROGUE_LINE_BREAK,
+  type RogueChooseMeta,
+  type RogueCityMeta,
+  type RogueFightMeta,
+  type RogueMapConfigData,
+  type RoguePlotMeta
 } from './rogue-map-types.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -209,13 +210,13 @@ function buildRfight(
     ]
       .map((id) => rewardNames[id] ?? id)
       .filter(Boolean)
-      .join('\n');
+      .join(ROGUE_LINE_BREAK);
     table[String(fightID)] = {
       ...record,
       generals: sink.generals,
       fight: sink.fight,
       lost: sink.lost.trim(),
-      get: `${record.itemgroup ?? ''}铜币\n${rewards}`.trim(),
+      get: `${record.itemgroup ?? ''}铜币${ROGUE_LINE_BREAK}${rewards}`.trim(),
       text: localize(textTable, record.text),
       name: localize(textTable, record.name)
     };
@@ -353,7 +354,7 @@ function resolveChooseItem(
   if (generals?.length) {
     // 用 effectId/10 反查奇遇章名作缓存键（展示仍用武将名列表）
     void adventureTitles[String(Math.trunc(Number(effectId) / 10))];
-    return generals.map((general) => String(general.generalname ?? '')).filter(Boolean).join('\n');
+    return generals.map((general) => String(general.generalname ?? '')).filter(Boolean).join(ROGUE_LINE_BREAK);
   }
   return text;
 }

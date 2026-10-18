@@ -682,8 +682,8 @@ export class CardZone {
     const taken: CardSlot[] = [];
     const pending = [...ids];
     if (this.pos === DRAW_PILE_TOP) {
-      taken.push(...this.cards.splice(-(this.count as number)));
-      if (Number(this.zone) === 1) taken.reverse();
+      if (Number(this.zone) === 1) taken.push(...takeKnownBottom(this.cards, this.count as number, this.zoneID));
+      else taken.push(...this.cards.splice(-(this.count as number)));
     } else if (Number(this.zone) === 1 && this.pos === DRAW_PILE_BOTTOM) {
       taken.push(...takeKnownTop(this.cards, this.count as number, this.zoneID));
     } else if (this.pos !== POSITION_UNSPECIFIED) {
@@ -811,6 +811,21 @@ export class CardZone {
  * 从牌堆顶摸牌。先拿顶上的明牌和未知牌。
  * 放在牌堆底的明牌留在原处，不够的张数用新的未知牌补上。
  */
+/** 从牌堆底摸。遇到单独放在顶上的明牌就停下，不够的张数用未知牌补。 */
+function takeKnownBottom(cards: CardSlot[], count: number, zoneId: string): CardSlot[] {
+  const taken: CardSlot[] = [];
+  let index = cards.length - 1;
+  while (taken.length < count && index >= 0) {
+    const slot = cards[index];
+    if (slot?.pileEdge === 'top' && slot.key > 0) break;
+    const [removed] = cards.splice(index, 1);
+    if (removed) taken.push(removed);
+    index -= 1;
+  }
+  while (taken.length < count) taken.push(new CardSlot(0, 0, zoneId));
+  return taken.reverse();
+}
+
 function takeKnownTop(cards: CardSlot[], count: number, zoneId: string): CardSlot[] {
   const taken: CardSlot[] = [];
   let index = 0;

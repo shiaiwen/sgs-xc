@@ -18,7 +18,6 @@ import {
   type ExtraAssistConfigData
 } from './extra-assist-config-data.ts';
 import { formatQuanyuTipText, QUANYU_SKILL_ID } from './quanyu-assist.ts';
-import { installNanHuaAssist } from './nanhua-assist.ts';
 import { installXuShaoAssist } from './xushao-assist.ts';
 import { installPeixiuAssist } from './peixiu-assist.ts';
 import type { PeixiuRouteStore } from './peixiu-route-store.ts';
@@ -74,16 +73,6 @@ export function installExtraAssistController(
     refreshQuanyu();
   }));
 
-  cleanups.push(installNanHuaAssist({
-    isEnabled: () => enabled,
-    getConfig: () => {
-      const data = readConfig();
-      return data ? { trigger: data.nanHua.trigger, effects: data.nanHua.effects } : null;
-    },
-    locator,
-    patcher,
-    globalObject
-  }));
   cleanups.push(installXuShaoAssist({
     isEnabled: () => enabled,
     getEntries: () => readConfig()?.shiLun ?? [],

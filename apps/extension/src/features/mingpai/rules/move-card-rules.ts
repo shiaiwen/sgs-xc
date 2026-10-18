@@ -77,7 +77,8 @@ const DRAW_PILE_FROM_RULES: ReadonlyArray<{
     match: (m) => m.spellId === 3776 && m.toZone === 10 && m.cardCount === 3,
     position: DRAW_PILE_POSITION.BOTTOM
   },
-  { match: (m) => m.moveType === 13 && m.cardCount === 1, position: DRAW_PILE_POSITION.TOP },
+  { match: (m) => m.spellId === 816 && m.toZone === 5, position: DRAW_PILE_POSITION.BOTTOM },
+  { match: (m) => m.moveType === 13 && m.cardCount === 1 && m.spellId !== 816, position: DRAW_PILE_POSITION.TOP },
   {
     match: (m) => m.spellId === 795 && m.toZone === 4 && m.moveType === 8 && m.cardCount === 1,
     position: DRAW_PILE_POSITION.TOP

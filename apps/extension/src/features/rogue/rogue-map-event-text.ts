@@ -2,14 +2,16 @@
  * 山河事件文案：拼装城市事件标题/正文，决定是否跳过展示。
  */
 
-import type {
-  RogueCitySpot,
-  RogueMapConfigData,
-  RogueMapPanelLayout,
-  RogueMapRuntime,
-  RoguePanelLine
+import {
+  EMPTY_ROGUE_MAP_RUNTIME,
+  ROGUE_LINE_BREAK,
+  splitRogueLines,
+  type RogueCitySpot,
+  type RogueMapConfigData,
+  type RogueMapPanelLayout,
+  type RogueMapRuntime,
+  type RoguePanelLine
 } from './rogue-map-types.ts';
-import { EMPTY_ROGUE_MAP_RUNTIME } from './rogue-map-types.ts';
 import {
   formatGeneralName,
   formatGeneralStatsLine
@@ -140,7 +142,7 @@ export function buildEventLines(
       const chunk: string[] = [];
       if (!choice.generals?.length && choice.lost) chunk.push(String(choice.lost));
       if (choice.get) chunk.push(String(choice.get));
-      if (chunk.length) lines.push({ kind: 'reward', text: chunk.join('\n') });
+      if (chunk.length) lines.push({ kind: 'reward', text: chunk.join(ROGUE_LINE_BREAK) });
     }
     return lines;
   }
@@ -158,7 +160,7 @@ export function buildEventLines(
     if (stats) lines.push({ kind: 'stats', text: stats });
   }
   if (fight.get) {
-    for (const text of String(fight.get).split('\n').filter(Boolean)) {
+    for (const text of splitRogueLines(String(fight.get))) {
       lines.push({ kind: 'reward', text });
     }
   }

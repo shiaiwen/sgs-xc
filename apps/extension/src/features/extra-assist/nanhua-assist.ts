@@ -8,6 +8,7 @@ import { createMethodPatcher, type MethodPatcher } from '../../runtime/method-pa
 type UnknownRecord = Record<string, unknown>;
 
 export interface NanHuaEffectLine {
+  id?: number;
   type: number;
   text: string;
 }
@@ -15,6 +16,8 @@ export interface NanHuaEffectLine {
 export interface NanHuaAssistConfig {
   /** triggerID → triggerType（第几类）。 */
   trigger: Readonly<Record<number, number>>;
+  /** triggerID → 时机描述，分组标题用。 */
+  triggerText?: Readonly<Record<number, string>>;
   /** 天书效果原文，展示时再拼成色条。 */
   effects: readonly NanHuaEffectLine[];
 }
@@ -36,8 +39,9 @@ export interface NanHuaAssistOptions {
 }
 
 /**
- * TianShuWindow.updateWinUI 的南华分支：
- * type=1 时按 triggerType 排序选项、显示问号钮与效果说明。
+ * TianShuWindow.updateWinUI 的南华分支。
+ * 选时机时按类别排序，选项标成「第N类型」，并把这一档及更高档的效果说明铺在上面。
+ * 点进某一册之后收掉说明，11、12、29 号效果把选项底亮出来。
  */
 export function installNanHuaAssist(options: NanHuaAssistOptions): () => void {
   const patcher = options.patcher ?? createMethodPatcher();
@@ -51,9 +55,9 @@ export function installNanHuaAssist(options: NanHuaAssistOptions): () => void {
     const type = Number(data?.type);
     const enabled = options.isEnabled();
     const config = enabled ? options.getConfig() : null;
+    const ids = Array.isArray(data?.ids) ? data.ids as number[] : [];
 
-    if (type === 1 && enabled && config?.trigger && Array.isArray(data?.ids)) {
-      const ids = data.ids as number[];
+    if (type === 1 && enabled && config && ids.length) {
       ids.sort((left, right) => (
         Number(config.trigger[left] ?? 0) - Number(config.trigger[right] ?? 0)
       ));
@@ -66,7 +70,8 @@ export function installNanHuaAssist(options: NanHuaAssistOptions): () => void {
         tipVisible = !tipVisible;
       });
       if (config && tipVisible && (options.isTipVisible?.() ?? true)) {
-        renderEffectHtml(this, data, config, globalObject);
+        labelTimingTypes(this, ids, config);
+        renderEffectHtml(this, ids, config, globalObject);
       } else {
         hideEffectHtml(this);
       }
@@ -75,7 +80,7 @@ export function installNanHuaAssist(options: NanHuaAssistOptions): () => void {
       clearSecondTianShu(this, data);
     } else {
       hideWenhao(this);
-      if (type !== 1) hideEffectHtml(this);
+      hideEffectHtml(this);
     }
 
     return result;
@@ -138,11 +143,11 @@ function hideEffectHtml(win: UnknownRecord): void {
 
 const TIP_WIDTH = 507;
 const TIP_X = 150;
+const SECOND_TIANSHU_MARKS = [11, 12, 29];
 const TYPE_COLORS = ['', '0,83,255', '83,255,0', '255,100,0'];
 const HIDDEN_MARK = '<span style="color: rgba(0,0,0,0);stroke:none;">';
-const SECOND_TIANSHU_MARKS = [11, 12, 29];
 
-/** 最低类型决定整块说明的纵坐标。 */
+/** 最低类别决定说明条的纵向位置。 */
 export function nanHuaTipOffset(minType: number): number {
   if (minType <= 1) return -70;
   if (minType >= 3) return 116;
@@ -150,8 +155,7 @@ export function nanHuaTipOffset(minType: number): number {
 }
 
 /**
- * 选时机时提前列出效果。按类型做成色条，下标就是类型号。
- * 同一类里不足 16 字的并进上一条，并标黄「第N类型」。
+ * 按类别拼效果说明。下标就是类别号，同一类里不足 16 字的并进上一条，并标黄「第N类型」。
  * 第 1 类蓝，第 2 类绿，第 3 类橙。
  */
 export function buildNanHuaEffectBlocks(effects: readonly NanHuaEffectLine[]): string[] {
@@ -162,64 +166,76 @@ export function buildNanHuaEffectBlocks(effects: readonly NanHuaEffectLine[]): s
     .sort((left, right) => left.type - right.type || left.desc.length - right.desc.length);
 
   const rows: Array<{ type: number; desc: string }> = [];
-  for (const current of sorted) {
-    const previous = rows[rows.length - 1];
-    if (!previous || previous.type !== current.type) {
-      current.desc += `${hiddenPad(13 - current.desc.length)}<span style="color: rgba(255,255,0,1);">第${current.type}类型</span>`;
+  sorted.forEach((effect, index) => {
+    const previous = sorted[index - 1];
+    let desc = effect.desc;
+    if (!previous || effect.type !== previous.type) {
+      const pad = Math.max(0, 13 - desc.length);
+      desc += `${HIDDEN_MARK}${'～'.repeat(pad)}</span><span style="color: rgba(255,255,0,1);">第${effect.type}类型</span>`;
     }
-    const canMerge = current.desc.length < 16
-      && previous
-      && (previous.desc.endsWith('</span>') || previous.desc.length < 16);
-    if (canMerge && previous) {
-      const gap = previous.desc.length > 16 ? 4 : 20 - previous.desc.length;
-      previous.desc += hiddenPad(gap) + current.desc;
-      continue;
+    const previousRow = rows[rows.length - 1];
+    if (
+      desc.length < 16
+      && previousRow
+      && (previousRow.desc.endsWith('</span>') || previousRow.desc.length < 16)
+    ) {
+      const gap = previousRow.desc.length > 16 ? 4 : Math.max(0, 20 - previousRow.desc.length);
+      previousRow.desc += `${HIDDEN_MARK}${'～'.repeat(gap)}</span>${desc}`;
+      return;
     }
-    rows.push(current);
-  }
+    rows.push({ type: effect.type, desc });
+  });
 
   const blocks: string[] = [];
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
-    const previous = rows[index - 1];
-    if (row.type !== previous?.type) blocks[row.type] = '<div style="height: 3px;"></div>';
-    const color = TYPE_COLORS[row.type] ?? '';
+  rows.forEach((row, index) => {
+    if (row.type !== rows[index - 1]?.type) blocks[row.type] = '<div style="height: 3px;"></div>';
+    const color = TYPE_COLORS[row.type] || TYPE_COLORS[1];
     blocks[row.type] += `<div style="width:${TIP_WIDTH}px; height:auto; background-color: rgba(${color},0.7);">${row.desc}</div>`;
-  }
+  });
   return blocks;
 }
 
-/** 从当前三个时机里最低的类型开始，更高的类型一并显示。 */
-export function nanHuaTipHtml(blocks: readonly string[], minType: number): string {
-  return `<div style="width:${TIP_WIDTH}px;">${blocks.slice(Math.max(0, minType)).join('')}</div> `;
+/** 从这次给出的时机里取最低类别，铺出该类别及更高类别的效果说明。 */
+export function timingEffectHtml(
+  offeredTriggers: readonly number[],
+  config: NanHuaAssistConfig
+): { html: string; offsetY: number } | null {
+  const types = offeredTriggers
+    .map((triggerId) => Number(config.trigger[triggerId]))
+    .filter((triggerType) => triggerType > 0);
+  if (!types.length || !config.effects.length) return null;
+  const minType = Math.min(...types);
+  const blocks = buildNanHuaEffectBlocks(config.effects);
+  const body = blocks.slice(minType).join('');
+  if (!body) return null;
+  return {
+    html: `<div style="width:${TIP_WIDTH}px;">${body}</div> `,
+    offsetY: nanHuaTipOffset(minType)
+  };
 }
 
-function hiddenPad(count: number): string {
-  return `${HIDDEN_MARK}${'～'.repeat(Math.max(0, count))}</span>`;
+function labelTimingTypes(
+  win: UnknownRecord,
+  ids: readonly number[],
+  config: NanHuaAssistConfig
+): void {
+  const selectItems = Array.isArray(win.selectItems) ? win.selectItems as UnknownRecord[] : [];
+  selectItems.forEach((item, index) => {
+    const triggerType = Number(config.trigger[Number(ids[index])] ?? 0);
+    if (!(triggerType > 0)) return;
+    item.UseCnt = `第${triggerType}类型`;
+    if (triggerType === 3) item.SelectBgVisible = true;
+  });
 }
 
 function renderEffectHtml(
   win: UnknownRecord,
-  data: UnknownRecord | null,
+  ids: readonly number[],
   config: NanHuaAssistConfig,
   globalObject: NanHuaAssistOptions['globalObject']
 ): void {
-  const ids = Array.isArray(data?.ids) ? data.ids as number[] : [];
-  const effects = config.effects ?? [];
-  if (!ids.length || !effects.length) {
-    hideEffectHtml(win);
-    return;
-  }
-  const selectItems = Array.isArray(win.selectItems) ? win.selectItems as UnknownRecord[] : [];
-  selectItems.forEach((item, index) => {
-    const triggerType = Number(config.trigger[Number(ids[index])] ?? 0);
-    if (triggerType) item.UseCnt = `第${triggerType}类型`;
-    if (triggerType === 3) item.SelectBgVisible = true;
-  });
-
-  const minType = Math.min(...ids.map((id) => Number(config.trigger[Number(id)] ?? 99)));
-  const blocks = buildNanHuaEffectBlocks(effects);
-  if (!blocks.slice(Math.max(0, minType)).some(Boolean)) {
+  const built = timingEffectHtml(ids, config);
+  if (!built) {
     hideEffectHtml(win);
     return;
   }
@@ -234,9 +250,9 @@ function renderEffectHtml(
     stroke: 1,
     strokeColor: '#000000'
   });
-  html.innerHTML = nanHuaTipHtml(blocks, minType);
+  html.innerHTML = built.html;
   html.visible = true;
-  html.pos?.(TIP_X, nanHuaTipOffset(minType));
+  html.pos?.(TIP_X, built.offsetY);
 }
 
 function clearSecondTianShu(win: UnknownRecord, data: UnknownRecord | null): void {

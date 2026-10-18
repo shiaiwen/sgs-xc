@@ -14,7 +14,6 @@ export const AUTO_BOT_TAVERN_TARGET_KEY = 'assist.autoBotTavernTarget' satisfies
 export const EXTRA_ASSIST_TOOLTIP = [
   '开启后可使用进阶武将辅助',
   '魔孙权：显示权御增益状态',
-  '南华老仙：显示天书选择提示',
   '裴秀：显示地图路线辅助',
   '许劭：显示评鉴可连词框'
 ].join('\n');

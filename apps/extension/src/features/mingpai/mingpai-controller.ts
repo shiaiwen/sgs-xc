@@ -465,11 +465,15 @@ export function installMingpaiController(
     const zoneLength = event.fromZone === HAND_ZONE
       ? zoneKnown.filter((cardId) => cardId > 0).length + (seat?.unknownCardCount ?? 0)
       : zoneKnown.filter((cardId) => cardId > 0).length;
-    const recoveredCardIds = takeHiddenZoneCards(
+    const filledCardIds = takeHiddenZoneCards(
       { ...event, cardIds: resolvedCardIds },
       zoneKnown,
       zoneLength
     );
+    const topIds = event.fromZone === DRAW_PILE_ZONE && event.fromPosition === 0
+      ? engine.getSnapshot().drawPile.top
+      : [];
+    const recoveredCardIds = filledCardIds.map((cardId) => topIds.includes(cardId) ? 0 : cardId);
     const wholeHandDeparture = event.fromZone === HAND_ZONE
       && (event.cardCount === zoneLength || isAllianceWholeHandMove(event));
     const hiddenHandDeparture = event.fromZone === HAND_ZONE
@@ -486,10 +490,11 @@ export function installMingpaiController(
     });
     // 引擎落位。牌离开手牌时协议没公开身份就不能泄露，展示与标签仍按控制器解析结果；
     // 从技能临时区、处理区出来时这些牌本来就在明面上，直接用引擎的落位结果。
+    const leaveTopCard = recoveredCardIds.some((cardId, index) => cardId !== filledCardIds[index]);
     const engineMovedCardIds = engine.applyMovement(
       event.spellId === SPELL_3483
-        ? { ...event, pilePackCount: getSpell3483PileCount() }
-        : event,
+        ? { ...event, pilePackCount: getSpell3483PileCount(), ...(leaveTopCard ? { cardIds: recoveredCardIds } : {}) }
+        : (leaveTopCard ? { ...event, cardIds: recoveredCardIds } : event),
       recoveredCardIds
     );
     const appliedCardIds = event.fromZone !== HAND_ZONE && engineMovedCardIds.some((cardId) => cardId > 0)

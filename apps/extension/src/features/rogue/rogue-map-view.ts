@@ -3,6 +3,7 @@
  */
 
 import {
+  ROGUE_LINE_BREAK,
   ROGUE_MAP_STYLE,
   type RogueMapPanelLayout
 } from './rogue-map-types.ts';
@@ -35,7 +36,7 @@ function wrapPanelText(text: string, fontSize: number): string {
   let line = '';
   let units = 0;
   for (const ch of text) {
-    if (ch === '\n') {
+    if (ch === ROGUE_LINE_BREAK) {
       lines.push(line);
       line = '';
       units = 0;
@@ -52,11 +53,11 @@ function wrapPanelText(text: string, fontSize: number): string {
     }
   }
   if (line || lines.length === 0) lines.push(line);
-  return lines.join('\n');
+  return lines.join(ROGUE_LINE_BREAK);
 }
 
 function labelBlockHeight(node: UnknownRecord, text: string, fontSize: number): number {
-  const lines = Math.max(1, text.split('\n').length);
+  const lines = Math.max(1, text.split(ROGUE_LINE_BREAK).length);
   const estimated = lines * (fontSize + 2) + 6;
   const measured = Number(node.height);
   return Number.isFinite(measured) && measured > estimated ? measured : estimated;

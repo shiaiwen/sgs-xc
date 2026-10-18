@@ -95,6 +95,71 @@ function collapseUserscriptPlugin(): Plugin {
   };
 }
 
+/**
+ * 网页刚打开时 head 可能还不存在。样式先排队，节点出来再挂上。
+ * 这段函数会被原样写进脚本，不能引用外面的变量。
+ */
+function mountUserscriptStyle(css: string): void {
+  const apply = (): boolean => {
+    const parent = document.head || document.documentElement;
+    if (!parent) return false;
+    const style = document.createElement('style');
+    style.append(css);
+    parent.appendChild(style);
+    return true;
+  };
+  if (apply()) return;
+  const timer = setInterval(() => {
+    if (apply()) clearInterval(timer);
+  }, 30);
+}
+
+/**
+ * 开发脚本在页面脚本之前执行。原挂载会用带下划线的策略名，
+ * 浏览器直接拒绝，整个脚本停在这一行。这里改成合法名字，并等到节点出现再插入。
+ */
+function patchDevUserscriptMount(): Plugin {
+  const broken = 'if (window.trustedTypes) script.src = window.trustedTypes.createPolicy(key, { createScriptURL: (input) => input }).createScriptURL(entrySrc);\n\telse script.src = entrySrc;\n\t(document.head || document.documentElement).append(script);';
+  const fixed = `try {
+\t\tconst policy = window.trustedTypes && window.trustedTypes.createPolicy('xc-monkey', { createScriptURL: (input) => input });
+\t\tscript.src = policy ? policy.createScriptURL(entrySrc) : entrySrc;
+\t} catch (error) {
+\t\tscript.src = entrySrc;
+\t}
+\tconst mount = () => {
+\t\tconst parent = document.head || document.documentElement;
+\t\tif (!parent) return false;
+\t\tparent.append(script);
+\t\treturn true;
+\t};
+\tif (!mount()) {
+\t\tconst observer = new MutationObserver(() => {
+\t\t\tif (mount()) observer.disconnect();
+\t\t});
+\t\tobserver.observe(document, { childList: true, subtree: true });
+\t}`;
+  return {
+    name: 'xiaochao-dev-userscript-mount',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.includes('/__vite-plugin-monkey.install.user.js')) {
+          next();
+          return;
+        }
+        const end = res.end.bind(res);
+        res.end = ((chunk?: unknown, encoding?: unknown, callback?: unknown) => {
+          const text = Buffer.isBuffer(chunk) || typeof chunk === 'string'
+            ? String(chunk).replace(broken, fixed)
+            : chunk;
+          return end(text as never, encoding as never, callback as never);
+        }) as typeof res.end;
+        next();
+      });
+    }
+  };
+}
+
 const xiaochaoVersion = String(
   JSON.parse(readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')).version || '0.0.0'
 );
@@ -105,6 +170,7 @@ export default defineConfig({
   },
   plugins: [
     vue(),
+    patchDevUserscriptMount(),
     monkey({
       entry: 'src/entries/userscript.ts',
       userscript: {
@@ -137,7 +203,10 @@ export default defineConfig({
         downloadURL: 'https://xc.95chong.cn/downloads/sgs-xc.user.js',
         updateURL: 'https://xc.95chong.cn/downloads/sgs-xc.user.js'
       },
-      build: { fileName: 'xiaochao.user.js' }
+      build: {
+        fileName: 'xiaochao.user.js',
+        cssSideEffects: mountUserscriptStyle
+      }
     }),
     collapseUserscriptPlugin()
   ],

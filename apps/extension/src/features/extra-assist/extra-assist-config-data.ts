@@ -13,7 +13,9 @@ export interface ExtraAssistPeixiuReward {
 export interface ExtraAssistConfigData {
   nanHua: {
     trigger: Record<number, number>;
-    effects: Array<{ type: number; text: string }>;
+    /** 时机 id → 时机描述，天书提示里分组用。 */
+    triggerText: Record<number, string>;
+    effects: Array<{ id: number; type: number; text: string }>;
   };
   shiLun: Array<{
     id: number;
@@ -37,20 +39,24 @@ export function buildExtraAssistConfigData(raw: unknown): ExtraAssistConfigData 
   if (!triggers.length && !effects.length && !words.length && !rewards.length) return null;
 
   const trigger: Record<number, number> = {};
+  const triggerText: Record<number, string> = {};
   for (const entry of triggers) {
     const record = asRecord(entry);
     const id = Number(record?.triggerID);
     const type = Number(record?.triggerType);
-    if (Number.isInteger(id) && id > 0) trigger[id] = type;
+    if (!Number.isInteger(id) || !(id > 0)) continue;
+    trigger[id] = type;
+    triggerText[id] = String(record?.desc || '');
   }
 
   const nanHuaEffects = effects.map((entry) => {
     const record = asRecord(entry);
+    const id = Number(record?.effectID) || 0;
     const type = Number(record?.effectType) || 0;
     const text = String(record?.desc || '');
-    return { type, text };
+    return { id, type, text };
   }).filter((entry) => entry.type > 0 && entry.text)
-    .sort((left, right) => left.type - right.type || left.text.length - right.text.length);
+    .sort((left, right) => left.type - right.type || left.id - right.id);
 
   const shiLun = words.map((entry) => {
     const record = asRecord(entry);
@@ -79,7 +85,7 @@ export function buildExtraAssistConfigData(raw: unknown): ExtraAssistConfigData 
     };
   }
 
-  return { nanHua: { trigger, effects: nanHuaEffects }, shiLun, peiXiuRewards };
+  return { nanHua: { trigger, triggerText, effects: nanHuaEffects }, shiLun, peiXiuRewards };
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
