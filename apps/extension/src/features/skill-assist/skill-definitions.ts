@@ -8,6 +8,8 @@ export interface SkillAssistDefinition {
   generalNames?: string[];
   /** 只在本家拥有该技能时显示（资援）。 */
   selfOnly?: boolean;
+  /** 只看本家武将名，不看技能是否还在。 */
+  selfGeneralOnly?: boolean;
   /** 不随座位技能显示，只在技能发动算出结果后弹出（称象）。 */
   triggerOnly?: boolean;
   /** 该技能面板展示的明牌分区；多数技能读 unknown 或自有 zone。 */
@@ -32,7 +34,6 @@ export const JIE_CHENGXIANG_SKILL_ID = 3492;
 export const YICHENG_SKILL_ID = 3440;
 export const SHUANGXIONG_SKILL_ID = 3269;
 export const JIZHAN_SKILL_ID = 3033;
-export const HEZHONG_SKILL_ID = 3329;
 /** 权道（神孙权）：按手牌里杀与普通锦囊的张数选择效果。 */
 export const QUANDAO_SKILL_ID = 3184;
 export { YANXI_SKILL_IDS } from './yanxi.ts';
@@ -123,10 +124,12 @@ export const SKILL_ASSIST_DEFINITIONS: readonly SkillAssistDefinition[] = Object
     showResult: true
   },
   {
-    id: 'hezhong',
-    title: '和衷',
-    skillIds: [HEZHONG_SKILL_ID],
-    spellNames: ['和衷'],
+    id: 'yuqi',
+    title: '曹金玉',
+    skillIds: [],
+    spellNames: ['隅泣'],
+    generalNames: ['曹金玉'],
+    selfOnly: true,
     showResult: true
   },
   {

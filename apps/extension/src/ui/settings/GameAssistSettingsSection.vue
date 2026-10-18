@@ -5,6 +5,8 @@ import {
   AUTO_BOT_ENABLED_KEY,
   AUTO_HG_ENABLED_KEY,
   BAI_SHENG_ENABLED_KEY,
+  EXTRA_ASSIST_CHARACTER_SETTINGS,
+  EXTRA_ASSIST_ENABLED_KEY,
   GAME_ASSIST_SWITCH_SETTINGS,
 } from '../../features/extra-assist/extra-assist-settings';
 
@@ -16,15 +18,16 @@ const props = defineProps({
 });
 
 const values = reactive(Object.fromEntries(
-  GAME_ASSIST_SWITCH_SETTINGS.map(({ key }) => [key, props.configStore.get(key)])
+  [...GAME_ASSIST_SWITCH_SETTINGS, ...EXTRA_ASSIST_CHARACTER_SETTINGS].map(({ key }) => [key, props.configStore.get(key)])
 ));
 const hoverKey = ref('');
 const hoverTip = computed(() => (
-  GAME_ASSIST_SWITCH_SETTINGS.find((setting) => setting.key === hoverKey.value)?.tooltip || ''
+  [...GAME_ASSIST_SWITCH_SETTINGS, ...EXTRA_ASSIST_CHARACTER_SETTINGS]
+    .find((setting) => setting.key === hoverKey.value)?.tooltip || ''
 ));
 
 const unsubscribe = [
-  ...GAME_ASSIST_SWITCH_SETTINGS.map(({ key }) => (
+  ...[...GAME_ASSIST_SWITCH_SETTINGS, ...EXTRA_ASSIST_CHARACTER_SETTINGS].map(({ key }) => (
     props.configStore.subscribe(key, ({ value }) => {
       values[key] = value;
     })
@@ -75,6 +78,31 @@ function updateSetting(key, event) {
           </label>
         </div>
       </div>
+      <div
+        v-if="values[EXTRA_ASSIST_ENABLED_KEY]"
+        class="xiaochao-assist-characters"
+      >
+        <div
+          v-for="setting in EXTRA_ASSIST_CHARACTER_SETTINGS"
+          :key="setting.key"
+          class="xiaochao-block-switch xiaochao-game-assist-switch xiaochao-assist-character"
+          :data-tooltip="setting.tooltip"
+          @mouseenter="hoverKey = setting.key"
+          @mouseleave="hoverKey = ''"
+        >
+          <span class="xiaochao-block-switch__label">{{ setting.label }}</span>
+          <label class="xiaochao-block-switch__toggle" :data-tooltip="setting.tooltip" :title="setting.tooltip">
+            <input
+              type="checkbox"
+              :aria-label="setting.label"
+              :checked="values[setting.key]"
+              @change="updateSetting(setting.key, $event)"
+            >
+            <span class="xiaochao-block-switch__slider" />
+            <span class="xiaochao-block-switch__state" aria-hidden="true" />
+          </label>
+        </div>
+      </div>
       <p v-if="hoverTip" class="xiaochao-game-assist-tip">{{ hoverTip }}</p>
     </div>
   </section>
@@ -84,6 +112,39 @@ function updateSetting(key, event) {
 .xiaochao-game-assist-switch {
   position: relative;
   pointer-events: auto;
+}
+
+.xiaochao-assist-characters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 6px 8px 10px 18px;
+}
+
+.xiaochao-assist-character {
+  min-width: 0;
+}
+
+.xiaochao-assist-character :deep(.xiaochao-block-switch__label) {
+  margin: 0 0 3px;
+  font-size: 11px;
+}
+
+.xiaochao-assist-character :deep(.xiaochao-block-switch__toggle) {
+  width: 36px;
+  height: 16px;
+  margin-left: 0;
+}
+
+.xiaochao-assist-character :deep(.xiaochao-block-switch__slider::before) {
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+}
+
+.xiaochao-assist-character :deep(.xiaochao-block-switch__toggle input:checked + .xiaochao-block-switch__slider::before) {
+  transform: translateX(20px);
 }
 
 .xiaochao-game-assist-tip {

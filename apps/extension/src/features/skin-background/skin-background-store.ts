@@ -2,7 +2,7 @@
  * 皮肤背景收藏与选项持久化存储。
  */
 
-import { accountStorageKey, readJson, writeJson } from './skin-runtime.ts';
+import { accountStorageKey, readJson, removeStored, writeJson } from './skin-runtime.ts';
 
 /** type：0 静态图，1 视频（不支持做背景），2 骨骼 .sk，3 新版 Spine，4 旧版 Spine。 */
 export interface BackgroundResource {
@@ -103,11 +103,7 @@ export function createSkinBackgroundStore(storage: BackgroundStorage | undefined
       writeJson(storage, resourceKey(), resource);
     },
     clearResource() {
-      try {
-        storage?.removeItem(resourceKey());
-      } catch {
-        // 忽略存储异常。
-      }
+      removeStored(storage, resourceKey());
     },
     favorites,
     isFavorite: (id) => Boolean(id) && favorites().some((item) => item.id === id),

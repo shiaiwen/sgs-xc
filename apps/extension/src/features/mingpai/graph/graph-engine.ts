@@ -14,6 +14,7 @@ import {
   filterSlots,
   findSlotZones,
   forgetMingpaiCardTag,
+  listCardIdsWithPersistentTag,
   formatZoneId,
   getMingpaiCardTags,
   getMingpaiQiOwner,
@@ -359,6 +360,10 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
       if (!normalized) return;
       forgetMingpaiCardTag(cardId, normalized);
       publish();
+    },
+
+    listCardIdsWithPersistentTag(tag) {
+      return listCardIdsWithPersistentTag(tag);
     },
 
     syncOfficialHand(seatId, cardIds) {

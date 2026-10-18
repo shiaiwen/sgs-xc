@@ -43,6 +43,7 @@ import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { resolveSkillIds } from '../skill-assist/skill-visibility.ts';
 import { traceMingpai } from '../../runtime/mingpai-trace.ts';
 import { legacyIncomingHandLabel } from './rules/legacy-hand-label.ts';
+import { readSpellName } from './spell-name.ts';
 import { DRAW_PILE_OWNER, handReveal } from './rules/reveal-types.ts';
 
 type MoveCardEvent = Extract<GameEvent, { type: 'cards-moved' }>;
@@ -76,6 +77,13 @@ export function installMingpaiController(
   } | null = null;
   let movementSequence = 0;
   let xinyouCaster: { seatId: number; expiresAfterMovement: number } | null = null;
+  /** 每个座位最近一次角色数据里的心幽牌，用来在名单变短时只清掉离开的牌。 */
+  const xinyouCardsBySeat = new Map<number, number[]>();
+  /** 本回合心幽已经结束。下一次再发动之前，旧名单不能把标记写回去。 */
+  let xinyouClosed = false;
+  let lastPhase: number | null = null;
+  /** 霸朝问别人要牌期间，交进来的牌标上是谁给的。 */
+  let bachaoGain: { seatId: number; expiresAfterMovement: number } | null = null;
   let qiStateObserved = false;
   let synchronizingPersistentTags = false;
   /** 重连包没有牌序快照，等座位场景公开手牌后再登记一次。 */
@@ -101,7 +109,7 @@ export function installMingpaiController(
         );
         seat.knownCards.forEach((card) => {
           if (equipmentIds.has(card.cardId)) return;
-          engine.observeKnownHandCard(card.cardId, seat.seatId, card.tags);
+          engine.observeKnownHandCard(card.cardId, seat.seatId, tagsFromScene(card.tags));
           const persistentTags = engine.getPersistentTags(card.cardId);
           if (persistentTags.length) {
             seatStateStore.setPersistentKnownCardTags(card.cardId, persistentTags);
@@ -132,6 +140,9 @@ export function installMingpaiController(
       dropUntrustedOrder();
       resetSpellMoveState();
       lastJiaoyuDatas = '';
+      xinyouCardsBySeat.clear();
+      xinyouClosed = false;
+      lastPhase = null;
       resetQiTransferState();
       seatStateStore.resetKnownHands();
       if (lastCardList.length) engine.resetAllCardsToDrawPile(lastCardList);
@@ -142,6 +153,9 @@ export function installMingpaiController(
     if (event.type === 'game-ended') {
       resetSpellMoveState();
       lastJiaoyuDatas = '';
+      xinyouCardsBySeat.clear();
+      xinyouClosed = false;
+      lastPhase = null;
       // 同房间结算/再开不切场景，只能靠协议清空；不要 store.clear() 把 inGame 打成 false，
       // 否则下一帧场景轮询又会当成新的 game-started，并把残留 CardUi 写回引擎。
       clearTempZoneGrids();
@@ -155,6 +169,9 @@ export function installMingpaiController(
       // 开局一律丢掉上一局缓存。热重载恢复只留给 game-reconnected。
       resetSpellMoveState();
       lastJiaoyuDatas = '';
+      xinyouCardsBySeat.clear();
+      xinyouClosed = false;
+      lastPhase = null;
       clearTempZoneGrids();
       resetQiTransferState();
       lastCardList = [];
@@ -187,6 +204,9 @@ export function installMingpaiController(
     }
     if (event.type === 'opt-target') {
       const srcSeatId = event.srcSeatId ?? event.seatId;
+      if (readSpellName(event.spellId) === '火攻') {
+        markSourceLabelCards('[火攻]', [...event.params, ...(event.cardIds ?? [])]);
+      }
       const snapshot = seatStateStore.getSnapshot();
       const reveals = judgeOptTarget({
         spellId: event.spellId,
@@ -208,6 +228,7 @@ export function installMingpaiController(
       return;
     }
     if (event.type === 'spell-opt-rep') {
+      if (readSpellName(event.spellId) === '火攻') markSourceLabelCards('[火攻]', event.datas);
       const reveals = judgeSpellOpt(event.spellId, event.optType, event.seatId, event.datas);
       traceMingpai('spell-opt-rep', {
         spellId: event.spellId, optType: event.optType, seatId: event.seatId,
@@ -256,14 +277,28 @@ export function installMingpaiController(
         clearPersistentTag(cardId, JIAOYU_TAG);
       });
     }
-    if (event.type === 'phase-changed') noteCurrentTurnSeat(event.seatId);
-    if (event.type === 'phase-changed' && xinyouTagExpires(event.phase)) {
-      clearAllXinyouTags();
+    if (event.type === 'turn-started' || event.type === 'phase-changed') {
+      if (event.type === 'phase-changed') {
+        noteCurrentTurnSeat(event.seatId);
+        lastPhase = event.phase;
+      }
+      const phase = event.type === 'phase-changed' ? event.phase : event.round;
+      if (xinyouTagExpires(phase)) {
+        xinyouClosed = true;
+        clearAllXinyouTags();
+      }
+    }
+    if (event.type === 'xinyou-cards-updated') {
+      applyXinyouRoleCards(event.seatId, event.cardIds);
     }
     if (event.type === 'spell-targeted' && QI_TRANSFER_SPELL_IDS.has(event.spellId)) {
       recordQiTransferSpell(event.seatId, event.targetSeatIds);
     }
     if (event.type === 'spell-targeted') {
+      if (readSpellName(event.spellId) === '火攻') markSourceLabelCards('[火攻]', event.cardIds);
+      if (readSpellName(event.spellId) === '霸朝') {
+        bachaoGain = { seatId: event.seatId, expiresAfterMovement: movementSequence + 24 };
+      }
       noteSpellShownCards(
         event.spellId,
         event.seatId,
@@ -273,6 +308,7 @@ export function installMingpaiController(
         event.effectIndex ?? null
       );
       if (isXinyouSpell(event.spellId)) {
+        xinyouClosed = false;
         xinyouCaster = { seatId: event.seatId, expiresAfterMovement: movementSequence + 8 };
       }
     }
@@ -299,11 +335,38 @@ export function installMingpaiController(
     seatStateStore.setPersistentKnownCardTags(cardId, engine.getPersistentTags(cardId));
   }
 
-  /** 弃牌阶段结束后，本回合所有心幽牌都恢复计入手牌上限。 */
-  function clearAllXinyouTags(): void {
+  /** 牌面上已经写过的心幽、椒遇不能再当新标签记回来，否则清掉后又会被刷上。 */
+  function tagsFromScene(tags: readonly string[]): string[] {
+    return tags.filter((tag) => tag !== XINYOU_TAG && tag !== JIAOYU_TAG);
+  }
+
+  /** 按这一座位最新的心幽名单增删标记。空名单表示这些牌不再不计上限。 */
+  function applyXinyouRoleCards(seatId: number, cardIds: readonly number[]): void {
+    const next = [...new Set(cardIds.filter((cardId) => cardId > 0))];
+    if (xinyouClosed && next.length) return;
+    if (next.length) xinyouCardsBySeat.set(seatId, next);
+    else xinyouCardsBySeat.delete(seatId);
+    const kept = new Set([...xinyouCardsBySeat.values()].flat());
     engine.getSnapshot().records.forEach((record) => {
-      if (record.persistentTags.includes(XINYOU_TAG)) clearXinyouTag(record.cardId);
+      if (record.persistentTags.includes(XINYOU_TAG) && !kept.has(record.cardId)) clearXinyouTag(record.cardId);
     });
+    next.forEach((cardId) => {
+      engine.rememberPersistentCardTag(cardId, XINYOU_TAG);
+      seatStateStore.setPersistentKnownCardTags(cardId, engine.getPersistentTags(cardId));
+    });
+  }
+
+  /** 回合结束后，本回合所有心幽牌都恢复计入手牌上限。 */
+  function clearAllXinyouTags(): void {
+    xinyouCardsBySeat.clear();
+    xinyouCaster = null;
+    const cardIds = new Set<number>([
+      ...engine.listCardIdsWithPersistentTag(XINYOU_TAG),
+      ...engine.getSnapshot().records
+        .filter((record) => record.persistentTags.includes(XINYOU_TAG))
+        .map((record) => record.cardId)
+    ]);
+    cardIds.forEach((cardId) => clearXinyouTag(cardId));
   }
 
   /** 断线或局面不可信时丢掉牌堆顺序和临时区，避免用旧顺序猜牌。 */
@@ -394,6 +457,44 @@ export function installMingpaiController(
     return false;
   }
 
+  /** 给这几张牌打上来源短名，自己的手牌和别人亮出来的牌都能用。 */
+  function markSourceLabelCards(label: string, cardIds: readonly number[]): void {
+    cardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
+      engine.rememberPersistentCardTag(cardId, label);
+      const persistentTags = engine.getPersistentTags(cardId);
+      if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
+    });
+  }
+
+  /** 霸朝结算里别人交出的牌，协议上常常不带技能号，仍标是谁给的。 */
+  function bachaoGivenLabel(event: MoveCardEvent): string | null {
+    if (!bachaoGain || movementSequence > bachaoGain.expiresAfterMovement) return null;
+    if (event.toZone !== HAND_ZONE || event.toId !== bachaoGain.seatId) return null;
+    if (event.fromId === event.toId || event.fromId === 0xff) return null;
+    if (event.fromZone !== HAND_ZONE && event.fromZone !== 4) return null;
+    return `[霸朝]${readSeatLabel(event.fromId)}`;
+  }
+
+  /** 顺手拿到的牌、火攻当场亮出的牌，都按技能短名打上标签。 */
+  function rememberIncomingHandLabels(event: MoveCardEvent, cardIds: readonly number[]): void {
+    const sourceLabel = legacyIncomingHandLabel({
+      spellId: event.spellId,
+      moveType: event.moveType,
+      fromZone: event.fromZone,
+      toZone: event.toZone,
+      fromId: event.fromId,
+      toId: event.toId,
+      selfSeatId: seatStateStore.getSnapshot().selfSeatId,
+      seatLabel: readSeatLabel
+    }) ?? bachaoGivenLabel(event);
+    if (!sourceLabel) return;
+    cardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
+      engine.rememberPersistentCardTag(cardId, sourceLabel);
+      const persistentTags = engine.getPersistentTags(cardId);
+      if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
+    });
+  }
+
   /**
    * 一次移牌。先丢掉半透明占位号，再按国战规则改牌堆顶底。
    * 同区展示不换主人；其余移动先把能确定的牌尽量补上，落位交给明牌引擎。
@@ -432,7 +533,11 @@ export function installMingpaiController(
         }
       }
     );
-    if (corrected.ignore) return;
+    if (corrected.ignore) {
+      // 移动类型 0 的展示不会改牌的位置，但火攻亮出的牌、霸朝交来的牌仍要标来源。
+      rememberIncomingHandLabels(rawEvent, rawEvent.cardIds);
+      return;
+    }
     const event: MoveCardEvent = {
       ...rawEvent,
       cardIds: corrected.cardIds,
@@ -440,6 +545,7 @@ export function installMingpaiController(
       toPosition: corrected.toPosition
     };
     if (isInPlaceCardShow({ ...event, srcSeatId: event.srcSeatId ?? null }) && applySameZoneShow(event)) {
+      rememberIncomingHandLabels(event, event.cardIds);
       return;
     }
 
@@ -500,7 +606,7 @@ export function installMingpaiController(
     const appliedCardIds = event.fromZone !== HAND_ZONE && engineMovedCardIds.some((cardId) => cardId > 0)
       ? [...engineMovedCardIds]
       : recoveredCardIds;
-    if (isXinyouCardGain({
+    if (!xinyouClosed && isXinyouCardGain({
       spellMatched: isXinyouSpell(event.spellId),
       toZone: event.toZone,
       toId: event.toId,
@@ -536,21 +642,7 @@ export function installMingpaiController(
       engine.removeZoneCardIds(MINGPAI_ZONE.UNKNOWN, known);
     }
 
-    const sourceLabel = legacyIncomingHandLabel({
-      spellId: event.spellId,
-      moveType: event.moveType,
-      fromZone: event.fromZone,
-      toZone: event.toZone,
-      fromId: event.fromId,
-      toId: event.toId,
-      selfSeatId: seatStateStore.getSnapshot().selfSeatId,
-      seatLabel: readSeatLabel
-    });
-    if (sourceLabel) {
-      appliedCardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
-        engine.rememberPersistentCardTag(cardId, sourceLabel);
-      });
-    }
+    rememberIncomingHandLabels(event, appliedCardIds);
     appliedCardIds.forEach((cardId) => {
       const persistentTags = engine.getPersistentTags(cardId);
       if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
@@ -578,6 +670,7 @@ export function installMingpaiController(
     pendingQiDeath = null;
     pendingQiTransfer = null;
     xinyouCaster = null;
+    bachaoGain = null;
     movementSequence = 0;
     qiStateObserved = false;
   }

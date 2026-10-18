@@ -9,6 +9,8 @@ import ShoupaiCardFace from './ShoupaiCardFace.vue';
 const props = defineProps<{
   skillAssistStore: SkillAssistStore;
   gameCardCatalog: GameCardCatalog;
+  /** 只显示这一块。曹金玉和权道分开挂，不进同一组。 */
+  soloPanelId?: string;
 }>();
 
 const snapshot = ref(props.skillAssistStore.getSnapshot());
@@ -18,7 +20,11 @@ const stop = props.skillAssistStore.subscribe((next) => {
 onBeforeUnmount(stop);
 
 const visiblePanels = computed(() =>
-  snapshot.value.panels.filter((panel) => panel.visible)
+  snapshot.value.panels.filter((panel) => {
+    if (!panel.visible) return false;
+    if (props.soloPanelId) return panel.id === props.soloPanelId;
+    return panel.id !== 'yuqi';
+  })
 );
 
 function suitParts(token: string) {
@@ -133,6 +139,11 @@ async function copyOption(key: string, text: string): Promise<void> {
 
 .xc-hero-block + .xc-hero-block {
   border-top: 1px solid rgba(242, 222, 156, .25);
+}
+
+.card-detail-feature-title,
+.card-detail-feature-result {
+  white-space: pre-line;
 }
 
 .card-detail-feature-title {

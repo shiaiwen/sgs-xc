@@ -85,6 +85,11 @@ const QI_TAG = '炁';
 /** 会跟着牌一直走下去的标签：牌离开手牌也不丢。 */
 const STICKY_TAGS = new Set<string>([QI_TAG, '心幽', '椒遇']);
 
+/** 顺手、火攻这类来源短名，形如「[顺手]」。牌还在手上时要能画出来，离开手牌就丢掉。 */
+function isSourceHandLabel(tag: string): boolean {
+  return /^\[[^\]]+\]/.test(String(tag ?? '').trim());
+}
+
 export function setCardGraphClock(next: Partial<CardGraphClock>): void {
   clock = { ...clock, ...next };
 }
@@ -867,9 +872,10 @@ export function rememberMingpaiCardTags(cardId: number, tags: readonly string[] 
   const id = Number(cardId);
   if (!(id > 0)) return [];
   const incoming = normalizeTags(tags);
+  const hasSource = incoming.some(isSourceHandLabel);
   const persistent = normalizeTags([
-    ...(mingpaiPersistentCardTags.get(id) ?? []),
-    ...incoming.filter(isStickyMingpaiTag)
+    ...(mingpaiPersistentCardTags.get(id) ?? []).filter((tag) => !hasSource || !isSourceHandLabel(tag)),
+    ...incoming.filter((tag) => isStickyMingpaiTag(tag) || isSourceHandLabel(tag))
   ]);
   if (persistent.length) mingpaiPersistentCardTags.set(id, persistent);
   const all = normalizeTags([...incoming, ...persistent]);
@@ -908,6 +914,17 @@ export function getPersistentMingpaiCardTags(cardId: number): string[] {
   return [...(mingpaiPersistentCardTags.get(Number(cardId)) ?? [])];
 }
 
+/** 持久标签里还带着这个字的牌。清标记时不能只看当前牌位，没进牌位图的牌也要清。 */
+export function listCardIdsWithPersistentTag(tag: string): number[] {
+  const normalized = String(tag ?? '').trim();
+  if (!normalized) return [];
+  const cardIds: number[] = [];
+  mingpaiPersistentCardTags.forEach((tags, cardId) => {
+    if (tags.includes(normalized)) cardIds.push(cardId);
+  });
+  return cardIds;
+}
+
 export function getMingpaiCardTags(cardId: number): string[] {
   return (mingpaiCardTags.get(Number(cardId)) ?? []).slice();
 }
@@ -935,7 +952,9 @@ export function getMingpaiQiOwner(cardId: number): number | null {
 export function retainPersistentMingpaiCardTags(cardId: number): string[] {
   const id = Number(cardId);
   if (!(id > 0)) return [];
-  const persistent = (mingpaiPersistentCardTags.get(id) ?? []).slice();
+  const persistent = (mingpaiPersistentCardTags.get(id) ?? []).filter((tag) => !isSourceHandLabel(tag));
+  if (persistent.length) mingpaiPersistentCardTags.set(id, persistent);
+  else mingpaiPersistentCardTags.delete(id);
   if (persistent.length) mingpaiCardTags.set(id, persistent);
   else mingpaiCardTags.delete(id);
   return persistent;

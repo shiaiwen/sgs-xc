@@ -17,6 +17,7 @@ import {
   replaceBlockedEffectUrl,
   type EffectResourceFlags
 } from './effect-resource-filter.ts';
+import { classifyPlayback, kindFromCard, type PlaybackKind } from './effect-playback.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -90,9 +91,26 @@ export function installBlockEffectsController(
   const isOn = (key: BlockSettingKey) => configStore.get(key) === true;
   const resourceFlags = (): EffectResourceFlags => ({
     sha: isOn('block.shaEffect'),
+    shan: isOn('block.shanEffect'),
     heal: isOn('block.healEffect'),
+    shake: isOn('block.shakeEffect'),
     interact: isOn('block.interactEffect')
   });
+  const KIND_SWITCH: Record<PlaybackKind, BlockSettingKey> = {
+    sha: 'block.shaEffect',
+    shan: 'block.shanEffect',
+    heal: 'block.healEffect',
+    trick: 'block.jinnangEffect',
+    equip: 'block.equipEffect',
+    skill: 'block.skillEffect'
+  };
+  const kindOn = (kind: string) => {
+    const key = KIND_SWITCH[kind as PlaybackKind];
+    return key ? isOn(key) : false;
+  };
+  const skinBlocked = (seat: UnknownRecord | null) => Boolean(seat?.IsSelf)
+    ? isOn('block.selfSkinEffect')
+    : isOn('block.otherSkinState');
   const replaceUrl = (url: unknown) => {
     const flags = resourceFlags();
     return hasAnyEffectResourceBlock(flags) ? replaceBlockedEffectUrl(String(url || ''), flags) : url;
@@ -406,9 +424,20 @@ export function installBlockEffectsController(
       const rewardScene = await poll(() => (
         typeof locator.gameScene()?.showGameRewardPointEffect2 === 'function' ? locator.gameScene() : null
       ), 60, 100);
-      for (const method of ['showGameRewardPointEffect2', 'showGameRewardPointEffect5']) {
+      for (const [method, kind] of [
+        ['showGameRewardPointEffect1', 'block.killEffect'],
+        ['showGameRewardPointEffect3', 'block.killEffect'],
+        ['showGameRewardPointEffect2', 'block.healEffect'],
+        ['showGameRewardPointEffect5', 'block.healEffect']
+      ] as const) {
         patcher.wrap(rewardScene, method, (original) => function (this: unknown, ...args) {
-          if (!isOn('block.healEffect')) return original.apply(this, args);
+          if (!isOn(kind)) return original.apply(this, args);
+          return undefined;
+        });
+      }
+      for (const method of ['PlaySimpleShakeEffect', 'PlaySimpleShakeEffect2']) {
+        patcher.wrap(rewardScene, method, (original) => function (this: unknown, ...args) {
+          if (!isOn('block.shakeEffect') && !isOn('block.skillEffect')) return original.apply(this, args);
           return undefined;
         });
       }
@@ -448,6 +477,14 @@ export function installBlockEffectsController(
         });
         for (const method of ['PlayEffect', 'PlayEffectSYS']) {
           patcher.wrap(effectPlayer, method, (original) => function (this: unknown, ...args) {
+            if (locator.gameScene()) {
+              const data = asRecord(args[0]);
+              const kind = data ? classifyPlayback(data.EffectPath, args[1] ?? data.AniName) : '';
+              if (kindOn(kind)) {
+                triggerHit(asRecord(args[2]));
+                return null;
+              }
+            }
             if (!isOn('block.jinnangEffect') || !JINNANG_SKILL_IDS.has(Number(args[0]))) {
               return original.apply(this, args);
             }
@@ -468,7 +505,76 @@ export function installBlockEffectsController(
       }, 60, 100);
       patcher.wrap(seatContainer, 'ReadyInteractProp', createReadyInteractPropWrapper);
 
+      const seatUiPrototype = await poll(() => {
+        const selfSeatUi = asRecord(locator.gameScene()?.SelfSeatUi);
+        const prototype = asRecord(asRecord(selfSeatUi?.constructor)?.prototype);
+        return typeof prototype?.playCardSkillAnimate === 'function' ? prototype : null;
+      }, 60, 100);
+      patcher.wrap(seatUiPrototype, 'play2DHurtShaEffect', (original) => function (this: unknown, ...args) {
+        if (locator.gameScene() && (isOn('block.shaEffect') || isOn('block.shakeEffect'))) return undefined;
+        return original.apply(this, args);
+      });
+      patcher.wrap(seatUiPrototype, 'OnShowAttackedEffect', (original) => function (this: unknown, ...args) {
+        if (locator.gameScene() && isOn('block.shakeEffect')) return undefined;
+        return original.apply(this, args);
+      });
+      patcher.wrap(seatUiPrototype, 'ShowEquipTrailEffect', (original) => function (this: unknown, ...args) {
+        if (locator.gameScene() && isOn('block.equipEffect')) return undefined;
+        return original.apply(this, args);
+      });
+      patcher.wrap(seatUiPrototype, 'playXDJXSkillEffect', (original) => function (this: unknown, ...args) {
+        if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
+        return original.apply(this, args);
+      });
+      patcher.wrap(seatUiPrototype, 'playHurtShake', (original) => function (this: unknown, ...args) {
+        if (locator.gameScene() && isOn('block.shakeEffect')) return undefined;
+        return original.apply(this, args);
+      });
+      patcher.wrap(seatUiPrototype, 'playCardSkillAnimate', (original) => function (this: unknown, card: unknown, ...rest) {
+        const kind = kindFromCard(asRecord(card) as never);
+        if (kindOn(kind)) return undefined;
+        return original.call(this, card, ...rest);
+      });
+      patcher.wrap(seatUiPrototype, 'playGeneralSpEffect', (original) => function (this: UnknownRecord, ...args) {
+        if (isOn('block.skillEffect') || skinBlocked(asRecord(this.seat))) return false;
+        return original.apply(this, args);
+      });
+      patcher.wrap(seatUiPrototype, 'onPlayNewSpEffect', (original) => function (this: UnknownRecord, type: unknown, ...rest) {
+        const seat = asRecord(this.seat);
+        const skillTyped = [2, 4, 5].includes(Number(type)) && isOn('block.skillEffect');
+        if (skinBlocked(seat) || skillTyped) return undefined;
+        return original.call(this, type, ...rest);
+      });
+      patcher.wrap(asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat) && Object.getPrototypeOf(asRecord(locator.gameScene()?.SelfSeatUi)?.seat as object), 'DrawCards', (original) => function (this: unknown, ...args) {
+        if (locator.gameScene() && isOn('block.jinnangEffect') && asRecord(args[5])?.SpellID === 7) args[6] = null;
+        return original.apply(this, args);
+      });
+
+      const effectCtrl = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.effectCtrl);
+      const playbackTargets = [effectPlayer, effectCtrl].filter((item, index, list) => item && list.indexOf(item) === index);
+      for (const target of playbackTargets) {
+        patcher.wrap(target, 'ShowMulitEffectByData', (original) => function (this: unknown, data: unknown, ...rest) {
+          if (!locator.gameScene()) return original.call(this, data, ...rest);
+          const kind = classifyPlayback(asRecord(data)?.EffectPath, rest[1]);
+          if (!kindOn(kind)) return original.call(this, data, ...rest);
+          triggerHit(asRecord(rest[2]));
+          return null;
+        });
+      }
+      if (effectPlayer) {
+        patcher.wrap(effectPlayer, 'GetHighQualitySkillEffect', (original) => function (this: unknown, ...args) {
+          const created = original.apply(this, args);
+          const target = asRecord(created);
+          patcher.wrap(target, 'PlayTriggerEffect', (play) => function (this: unknown, ...playArgs) {
+            if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
+            return play.apply(this, playArgs);
+          });
+          return created;
+        });
+      }
+
       installBaseEffectPatches();
+      sweepLiveEffects();
     })();
   }
 
@@ -609,6 +715,27 @@ export function installBlockEffectsController(
     return null;
   }
 
+  /** 开关打开时清掉已经在播的选中、受击和武将动画，避免要等下一次才消失。 */
+  function sweepLiveEffects(): void {
+    const scene = locator.gameScene();
+    const seats = asRecord(scene?.seatContainer)?.seatUIs ?? scene?.seatUIs;
+    if (!Array.isArray(seats)) return;
+    for (const item of seats) {
+      const seatUi = asRecord(item);
+      if (!seatUi) continue;
+      const seat = asRecord(seatUi.seat);
+      if (isOn('block.selectEffect')) seatUi.allowAttackEffect = null;
+      if (isOn('block.skillEffect') || skinBlocked(seat)) {
+        callMethod(seatUi, 'clearOutAvatarAni');
+        callMethod(seatUi, 'clearNewFullScreenEffect');
+      }
+      if (isOn('block.shakeEffect')) {
+        callMethod(seatUi.hurtShakeTween, 'clearAll');
+        seatUi.hurtShakeTween = null;
+      }
+    }
+  }
+
   function installRecordViewTracker(): void {
     const scene = locator.scene();
     patcher.wrap(scene ? Object.getPrototypeOf(scene) : null, 'showRecordWindow', (original) => function (this: unknown, ...args) {
@@ -619,16 +746,80 @@ export function installBlockEffectsController(
 
   // ---------- 击杀、红点、资源 ----------
 
-  async function installKillEffectBlock(): Promise<void> {
-    const contextClass = await poll(() => {
-      const context = locator.gameContext();
-      if (!context) return null;
-      const owner = typeof context === 'function' ? context : asRecord(context.constructor);
-      return owner && Object.getOwnPropertyDescriptor(owner, 'ShowGameDetonationEffects')?.get ? owner : null;
-    }, 40, 500);
-    patcher.wrapGetter(contextClass, 'ShowGameDetonationEffects', (originalGet) => () => (
-      !isOn('block.killEffect') && originalGet()
-    ));
+  let killEffectInstallStarted = false;
+
+  function installKillEffectBlock(): void {
+    if (killEffectInstallStarted || disposed) return;
+    killEffectInstallStarted = true;
+    void poll(findDetonationOwner, Infinity, 500).then((owner) => {
+      if (!owner || disposed) return;
+      const descriptor = Object.getOwnPropertyDescriptor(owner, 'ShowGameDetonationEffects');
+      if (descriptor?.get) {
+        patcher.wrapGetter(owner, 'ShowGameDetonationEffects', (originalGet) => () => (
+          !isOn('block.killEffect') && originalGet()
+        ));
+        return;
+      }
+      if (!descriptor || !('value' in descriptor)) return;
+      let stored = descriptor.value;
+      const getter = () => (isOn('block.killEffect') ? false : stored);
+      const setter = (value: unknown) => {
+        stored = value;
+      };
+      try {
+        Object.defineProperty(owner, 'ShowGameDetonationEffects', {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          get: getter,
+          set: setter
+        });
+        cleanups.push(() => {
+          try {
+            Object.defineProperty(owner, 'ShowGameDetonationEffects', descriptor);
+          } catch {
+            // 游戏随后又改过这个字段时，保留当前包装。
+          }
+        });
+      } catch {
+        // 字段不可改时，场景上的播报方法仍然会拦住。
+      }
+    });
+  }
+
+  function findDetonationOwner(): UnknownRecord | null {
+    const browserWindow = asRecord(globalObject.Laya?.Browser?.window);
+    const candidates = [
+      globalObject.GameContext,
+      browserWindow?.GameContext,
+      locator.gameContext(),
+      locator.managerFromList((item) => asRecord(item.constructor)?.name === 'GameContext')
+    ];
+    for (const candidate of candidates) {
+      const owner = detonationPropertyOwner(candidate);
+      if (owner) return owner;
+    }
+    return null;
+  }
+
+  function detonationPropertyOwner(candidate: unknown): UnknownRecord | null {
+    const record = asRecord(candidate);
+    if (!record) return null;
+    const roots = [
+      typeof candidate === 'function' ? record : null,
+      asRecord(record.constructor),
+      record,
+      asRecord(Object.getPrototypeOf(record))
+    ];
+    const seen = new Set<UnknownRecord>();
+    for (const root of roots) {
+      let current = root;
+      while (current && current !== Object.prototype && !seen.has(current)) {
+        seen.add(current);
+        if (Object.prototype.hasOwnProperty.call(current, 'ShowGameDetonationEffects')) return current;
+        current = asRecord(Object.getPrototypeOf(current));
+      }
+    }
+    return null;
   }
 
   function taskRedDotManager(): UnknownRecord | null {
@@ -726,7 +917,22 @@ export function installBlockEffectsController(
     configStore.subscribe('block.noticeWindow', () => syncMarquee()),
     configStore.subscribe('block.taskRedDot', ({ value }) => {
       if (value) clearAllRedDots();
-    })
+    }),
+    ...([
+      'block.shaEffect',
+      'block.shanEffect',
+      'block.healEffect',
+      'block.jinnangEffect',
+      'block.equipEffect',
+      'block.shakeEffect',
+      'block.skillEffect',
+      'block.selectEffect',
+      'block.selfSkinEffect',
+      'block.otherSkinState',
+      'block.killEffect'
+    ] as const).map((key) => configStore.subscribe(key, ({ value }) => {
+      if (value) sweepLiveEffects();
+    }))
   );
 
   installResourceRequestFilter();

@@ -17,7 +17,7 @@ type EffectConstructor = new () => UnknownRecord;
 export interface SkinBackgroundRenderer {
   readonly resource: Partial<BackgroundResource>;
   hasBackground(): boolean;
-  setBackground(resource?: Partial<BackgroundResource>): Promise<boolean>;
+  setBackground(resource?: Partial<BackgroundResource>, persist?: boolean): Promise<boolean>;
   setEnabled(enabled: boolean): Promise<void>;
   /** 清除当前背景；forget 为 true 时同时删除本地记录（改用官方背景时）。 */
   clearBackground(forget?: boolean): void;
@@ -190,7 +190,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     }
   }
 
-  async function setBackground(next: Partial<BackgroundResource> = resource): Promise<boolean> {
+  async function setBackground(next: Partial<BackgroundResource> = resource, persist = true): Promise<boolean> {
     const { url, type = 0, width = 0, height = 0 } = next;
     if (!url) return false;
     if (!sprite?._parent && !(await tasks.poll(() => init(), 20, 500))) return false;
@@ -202,7 +202,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       layout();
       spriteUrl = url;
       resource = { url, type: Number(type), width: Number(width), height: Number(height) };
-      store.saveResource(resource as BackgroundResource);
+      if (persist) store.saveResource(resource as BackgroundResource);
     }
     return true;
   }

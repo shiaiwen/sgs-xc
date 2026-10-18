@@ -25,6 +25,22 @@ export function isNewerVersion(latest: string, current: string): boolean {
   return compareVersions(latest, current) > 0;
 }
 
+/** 取较新的版本。空字符串不参与比较。 */
+export function newerVersion(left: string, right: string): string {
+  const first = String(left || '').trim();
+  const second = String(right || '').trim();
+  if (!first) return second;
+  if (!second) return first;
+  return compareVersions(first, second) >= 0 ? first : second;
+}
+
+/** 油猴管理器报告的已安装脚本版本。没有或格式不对时返回空字符串。 */
+export function readUserscriptManagerVersion(): string {
+  const info = (globalThis as { GM_info?: { script?: { version?: unknown } } }).GM_info;
+  const version = String(info?.script?.version ?? '').trim();
+  return /^\d+(?:\.\d+)*$/.test(version) ? version : '';
+}
+
 /** 同一远程号已点过「稍后」则不再弹窗，角标仍由是否有更新决定。 */
 export function shouldPromptUpdateDialog(latestVersion: string, dismissedVersion: string): boolean {
   if (!latestVersion) return false;
@@ -52,9 +68,8 @@ export function parseUpdateManifest(raw: unknown, fallbackPageUrl = XIAOCHAO_UPD
   return { version, notes, pageUrl };
 }
 
-/** 构建时注入的 __XIAOCHAO_VERSION__；缺失时回退 0.0.0。 */
+/** 构建时写进脚本的版本。缺失时回退 0.0.0。 */
 export function getXiaochaoVersion(): string {
-  return typeof __XIAOCHAO_VERSION__ === 'string' && __XIAOCHAO_VERSION__.trim()
-    ? __XIAOCHAO_VERSION__.trim()
-    : '0.0.0';
+  const injected = typeof __XIAOCHAO_VERSION__ === 'string' ? __XIAOCHAO_VERSION__.trim() : '';
+  return injected || '0.0.0';
 }

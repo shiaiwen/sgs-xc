@@ -17,7 +17,8 @@ const configStore = createConfigStore({
   read: () => ({ ...memory }),
   write: (next) => {
     Object.assign(memory, next);
-  }
+  },
+  hasAccount: () => true
 });
 
 const turnStatusStore = createTurnStatusStore();

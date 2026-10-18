@@ -5,18 +5,28 @@
 import type { XiaochaoConfigKey } from '../../config/config-schema.ts';
 
 export const EXTRA_ASSIST_ENABLED_KEY = 'assist.extraEnabled' satisfies XiaochaoConfigKey;
+export const SUNQUAN_ASSIST_KEY = 'assist.sunquanEnabled' satisfies XiaochaoConfigKey;
+export const PEIXIU_ASSIST_KEY = 'assist.peixiuEnabled' satisfies XiaochaoConfigKey;
+export const XUSHAO_ASSIST_KEY = 'assist.xushaoEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_BOT_ENABLED_KEY = 'assist.autoBotEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_HG_ENABLED_KEY = 'assist.autoHGEnabled' satisfies XiaochaoConfigKey;
 export const BAI_SHENG_ENABLED_KEY = 'assist.baiShengEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_BOT_TAVERN_TARGET_KEY = 'assist.autoBotTavernTarget' satisfies XiaochaoConfigKey;
 
-/** 进阶辅助开关的说明文字。 */
-export const EXTRA_ASSIST_TOOLTIP = [
-  '开启后可使用进阶武将辅助',
-  '魔孙权：显示权御增益状态',
-  '裴秀：显示地图路线辅助',
-  '许劭：显示评鉴可连词框'
-].join('\n');
+/** 进阶辅助总开关的说明。具体武将在下一级里单独选。 */
+export const EXTRA_ASSIST_TOOLTIP = '打开后可以分别选择孙权、裴秀、许邵';
+
+export interface ExtraAssistCharacterSetting {
+  key: typeof SUNQUAN_ASSIST_KEY | typeof PEIXIU_ASSIST_KEY | typeof XUSHAO_ASSIST_KEY;
+  label: string;
+  tooltip: string;
+}
+
+export const EXTRA_ASSIST_CHARACTER_SETTINGS: readonly ExtraAssistCharacterSetting[] = [
+  { key: SUNQUAN_ASSIST_KEY, label: '孙权', tooltip: '显示权御增益状态' },
+  { key: PEIXIU_ASSIST_KEY, label: '裴秀', tooltip: '显示地图路线辅助' },
+  { key: XUSHAO_ASSIST_KEY, label: '许邵', tooltip: '显示评鉴可连词框' }
+];
 
 export const AUTO_BOT_TOOLTIP = [
   '自动选将、出牌、桌上准备；大厅可建密码房或国战房',

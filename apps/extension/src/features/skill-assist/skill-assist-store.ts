@@ -25,7 +25,6 @@ import {
 } from './point-calculators.ts';
 import {
   CHENGXIANG_SKILL_ID,
-  HEZHONG_SKILL_ID,
   JIE_CHENGXIANG_SKILL_ID,
   JIZHAN_SKILL_ID,
   LUANJI_SKILL_ID,
@@ -35,8 +34,8 @@ import {
   ZIYUAN_PANEL_ID
 } from './skill-definitions.ts';
 import {
-  formatHezhong,
   formatJizhan,
+  formatCaojinyu,
   formatQuandao,
   formatShuangxiong,
   rankNumber
@@ -155,8 +154,9 @@ export function createSkillAssistStore(
   );
   let inGame = false;
   let currentSeatId: number | null = null;
-  /** 本局全部卡号（MsgGamePlayCardNtf）；吉占 / 和衷据此推算牌堆里可能的牌。 */
+  /** 本局全部卡号（MsgGamePlayCardNtf）；吉占据此推算牌堆里可能的牌。 */
   let gameCardIds: readonly number[] = [];
+  let lastScene: GameSceneSeatSource | null = null;
   /** 本回合计数：权变的非装备牌张数与花色、乱击用过的花色。 */
   const turnState = { quanbianCount: 0, quanbianSuits: [] as string[], luanjiSuits: [] as string[] };
   let snapshot = buildSnapshot();
@@ -172,6 +172,7 @@ export function createSkillAssistStore(
         const zoneId = definition.shownCardZoneId ?? null;
         if (definition.id === ZIYUAN_PANEL_ID && runtime.visible) refreshZiyuan(runtime);
         if (definition.id === 'quandao' && runtime.visible) refreshQuandao(runtime);
+        if (definition.id === 'yuqi' && runtime.visible) refreshYuqi(runtime);
         if (definition.id === 'shuangxiong' && runtime.visible) refreshShuangxiong(runtime);
         return Object.freeze({
           id: definition.id,
@@ -276,15 +277,26 @@ export function createSkillAssistStore(
       publish(buildSnapshot());
     },
     refreshVisibility(scene) {
+      lastScene = scene;
       let changed = false;
+      const seated = Array.isArray(scene?.seatContainer?.seatUIs) && scene.seatContainer.seatUIs.length > 0;
+      const playing = inGame || seated;
       for (const definition of definitions) {
         const runtime = panels.get(definition.id)!;
-        const visible = (inGame && runtime.pinned)
-          || isSkillAssistVisible(definition, scene, inGame, cardKnowledge.isSelfSeat);
+        const visible = (playing && runtime.pinned)
+          || isSkillAssistVisible(definition, scene, playing, cardKnowledge.isSelfSeat);
         if (runtime.visible === visible) continue;
         runtime.visible = visible;
         if (!visible) resetPanelContent(runtime);
         changed = true;
+      }
+      for (const id of ['quandao', 'yuqi'] as const) {
+        const runtime = panels.get(id);
+        if (!runtime?.visible) continue;
+        const previous = runtime.resultText;
+        if (id === 'quandao') refreshQuandao(runtime);
+        else refreshYuqi(runtime);
+        if (runtime.resultText !== previous) changed = true;
       }
       if (changed) publish(buildSnapshot());
     },
@@ -361,7 +373,6 @@ export function createSkillAssistStore(
           event.params.filter((cardId) => cardId > 0)
         );
         handleYicheng(event);
-        handleHezhongOptTarget(event);
         publish(buildSnapshot());
       }
     },
@@ -452,7 +463,7 @@ export function createSkillAssistStore(
     resetPanelContent(runtime);
   }
 
-  /** 称象 / 吉占 / 和衷都读技能亮出到展示区的牌；返回是否有面板更新。 */
+  /** 称象 / 吉占都读技能亮出到展示区的牌；返回是否有面板更新。 */
   function handleCardsMoved(event: CardsMovedEvent, scene: GameSceneSeatSource | null): boolean {
     const shown = event.cardIds.filter((cardId) => cardId > 0);
     if (isChengxiangSpell(event.spellId, scene)) {
@@ -486,10 +497,6 @@ export function createSkillAssistStore(
     ) {
       return showJizhan(shown[0], rankNumber(gameCardCatalog.resolve(shown[0])));
     }
-    if (event.spellId === HEZHONG_SKILL_ID && currentSeatId !== null && event.fromId === currentSeatId) {
-      const pivot = event.cardIds[0] > 0 ? rankNumber(gameCardCatalog.resolve(event.cardIds[0])) : 0;
-      return showHezhong(pivot, shown);
-    }
     return false;
   }
 
@@ -501,12 +508,6 @@ export function createSkillAssistStore(
     return showJizhan(cardId, rank);
   }
 
-  /** 和衷：GsCRoleOptTargetNtf 的 Param 为这次要比较的点数。 */
-  function handleHezhongOptTarget(event: OptTargetEvent): void {
-    if (event.spellId !== HEZHONG_SKILL_ID) return;
-    showHezhong(event.param, []);
-  }
-
   function showJizhan(cardId: number, pivot: number): boolean {
     const runtime = panels.get('jizhan');
     if (!runtime || !(pivot >= 1 && pivot <= 13)) return false;
@@ -514,16 +515,6 @@ export function createSkillAssistStore(
     runtime.resultText = gameCardIds.length
       ? formatJizhan(pivot, resolveCards(possibleDrawPileCardIds(cardId > 0 ? [cardId] : [])))
       : `【吉占】跟${pivot}比\n${NO_CARD_LIST_HINT}`;
-    return true;
-  }
-
-  function showHezhong(pivot: number, excluded: readonly number[]): boolean {
-    const runtime = panels.get('hezhong');
-    if (!runtime || !(pivot >= 1 && pivot <= 13)) return false;
-    pin(runtime);
-    runtime.resultText = gameCardIds.length
-      ? formatHezhong(pivot, resolveCards(possibleDrawPileCardIds(excluded)))
-      : `【和衷】跟${pivot}比\n${NO_CARD_LIST_HINT}`;
     return true;
   }
 
@@ -582,11 +573,121 @@ export function createSkillAssistStore(
     return seatIds.find((seatId) => cardKnowledge.isSelfSeat(seatId)) ?? seatIds[0];
   }
 
+  function refreshYuqi(runtime: PanelRuntime): void {
+    const liveCards = readSelfHandRawCards(lastScene);
+    if (liveCards) {
+      runtime.resultText = formatCaojinyu(liveCards.flatMap((rawCard) => {
+        const cardUi = asRecord(rawCard);
+        const card = asRecord(cardUi?.Card) ?? asRecord(cardUi?.card) ?? cardUi;
+        if (!card) return [];
+        const cardId = Number(card.cardId ?? card.cardID ?? card.CardId ?? card.CardID ?? card.id ?? card.ID);
+        const known = cardId > 0 ? gameCardCatalog.resolve(cardId) : null;
+        const redBlack = Number(card.Color ?? card.color);
+        return [{
+          suit: known?.suit ?? '',
+          redBlack: redBlack === 1 || redBlack === 2 ? redBlack : undefined
+        }];
+      }));
+      return;
+    }
+    const selfSeatId = findSelfSeatId();
+    if (selfSeatId === undefined) return;
+    runtime.resultText = formatCaojinyu(
+      mingpaiEngine.getHandCardIds(selfSeatId)
+        .filter((cardId) => cardId > 0)
+        .map((cardId) => ({ suit: gameCardCatalog.resolve(cardId).suit }))
+    );
+  }
+
   function refreshQuandao(runtime: PanelRuntime): void {
+    const liveHand = readSelfHandFaces(lastScene);
+    if (liveHand) {
+      runtime.resultText = formatQuandao(liveHand);
+      return;
+    }
     const selfSeatId = findSelfSeatId();
     if (selfSeatId === undefined) return;
     const handCardIds = mingpaiEngine.getHandCardIds(selfSeatId).filter((cardId) => cardId > 0);
     runtime.resultText = formatQuandao(resolveCards(handCardIds));
+  }
+
+  function readSelfHandCardIds(scene: GameSceneSeatSource | null): number[] | null {
+    const rawCards = readSelfHandRawCards(scene);
+    if (!rawCards) return null;
+    const ids = rawCards.flatMap((rawCard) => {
+      const cardUi = asRecord(rawCard);
+      const card = asRecord(cardUi?.Card) ?? asRecord(cardUi?.card) ?? cardUi;
+      const cardId = Number(card?.cardId ?? card?.cardID ?? card?.CardId ?? card?.CardID ?? card?.id ?? card?.ID ?? rawCard);
+      return cardId > 0 ? [cardId] : [];
+    });
+    return [...new Set(ids)];
+  }
+
+  function readSelfHandRawCards(scene: GameSceneSeatSource | null): unknown[] | null {
+    const seatUi = asRecord(scene?.SelfSeatUi);
+    if (!seatUi) return null;
+    const seat = asRecord(seatUi.seat) ?? seatUi;
+    const container = asRecord(seatUi.cardContainer);
+    const listed = firstCardList(seat, ['HandCards', 'handCards']);
+    const shown = firstCardList(container, ['cardUis', 'cardUIs', 'handCardUis', 'handCardUIs']);
+    return listed?.length ? listed : shown ?? null;
+  }
+
+  /** 自己的手牌以场面为准。明牌引擎里常常没有本家整手牌，权道会一直是 0。 */
+  function readSelfHandFaces(
+    scene: GameSceneSeatSource | null
+  ): Array<Pick<GameCardMetadata, 'name' | 'suit' | 'suitGlyph' | 'rank' | 'cardType'>> | null {
+    const rawCards = readSelfHandRawCards(scene);
+    if (!rawCards) return null;
+    return rawCards.flatMap((rawCard) => {
+      const cardUi = asRecord(rawCard);
+      const card = asRecord(cardUi?.Card) ?? asRecord(cardUi?.card) ?? cardUi;
+      if (!card) return [];
+      const cardId = Number(card.cardId ?? card.cardID ?? card.CardId ?? card.CardID ?? card.id ?? card.ID);
+      const known = cardId > 0 ? gameCardCatalog.resolve(cardId) : null;
+      const name = readCardText(card, ['CardName', 'cardName', 'Name', 'name']) || known?.name || '';
+      const cardType = Number(card.CardType ?? card.cardType ?? card.Type ?? card.type) || known?.cardType || 0;
+      const suit = suitFromCardColor(card) || known?.suit || '';
+      if (!name && !cardType && !suit) return [];
+      return [{
+        name,
+        suit,
+        suitGlyph: known?.suitGlyph ?? '',
+        rank: known?.rank ?? '',
+        cardType
+      }];
+    });
+  }
+
+  function suitFromCardColor(card: Record<string, unknown>): GameCardMetadata['suit'] {
+    const color = Number(card.Color ?? card.color ?? card.CardColor ?? card.cardColor
+      ?? card.CardFlower ?? card.cardFlower ?? card.Flower ?? card.flower);
+    if (color === 1) return 'heart';
+    if (color === 2) return 'diamond';
+    if (color === 3) return 'spade';
+    if (color === 4) return 'club';
+    return '';
+  }
+
+  function firstCardList(record: Record<string, unknown> | null, keys: readonly string[]): unknown[] | null {
+    if (!record) return null;
+    for (const key of keys) {
+      const value = record[key];
+      if (Array.isArray(value)) return value;
+    }
+    return null;
+  }
+
+  function readCardText(record: Record<string, unknown>, keys: readonly string[]): string {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return '';
+  }
+
+  function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null;
   }
 
   /** 牌堆候选：本局全部卡号去掉明牌引擎已知不在牌堆中的牌。 */

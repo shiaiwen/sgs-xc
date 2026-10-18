@@ -134,13 +134,14 @@ function readCardMetadata(
     : nativeCard;
   const encodedSuit = Math.floor(cardId / 10000);
   const encodedNumber = Math.floor(cardId / 100) % 100;
+  // 配置里的 color 才是花色。场上那张牌的 Color 只有 1 红、2 黑，不能拿来当花色。
   const suitNumber = positiveInteger(
-    cardData?.Color
-      ?? cardData?.color
-      ?? cardData?.CardSuit
-      ?? cardData?.cardSuit
-      ?? cardData?.suit
-  ) ?? encodedSuit;
+    configuredCard?.color
+      ?? configuredCard?.CardSuit
+      ?? configuredCard?.cardSuit
+      ?? configuredCard?.suit
+      ?? (configuredCard ? configuredCard.Color : undefined)
+  ) ?? (encodedSuit >= 1 && encodedSuit <= 4 ? encodedSuit : 0);
   const suit = SUITS[suitNumber as keyof typeof SUITS];
   const number = positiveInteger(
     cardData?.CardNumber
@@ -157,7 +158,7 @@ function readCardMetadata(
     suit: suit?.suit ?? '',
     suitGlyph: suit?.glyph ?? '',
     rank: formatRank(number),
-    isRed: suit?.red ?? false,
+    isRed: suit ? suit.red : nativeRedBlack(nativeCard) === 1,
     cardType: positiveInteger(
       cardData?.CardType
         ?? cardData?.cardType
@@ -165,6 +166,11 @@ function readCardMetadata(
         ?? cardData?.type
     ) ?? 0
   };
+}
+
+function nativeRedBlack(card: UnknownRecord | null): number {
+  const value = Number(card?.Color ?? card?.color);
+  return value === 1 || value === 2 ? value : 0;
 }
 
 function hasUsefulCardMetadata(card: UnknownRecord | null): boolean {

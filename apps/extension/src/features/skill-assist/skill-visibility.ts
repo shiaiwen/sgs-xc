@@ -90,15 +90,18 @@ export function isSkillAssistVisible(
     return seatUIs.some((rawSeatUI) => {
       const seatUI = asRecord(rawSeatUI);
       const seat = asRecord(seatUI?.seat) ?? seatUI;
-      const seatId = readSeatId(asRecord(seatUI?.seat)) ?? readSeatId(seatUI);
-      if (seatId === null || !isSelfSeat(seatId)) return false;
-      return seatHasSkill(scene, seatId, skillIds) || seatHasGeneralName(seat, generalNames);
+      if (!isOwnSeat(scene, rawSeatUI, seatUI, seat, isSelfSeat)) return false;
+      if (definition.selfGeneralOnly) return seatHasGeneralName(scene, seatUI, seat, generalNames);
+      const seatId = readSeatId(seatUI) ?? readSeatId(seat);
+      return (seatId !== null && seatHasSkill(scene, seatId, skillIds))
+        || seatHasNamedSkill(seat, definition.spellNames ?? [])
+        || seatHasGeneralName(scene, seatUI, seat, generalNames);
     });
   }
   if (anySeatHasSkill(scene, skillIds)) return true;
   return seatUIs.some((rawSeatUI) => {
     const seatUI = asRecord(rawSeatUI);
-    return seatHasGeneralName(asRecord(seatUI?.seat) ?? seatUI, generalNames);
+    return seatHasGeneralName(scene, seatUI, asRecord(seatUI?.seat) ?? seatUI, generalNames);
   });
 }
 
@@ -149,28 +152,108 @@ function findSpellDict(scene: GameSceneSeatSource | null): UnknownRecord | null 
   return fromGlobal && Object.keys(fromGlobal).length ? fromGlobal : null;
 }
 
-/** 座位主将 / 副将名：优先读座位上的武将对象，其次按武将 ID 查全局字典。 */
-function seatHasGeneralName(seat: UnknownRecord | null, nameSet: ReadonlySet<string>): boolean {
-  if (!seat || !nameSet.size) return false;
+/** 本家座位：场景标记、座位标记，或座位号对得上自己。 */
+function isOwnSeat(
+  scene: GameSceneSeatSource,
+  rawSeatUI: unknown,
+  seatUI: UnknownRecord | null,
+  seat: UnknownRecord | null,
+  isSelfSeat: (seatId: number) => boolean
+): boolean {
+  if (rawSeatUI && rawSeatUI === scene.SelfSeatUi) return true;
+  if (seat?.isSelf === true || seat?.IsSelf === true) return true;
+  const seatId = readSeatId(seatUI) ?? readSeatId(seat);
+  if (seatId !== null && isSelfSeat(seatId)) return true;
+  const myId = Number(asRecord(scene)?.myID);
+  return Number.isInteger(myId) && myId >= 0 && seatId === myId;
+}
+
+/** 座位主将 / 副将名。先读武将对象上的名字，再按武将编号查字典和场景武将表。 */
+function seatHasGeneralName(
+  scene: GameSceneSeatSource | null,
+  seatUI: UnknownRecord | null,
+  seat: UnknownRecord | null,
+  nameSet: ReadonlySet<string>
+): boolean {
+  if (!nameSet.size) return false;
+  const names: string[] = [];
   for (const key of ['General', 'general', 'General2', 'general2']) {
-    const general = asRecord(seat[key]);
-    for (const nameKey of ['cardName', 'specifyName', 'trueSpecifyName', 'Name', 'name']) {
-      const name = general?.[nameKey];
-      if (typeof name === 'string' && nameSet.has(name)) return true;
-    }
+    names.push(...readNameStrings(asRecord(seat?.[key])));
   }
-  const generalDict = asRecord(asRecord((globalThis as { jI?: unknown }).jI)?.generalDict);
-  if (!generalDict) return false;
+  if (names.some((name) => matchesGeneralName(name, nameSet))) return true;
+  const seatId = readSeatId(seatUI) ?? readSeatId(seat);
+  const listedIds = seatId === null ? [] : readSceneGeneralIds(scene, seatId);
   const generalIds = [
     ...readNumberArray(seat, ['generalIds', 'GeneralIds', 'WuJiangs', 'generals']),
-    Number(seat.GeneralId),
-    Number(seat.General2Id)
+    Number(seat?.GeneralId),
+    Number(seat?.generalID),
+    Number(seat?.General2Id),
+    Number(seat?.general2ID),
+    ...listedIds
   ];
-  return generalIds.some((generalId) => {
-    const entry = generalDict[String(generalId)];
-    const name = typeof entry === 'string' ? entry : asRecord(entry)?.name;
-    return typeof name === 'string' && nameSet.has(name);
-  });
+  return generalIds.some((generalId) => matchesGeneralName(lookupGeneralName(scene, generalId), nameSet));
+}
+
+function readSceneGeneralIds(scene: GameSceneSeatSource | null, seatId: number): number[] {
+  const generals = asRecord(scene)?.generals;
+  const listed = Array.isArray(generals) ? generals[seatId] : asRecord(generals)?.[seatId];
+  return Array.isArray(listed) ? listed.map(Number).filter((id) => Number.isInteger(id) && id > 0) : [];
+}
+
+function lookupGeneralName(scene: GameSceneSeatSource | null, generalId: number): string {
+  if (!(generalId > 0)) return '';
+  for (const dict of generalDicts(scene)) {
+    const entry = dict[String(generalId)] ?? dict[generalId];
+    if (typeof entry === 'string') return entry;
+    const record = asRecord(entry);
+    const name = readNameStrings(record)[0];
+    if (name) return name;
+  }
+  return '';
+}
+
+function generalDicts(scene: GameSceneSeatSource | null): UnknownRecord[] {
+  const globals = globalThis as { jI?: unknown; jj?: unknown };
+  return [
+    asRecord(asRecord(scene)?.generalDict),
+    asRecord(asRecord(globals.jj)?.generalDict),
+    asRecord(asRecord(globals.jI)?.generalDict)
+  ].filter((dict): dict is UnknownRecord => Boolean(dict));
+}
+
+function readNameStrings(record: UnknownRecord | null): string[] {
+  if (!record) return [];
+  const names: string[] = [];
+  for (const key of ['cardName', 'CardName', 'specifyName', 'trueSpecifyName', 'itemName', 'ItemName', 'generalname', 'generalName', 'GeneralName', 'showName', 'cnName', 'Name', 'name']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) names.push(value.trim());
+  }
+  return names;
+}
+
+/** 座位技能列表里带这个名字时也算有技能。HasSkill 的技能号对不上时还能认出来。 */
+function seatHasNamedSkill(seat: UnknownRecord | null, spellNames: readonly string[]): boolean {
+  if (!seat || !spellNames.length) return false;
+  const wanted = spellNames.filter((name) => name.length >= 2);
+  const lists = ['skills', 'Skills', 'skillList', 'SkillList', 'spellList', 'SpellList'];
+  for (const key of lists) {
+    const value = seat[key];
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      const record = asRecord(item);
+      const name = typeof item === 'string'
+        ? item
+        : readNameStrings(record)[0] ?? '';
+      if (wanted.some((want) => name === want || name.includes(want))) return true;
+      const id = Number(record?.id ?? record?.ID ?? record?.skillId ?? record?.SkillId);
+      if (spellNames.includes(String(id))) return true;
+    }
+  }
+  return false;
+}
+
+function matchesGeneralName(name: string, nameSet: ReadonlySet<string>): boolean {
+  return [...nameSet].some((wanted) => name === wanted || name.includes(wanted));
 }
 
 function readSeatId(source: UnknownRecord | null | undefined): number | null {

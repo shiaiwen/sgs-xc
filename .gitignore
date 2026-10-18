@@ -9,5 +9,6 @@ release/
 # 发版构建产物：由 pack / copy:portal 生成，勿入库
 apps/portal/public/downloads/
 apps/server/data/xiaochao-manifest.json
-.tmp-cfg
+# 开发过程中的本地调试摘录，以后同类文件一律用 .tmp- 开头
+.tmp-*
 tests/

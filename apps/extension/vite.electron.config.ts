@@ -44,10 +44,15 @@ function injectBuiltCssIntoElectronBundle() {
       );
       const javaScriptChunk = Object.values(bundle).find(
         (output: any) => output.type === 'chunk' && output.isEntry
-      );
-      if (!javaScriptChunk || !cssAssets.length) return;
+      ) as { code?: string } | undefined;
+      if (!javaScriptChunk?.code) return;
+      const versionLine = `// @version ${xiaochaoVersion}\n`;
+      if (!cssAssets.length) {
+        javaScriptChunk.code = versionLine + javaScriptChunk.code;
+        return;
+      }
       const css = cssAssets.map(([, asset]) => String(asset.source)).join('\n');
-      javaScriptChunk.code = `(()=>{const id='xiaochao-vue-styles';let style=document.getElementById(id);if(!style){style=document.createElement('style');style.id=id;(document.head||document.documentElement).appendChild(style)}style.textContent=${JSON.stringify(css)}})();\n${javaScriptChunk.code}`;
+      javaScriptChunk.code = `${versionLine}(()=>{const id='xiaochao-vue-styles';let style=document.getElementById(id);if(!style){style=document.createElement('style');style.id=id;(document.head||document.documentElement).appendChild(style)}style.textContent=${JSON.stringify(css)}})();\n${javaScriptChunk.code}`;
       cssAssets.forEach(([fileName]) => delete bundle[fileName]);
     }
   };

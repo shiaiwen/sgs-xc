@@ -3,6 +3,7 @@
  */
 
 import type { PlatformAdapter } from '../adapters/platform';
+import { accountStorageKey } from '../features/skin-background/skin-runtime.ts';
 import {
   CONFIG_DOCUMENT_VERSION,
   CONFIG_SCHEMA,
@@ -21,6 +22,22 @@ export interface ConfigStorage {
   read(): XiaochaoConfig;
   write(config: XiaochaoConfig): void;
   clear(): void;
+  hasAccount(accountId: string): boolean;
+}
+
+/** 当前登录账号。还没登录时用 default，登录后再换到这个账号自己的配置。 */
+export function currentConfigAccount(): string {
+  try {
+    return accountStorageKey(typeof localStorage === 'undefined' ? undefined : localStorage);
+  } catch {
+    return 'default';
+  }
+}
+
+/** 按账号分开的配置键。旧的 XC::config 只在迁移时读一次。 */
+export function accountConfigStorageKey(accountId: string): string {
+  const safe = accountId.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
+  return `${CONFIG_STORAGE_KEY}::${safe}`;
 }
 
 /** 使用平台设置 API 持久化，并负责损坏数据回退和历史独立键迁移。 */
@@ -28,9 +45,17 @@ export function createPlatformConfigStorage(platform: PlatformAdapter): ConfigSt
   return {
     read() {
       const defaults = getDefaultConfig();
-      const document = parseStoredDocument(platform.getSetting(CONFIG_STORAGE_KEY));
+      const accountId = currentConfigAccount();
+      const accountKey = accountConfigStorageKey(accountId);
+      let raw = platform.getSetting(accountKey);
+      let migratedLegacy = false;
+      if (!raw) {
+        raw = platform.getSetting(CONFIG_STORAGE_KEY);
+        migratedLegacy = Boolean(raw);
+      }
+      const document = parseStoredDocument(raw);
       const source = document?.values || {};
-      let shouldPersist = !document || document.version !== CONFIG_DOCUMENT_VERSION;
+      let shouldPersist = !document || document.version !== CONFIG_DOCUMENT_VERSION || migratedLegacy;
 
       for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
         const definition = CONFIG_SCHEMA[key];
@@ -52,9 +77,15 @@ export function createPlatformConfigStorage(platform: PlatformAdapter): ConfigSt
         version: CONFIG_DOCUMENT_VERSION,
         values: config
       };
-      platform.setSetting(CONFIG_STORAGE_KEY, JSON.stringify(document));
+      const accountId = currentConfigAccount();
+      platform.setSetting(accountConfigStorageKey(accountId), JSON.stringify(document));
+      if (accountId !== 'default') platform.removeSetting(CONFIG_STORAGE_KEY);
+    },
+    hasAccount(accountId) {
+      return platform.getSetting(accountConfigStorageKey(accountId)) !== null;
     },
     clear() {
+      platform.removeSetting(accountConfigStorageKey(currentConfigAccount()));
       platform.removeSetting(CONFIG_STORAGE_KEY);
       for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
         const previousKey = CONFIG_SCHEMA[key].previousStorageKey;

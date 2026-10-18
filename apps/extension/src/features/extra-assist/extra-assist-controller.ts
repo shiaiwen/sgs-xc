@@ -12,7 +12,12 @@ import {
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
-import { EXTRA_ASSIST_ENABLED_KEY } from './extra-assist-settings.ts';
+import {
+  EXTRA_ASSIST_ENABLED_KEY,
+  PEIXIU_ASSIST_KEY,
+  SUNQUAN_ASSIST_KEY,
+  XUSHAO_ASSIST_KEY
+} from './extra-assist-settings.ts';
 import {
   buildExtraAssistConfigData,
   type ExtraAssistConfigData
@@ -63,18 +68,27 @@ export function installExtraAssistController(
   const pollIntervalMs = options.pollIntervalMs ?? 800;
   let disposed = false;
   let enabled = configStore.get(EXTRA_ASSIST_ENABLED_KEY) === true;
+  const characterOn = (key: typeof SUNQUAN_ASSIST_KEY | typeof PEIXIU_ASSIST_KEY | typeof XUSHAO_ASSIST_KEY) => (
+    enabled && configStore.get(key) === true
+  );
   let cachedConfig: ExtraAssistConfigData | null = null;
   let seatHooksInstalled = false;
   const cleanups: Array<() => void> = [];
 
   cleanups.push(configStore.subscribe(EXTRA_ASSIST_ENABLED_KEY, ({ value }) => {
     enabled = value === true;
-    if (!enabled) options.peixiuRouteStore?.clear();
+    if (!characterOn(PEIXIU_ASSIST_KEY)) options.peixiuRouteStore?.clear();
     refreshQuanyu();
   }));
+  for (const key of [SUNQUAN_ASSIST_KEY, PEIXIU_ASSIST_KEY, XUSHAO_ASSIST_KEY]) {
+    cleanups.push(configStore.subscribe(key, () => {
+      if (!characterOn(PEIXIU_ASSIST_KEY)) options.peixiuRouteStore?.clear();
+      refreshQuanyu();
+    }));
+  }
 
   cleanups.push(installXuShaoAssist({
-    isEnabled: () => enabled,
+    isEnabled: () => characterOn(XUSHAO_ASSIST_KEY),
     getEntries: () => readConfig()?.shiLun ?? [],
     resolveSpellName: (_spellId, fallback) => fallback,
     locator,
@@ -82,7 +96,7 @@ export function installExtraAssistController(
     globalObject
   }));
   cleanups.push(installPeixiuAssist({
-    isEnabled: () => enabled,
+    isEnabled: () => characterOn(PEIXIU_ASSIST_KEY),
     locator,
     patcher,
     globalObject,
@@ -196,7 +210,7 @@ export function installExtraAssistController(
     if (disposed) return;
     const scene = locateGameScene(globalObject);
     const targets = collectSeatTipTargets(scene?.seatContainer?.seatUIs);
-    if (!enabled) {
+    if (!characterOn(SUNQUAN_ASSIST_KEY)) {
       clearSeatGeneralTips(targets, 'quanyu');
       return;
     }

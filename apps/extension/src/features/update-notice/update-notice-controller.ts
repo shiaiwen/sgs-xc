@@ -5,9 +5,12 @@
 
 import type { XiaochaoConfigStore } from '../../config/config-store';
 import {
+  compareVersions,
   getXiaochaoVersion,
   isNewerVersion,
+  newerVersion,
   parseUpdateManifest,
+  readUserscriptManagerVersion,
   XIAOCHAO_UPDATE_MANIFEST_URL,
   XIAOCHAO_UPDATE_PAGE_URL,
   type XiaochaoUpdateManifest
@@ -38,9 +41,12 @@ export interface UpdateNoticeControllerOptions {
   currentVersion?: string;
   manifestUrl?: string;
   skipRemoteCheck?: boolean;
+  /** electron 只认构建进脚本的版本。userscript 还认油猴已装版本，并在打开更新页后记下线上版本。 */
+  platform?: 'electron' | 'userscript';
 }
 
 const DISMISSED_VERSION_KEY = 'update.dismissedVersion' as const;
+const INSTALLED_VERSION_KEY = 'update.installedVersion' as const;
 
 function createEmptySnapshot(currentVersion: string): UpdateNoticeSnapshot {
   return {
@@ -60,12 +66,37 @@ export function createUpdateNoticeController(
   openExternal: (url: string) => Promise<void>,
   options: UpdateNoticeControllerOptions = {}
 ): UpdateNoticeController {
-  const currentVersion = options.currentVersion || getXiaochaoVersion();
   const manifestUrl = options.manifestUrl || XIAOCHAO_UPDATE_MANIFEST_URL;
   const fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : undefined);
-  let snapshot = createEmptySnapshot(currentVersion);
+  const browserUpdate = options.platform === 'userscript';
+  /**
+   * 浏览器取构建版本、油猴已装版本、更新后记下的版本里较新的一个。
+   * 微端只用构建进脚本的版本，不读壳版本，也不读浏览器记下的版本。
+   */
+  function readVersion(): string {
+    const baked = options.currentVersion || getXiaochaoVersion();
+    if (!browserUpdate) return baked;
+    return newerVersion(
+      newerVersion(baked, readUserscriptManagerVersion()),
+      configStore.get(INSTALLED_VERSION_KEY)
+    );
+  }
+  /** 浏览器打开更新页后，把线上脚本版本记成已安装，避免下次仍拿更新前的版本去比。 */
+  function rememberInstalled(version: string): void {
+    if (!browserUpdate) return;
+    const next = String(version || '').trim();
+    if (!/^\d+(?:\.\d+)*$/.test(next)) return;
+    const previous = configStore.get(INSTALLED_VERSION_KEY);
+    if (previous && compareVersions(next, previous) <= 0) return;
+    configStore.set(INSTALLED_VERSION_KEY, next);
+  }
+  let snapshot = createEmptySnapshot(readVersion());
   const listeners = new Set<(next: UpdateNoticeSnapshot) => void>();
   let disposed = false;
+  let checking = false;
+  let queued = false;
+  const cleanups: Array<() => void> = [];
+  const waiters: Array<(snapshot: UpdateNoticeSnapshot) => void> = [];
 
   function emit(next: UpdateNoticeSnapshot): void {
     snapshot = next;
@@ -79,8 +110,9 @@ export function createUpdateNoticeController(
     if (snapshot.dialogOpen) emit({ ...snapshot, dialogOpen: false });
   }
 
-  /** 用远程清单刷新快照（本轮不自动弹窗，dialogOpen=false）。 */
+  /** 用远程清单刷新快照。本地版本每次现读，浏览器更新记下来之后不再提示。 */
   function applyManifest(manifest: XiaochaoUpdateManifest): void {
+    const currentVersion = readVersion();
     const hasUpdate = isNewerVersion(manifest.version, currentVersion);
     emit({
       currentVersion,
@@ -129,10 +161,41 @@ export function createUpdateNoticeController(
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    start() {},
+    start() {
+      if (disposed || options.skipRemoteCheck || typeof window === 'undefined') return;
+      const run = () => {
+        void this.checkNow();
+      };
+      const onVisible = () => {
+        if (document.visibilityState === 'visible') run();
+      };
+      document.addEventListener('visibilitychange', onVisible);
+      window.addEventListener('focus', run);
+      cleanups.push(() => document.removeEventListener('visibilitychange', onVisible));
+      cleanups.push(() => window.removeEventListener('focus', run));
+      run();
+      const timer = window.setTimeout(run, 8000);
+      cleanups.push(() => window.clearTimeout(timer));
+    },
     async checkNow() {
       if (disposed || options.skipRemoteCheck) return snapshot;
-      await checkRemote();
+      if (checking) {
+        queued = true;
+        return new Promise((resolve) => {
+          waiters.push(resolve);
+        });
+      }
+      checking = true;
+      try {
+        do {
+          queued = false;
+          await checkRemote();
+        } while (queued && !disposed);
+      } finally {
+        checking = false;
+        const pending = waiters.splice(0);
+        pending.forEach((resolve) => resolve(snapshot));
+      }
       return snapshot;
     },
     dismissDialog() {
@@ -145,10 +208,22 @@ export function createUpdateNoticeController(
       } catch {
         if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener');
       }
+      rememberInstalled(snapshot.latestVersion || '');
+      const currentVersion = readVersion();
+      const latest = snapshot.latestVersion;
+      emit({
+        ...snapshot,
+        currentVersion,
+        hasUpdate: latest ? isNewerVersion(latest, currentVersion) : false,
+        dialogOpen: false,
+        failureMessage: ''
+      });
       dismissDialog();
     },
     dispose() {
       disposed = true;
+      queued = false;
+      cleanups.splice(0).forEach((cleanup) => cleanup());
       listeners.clear();
     }
   };

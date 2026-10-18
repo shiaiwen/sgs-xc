@@ -8,7 +8,7 @@ import {
   type XiaochaoConfig,
   type XiaochaoConfigKey
 } from './config-schema.ts';
-import type { ConfigStorage } from './config-storage.ts';
+import { currentConfigAccount, type ConfigStorage } from './config-storage.ts';
 
 export const CONFIG_CHANGE_EVENT = 'xc:config-change';
 
@@ -32,6 +32,7 @@ export interface XiaochaoConfigStore {
   ): () => void;
   snapshot(): XiaochaoConfig;
   resetAll(): void;
+  syncAccount(): void;
 }
 
 /** 配置仓库是业务层唯一读写入口，同时通知模块订阅者和 DOM 事件消费者。 */
@@ -40,7 +41,36 @@ export function createConfigStore(
   eventTarget: EventTarget | undefined = typeof window === 'undefined' ? undefined : window
 ): XiaochaoConfigStore {
   let values = storage.read();
+  let accountId = currentConfigAccount();
   const subscribers = new Map<XiaochaoConfigKey, Set<ConfigSubscriber<any>>>();
+
+  function publish(previousValues: XiaochaoConfig, nextValues: XiaochaoConfig): void {
+    for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
+      if (isSameValue(previousValues[key], nextValues[key])) continue;
+      const detail = {
+        key,
+        value: nextValues[key],
+        previousValue: previousValues[key]
+      } as ConfigChangeDetail;
+      subscribers.get(key)?.forEach((subscriber) => subscriber(detail));
+      if (eventTarget && typeof CustomEvent !== 'undefined') {
+        eventTarget.dispatchEvent(new CustomEvent(CONFIG_CHANGE_EVENT, { detail }));
+      }
+    }
+  }
+
+  function syncAccount(): void {
+    const nextAccount = currentConfigAccount();
+    if (nextAccount === accountId) return;
+    const previousAccount = accountId;
+    accountId = nextAccount;
+    if (previousAccount === 'default' && !storage.hasAccount(nextAccount)) {
+      storage.write(values);
+    }
+    const previousValues = values;
+    values = storage.read();
+    publish(previousValues, values);
+  }
 
   function get<Key extends XiaochaoConfigKey>(key: Key): XiaochaoConfig[Key] {
     return values[key];
@@ -69,18 +99,7 @@ export function createConfigStore(
     values = getDefaultConfig();
     storage.clear();
     storage.write(values);
-    for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
-      if (isSameValue(previousValues[key], values[key])) continue;
-      const detail = {
-        key,
-        value: values[key],
-        previousValue: previousValues[key]
-      } as ConfigChangeDetail;
-      subscribers.get(key)?.forEach((subscriber) => subscriber(detail));
-      if (eventTarget && typeof CustomEvent !== 'undefined') {
-        eventTarget.dispatchEvent(new CustomEvent(CONFIG_CHANGE_EVENT, { detail }));
-      }
-    }
+    publish(previousValues, values);
   }
 
   function subscribe<Key extends XiaochaoConfigKey>(
@@ -102,7 +121,8 @@ export function createConfigStore(
     reset,
     subscribe,
     snapshot: () => structuredClone(values),
-    resetAll
+    resetAll,
+    syncAccount
   };
 }
 

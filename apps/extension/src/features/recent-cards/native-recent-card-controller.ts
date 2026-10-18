@@ -7,7 +7,6 @@ import {
   createOfficialCardView,
   OFFICIAL_CARD_BASE_HEIGHT,
   OFFICIAL_CARD_BASE_WIDTH,
-  OFFICIAL_CARD_DETAIL_SCALE,
   readOfficialCardBox,
   releaseOfficialCardView,
   type OfficialCardView
@@ -16,6 +15,10 @@ import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import type { RecentCardStore } from './recent-card-store.ts';
 
 type UnknownRecord = Record<string, unknown>;
+
+/** 和回合信息下面那排计数同一套高度，牌面按这个高度等比缩小。 */
+const ROUND_BUTTON_GAP = 2;
+const ROUND_BUTTON_HEIGHT = 22;
 
 /**
  * 使用游戏自己的 Laya 卡牌组件显示最近用牌。
@@ -82,14 +85,31 @@ export function installNativeRecentCardController(
     const enabled = configStore.get('display.deckHudEnabled');
     const snapshot = recentCardStore.getSnapshot();
     const cardId = enabled ? Number(snapshot.displayedCardId || 0) : 0;
+    const roundHeight = Math.max(43, Number(roundInfo.height || 43));
+    const targetHeight = roundHeight + ROUND_BUTTON_GAP + ROUND_BUTTON_HEIGHT;
+    const cardScale = targetHeight / OFFICIAL_CARD_BASE_HEIGHT;
     if (displayedCardId !== cardId) {
       clearCard();
-      if (cardId > 0) cardView = createOfficialCardView(root, cardId, OFFICIAL_CARD_BASE_WIDTH, OFFICIAL_CARD_BASE_HEIGHT, nextScene);
+      if (cardId > 0) {
+        cardView = createOfficialCardView(
+          root,
+          cardId,
+          OFFICIAL_CARD_BASE_WIDTH,
+          OFFICIAL_CARD_BASE_HEIGHT,
+          nextScene,
+          undefined,
+          cardScale
+        );
+      }
       displayedCardId = cardView ? cardId : 0;
     }
+    if (cardView?.holder) {
+      cardView.holder.scaleX = cardScale;
+      cardView.holder.scaleY = cardScale;
+    }
     const face = cardView ? readOfficialCardBox(cardView) : {
-      width: Math.round(OFFICIAL_CARD_BASE_WIDTH * OFFICIAL_CARD_DETAIL_SCALE),
-      height: Math.round(OFFICIAL_CARD_BASE_HEIGHT * OFFICIAL_CARD_DETAIL_SCALE)
+      width: Math.round(OFFICIAL_CARD_BASE_WIDTH * cardScale),
+      height: targetHeight
     };
     const width = face.width;
     const height = face.height;

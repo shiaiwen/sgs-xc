@@ -127,12 +127,22 @@ function isValidManifest(manifest) {
 
 function readScriptVersion(scriptPath) {
     try {
-        if (!scriptPath || !fs.existsSync(scriptPath)) return '0.0.0';
-        const match = fs.readFileSync(scriptPath, 'utf8').match(/@version\s+([\d.]+)/);
-        return match ? match[1] : '0.0.0';
+        if (!scriptPath || !fs.existsSync(scriptPath)) return '';
+        const text = fs.readFileSync(scriptPath, 'utf8');
+        const match = text.match(/@version\s+(\d+\.\d+\.\d+)/);
+        return match ? match[1] : '';
     } catch (error) {
-        return '0.0.0';
+        return '';
     }
+}
+
+/** 用户目录里的脚本和安装包里的脚本都看，取读得到的较新号。读不到就不拿 0.0.0 充数。 */
+function readLocalScriptVersion(getScriptPath) {
+    const versions = [readScriptVersion(getScriptPath()), readScriptVersion(path.join(__dirname, 'xiaochao.js'))]
+        .filter((version) => /^\d+\.\d+\.\d+$/.test(version));
+    return versions.reduce((best, version) => (
+        best && compareVersions(version, best) <= 0 ? best : version
+    ), '');
 }
 
 /**
@@ -210,7 +220,32 @@ function scheduleMicroClientUpdate(deps) {
         return dialog.showMessageBox(mainWindow, options);
     }
 
-    setTimeout(() => {
+    const declinedVersions = new Set();
+    let running = false;
+    let queued = false;
+    let lastCheckAt = 0;
+
+    function arm(target) {
+        if (!target || target.isDestroyed?.() || target.__xcUpdateCheckArmed) return;
+        target.__xcUpdateCheckArmed = true;
+        const kick = () => {
+            queueCheck();
+        };
+        target.on?.('show', kick);
+        target.on?.('focus', kick);
+        target.webContents?.on?.('did-finish-load', kick);
+    }
+
+    function queueCheck() {
+        const now = Date.now();
+        if (now - lastCheckAt < 5000 && lastCheckAt !== 0) return;
+        arm(getMainWindow());
+        if (running) {
+            queued = true;
+            return;
+        }
+        running = true;
+        lastCheckAt = now;
         run().catch((error) => {
             logMessage(`micro-client update failed: ${error.message}`);
             closeProgress();
@@ -223,11 +258,25 @@ function scheduleMicroClientUpdate(deps) {
                     buttons: ['确定']
                 }).catch(() => {});
             }
+        }).finally(() => {
+            running = false;
+            if (queued) {
+                queued = false;
+                lastCheckAt = 0;
+                queueCheck();
+            }
         });
-    }, 500);
+    }
+
+    setTimeout(queueCheck, 500);
+    setTimeout(queueCheck, 8000);
 
     async function run() {
-        const currentVersion = readScriptVersion(getScriptPath());
+        const currentVersion = readLocalScriptVersion(getScriptPath);
+        if (!currentVersion) {
+            logMessage('micro-client script version unreadable, skip update check');
+            return;
+        }
         logMessage(`micro-client update check started, script=${currentVersion}`);
         let manifest;
         try {
@@ -244,16 +293,26 @@ function scheduleMicroClientUpdate(deps) {
             logMessage(`micro-client update available ${manifest.version}, skip install while unpackaged`);
             return;
         }
+        const latestLocalVersion = readLocalScriptVersion(getScriptPath);
+        if (!latestLocalVersion) return;
+        if (compareVersions(manifest.version, latestLocalVersion) <= 0) {
+            logMessage(`micro-client already updated before prompt, script=${latestLocalVersion}`);
+            return;
+        }
+        if (declinedVersions.has(manifest.version)) return;
         const confirm = await present({
             type: 'info',
             title: '微端更新',
             message: `检测到新版本 ${manifest.version}，将更新微端与小抄，是否立即更新？`,
-            detail: `当前小抄 ${currentVersion}`,
+            detail: `当前小抄 ${latestLocalVersion}`,
             buttons: ['立即更新', '暂不更新'],
             defaultId: 0,
             cancelId: 1
         });
-        if (confirm.response !== 0) return;
+        if (confirm.response !== 0) {
+            declinedVersions.add(manifest.version);
+            return;
+        }
 
         const updateDirectory = path.join(app.getPath('userData'), 'xiaochao-update');
         const archivePath = path.join(updateDirectory, `app-${manifest.version}.zip`);

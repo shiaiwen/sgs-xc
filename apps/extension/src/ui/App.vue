@@ -8,6 +8,7 @@
  */
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { writeBrowserSetting } from '../adapters/browser-settings';
 // Vite 在构建时解析这些 Vue 单文件；类型检查缺少项目声明时会误报，这里压掉误报。
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import PanelHeader from './panel/PanelHeader.vue';
@@ -24,6 +25,7 @@ import SkinBackgroundSettingsSection from './settings/SkinBackgroundSettingsSect
 import AutoTaskSettingsSection from './settings/AutoTaskSettingsSection.vue';
 import RogueSettingsSection from './settings/RogueSettingsSection.vue';
 import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue';
+import CustomBackgroundSection from './settings/CustomBackgroundSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import VersionNoticeSection from './settings/VersionNoticeSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -433,7 +435,7 @@ function resolveExpandedHeight(savedHeight: number): number {
 function rememberExpandedHeight(heightPx: number): void {
   expandedHeight = `${heightPx}px`;
   try {
-    localStorage.setItem('XC::panelExpandedHeight', String(Math.round(heightPx)));
+    writeBrowserSetting('XC::panelExpandedHeight', String(Math.round(heightPx)));
   } catch {
     // 写不进本地存储时，这次会话里仍然使用刚调好的高度。
   }
@@ -506,6 +508,11 @@ function handleResizeStart(event: PointerEvent): void {
         :deck-record-store="deckRecordStore"
         :game-card-catalog="gameCardCatalog"
       />
+      <SkillAssistSection
+        solo-panel-id="yuqi"
+        :skill-assist-store="skillAssistStore"
+        :game-card-catalog="gameCardCatalog"
+      />
       <DisplaySettingsSection :config-store="configStore" />
       <GameAssistSettingsSection :config-store="configStore" />
       <div class="xiaochao-quick-tools" aria-label="快捷工具">
@@ -529,6 +536,7 @@ function handleResizeStart(event: PointerEvent): void {
         <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">
           <VersionNoticeSection :update-notice-controller="updateNoticeController" />
           <GuanxingEntry :platform="platform" />
+          <CustomBackgroundSection />
           <button
             type="button"
             class="xiaochao-block-entry xiaochao-block-entry--center"

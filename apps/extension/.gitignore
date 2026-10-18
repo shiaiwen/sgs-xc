@@ -15,7 +15,7 @@ electron-runtime.zip
 .dev-data/
 
 # 本地临时脚本 / 调试摘录（勿提交）
-.tmp-decode.js
+.tmp-*
 tools/console-copy-seats.txt
 
 # 缓存

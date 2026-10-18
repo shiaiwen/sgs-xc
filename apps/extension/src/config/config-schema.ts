@@ -36,8 +36,14 @@ export interface XiaochaoConfig {
   'block.laoXianWindow': boolean;
   'block.probWindow': boolean;
   'block.shaEffect': boolean;
+  'block.shanEffect': boolean;
   'block.healEffect': boolean;
   'block.jinnangEffect': boolean;
+  'block.equipEffect': boolean;
+  'block.shakeEffect': boolean;
+  'block.skillEffect': boolean;
+  'block.selectEffect': boolean;
+  'block.selfSkinEffect': boolean;
   'block.killEffect': boolean;
   'block.entranceEffect': boolean;
   'block.otherSkinState': boolean;
@@ -59,11 +65,16 @@ export interface XiaochaoConfig {
   'rogue.mapEnabled': boolean;
   'rogue.hideStory': boolean;
   'assist.extraEnabled': boolean;
+  'assist.sunquanEnabled': boolean;
+  'assist.peixiuEnabled': boolean;
+  'assist.xushaoEnabled': boolean;
   'assist.autoBotEnabled': boolean;
   'assist.autoHGEnabled': boolean;
   'assist.baiShengEnabled': boolean;
   'assist.autoBotTavernTarget': 'none' | 'dailyGame' | 'dailyWin' | 'weeklyWin';
   'update.dismissedVersion': string;
+  /** 浏览器更新完成后记下的脚本版本。微端检查不读这个值。 */
+  'update.installedVersion': string;
 }
 
 export type XiaochaoConfigKey = keyof XiaochaoConfig;
@@ -181,8 +192,14 @@ export const CONFIG_SCHEMA: {
   'block.laoXianWindow': booleanDefinition(false, 'SKIP_LAOXIAN_WINDOW_SWITCH'),
   'block.probWindow': booleanDefinition(false, 'SKIP_PROB_WINDOW_SWITCH'),
   'block.shaEffect': booleanDefinition(false, 'BLOCK_SHA_EFFECT_SWITCH'),
+  'block.shanEffect': booleanDefinition(false, 'BLOCK_SHAN_EFFECT_SWITCH'),
   'block.healEffect': booleanDefinition(false, 'BLOCK_HEAL_EFFECT_SWITCH'),
   'block.jinnangEffect': booleanDefinition(false, 'BLOCK_JINNANG_EFFECT_SWITCH'),
+  'block.equipEffect': booleanDefinition(false, 'BLOCK_EQUIP_EFFECT_SWITCH'),
+  'block.shakeEffect': booleanDefinition(false, 'BLOCK_SHAKE_EFFECT_SWITCH'),
+  'block.skillEffect': booleanDefinition(false, 'BLOCK_SKILL_EFFECT_SWITCH'),
+  'block.selectEffect': booleanDefinition(false, 'BLOCK_SELECT_EFFECT_SWITCH'),
+  'block.selfSkinEffect': booleanDefinition(false, 'BLOCK_SELF_SKIN_EFFECT_SWITCH'),
   'block.killEffect': booleanDefinition(false, 'BLOCK_KILL_EFFECT_SWITCH'),
   'block.entranceEffect': booleanDefinition(false, 'BLOCK_ENTRANCE_EFFECT_SWITCH'),
   'block.otherSkinState': booleanDefinition(false, 'BLOCK_SKIN_STATE_SWITCH'),
@@ -204,6 +221,9 @@ export const CONFIG_SCHEMA: {
   'rogue.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
   'rogue.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
   'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),
+  'assist.sunquanEnabled': booleanDefinition(true),
+  'assist.peixiuEnabled': booleanDefinition(true),
+  'assist.xushaoEnabled': booleanDefinition(true),
   'assist.autoBotEnabled': booleanDefinition(false),
   'assist.autoHGEnabled': booleanDefinition(false),
   'assist.baiShengEnabled': booleanDefinition(false),
@@ -217,6 +237,12 @@ export const CONFIG_SCHEMA: {
     }
   },
   'update.dismissedVersion': {
+    defaultValue: '',
+    parse(value) {
+      return typeof value === 'string' ? value : undefined;
+    }
+  },
+  'update.installedVersion': {
     defaultValue: '',
     parse(value) {
       return typeof value === 'string' ? value : undefined;

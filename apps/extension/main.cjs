@@ -194,7 +194,10 @@ async function createWindow() {
         screen,
         getMainWindow: () => mainWindow,
         logMessage,
-        getScriptPath: () => scriptPath
+        getScriptPath: () => {
+            const resolved = resolveLocalScriptPath();
+            return resolved ? resolved.path : scriptPath;
+        }
     });
     if (config.get('firstTime', true) === true || config.get('firstTimeAnnouncementSeen', false) !== true) {
         firstTimeAnnouncement(mainWindow);

@@ -15,6 +15,11 @@ import { createFavoritesTab } from './skin-background-favorites-tab.ts';
 import { createSkinBackgroundRenderer } from './skin-background-renderer.ts';
 import { createSkinBackgroundStore, type BackgroundFavorite, type BackgroundResource } from './skin-background-store.ts';
 import {
+  bindCustomBackgroundActions,
+  getCustomBackgroundStore,
+  type CustomBackgroundRecord
+} from './custom-background-store.ts';
+import {
   asRecord,
   callMethod,
   createTaskScope,
@@ -79,6 +84,9 @@ export function installSkinPaperController(
   const layaEvent = () => asRecord(laya()?.Event);
 
   const isOn = () => configStore.get('skin.skinPaper') === true;
+  const customStore = getCustomBackgroundStore();
+  let customResource: BackgroundResource | null = null;
+  let useCustom = false;
   const favoritesTab = createFavoritesTab({
     globalObject,
     store,
@@ -89,10 +97,13 @@ export function installSkinPaperController(
   });
 
   function shouldShow(): boolean {
-    if (!isOn()) return false;
-    if (configStore.get('skin.allPaper') === true) {
-      return !MAP_SCENES.includes(String(locator.scene()?.SceneName ?? ''));
+    const sceneName = String(locator.scene()?.SceneName ?? '');
+    if (MAP_SCENES.includes(sceneName)) return false;
+    if (useCustom && customResource) {
+      return configStore.get('skin.allPaper') === true || Boolean(locator.gameScene());
     }
+    if (!isOn()) return false;
+    if (configStore.get('skin.allPaper') === true) return true;
     return Boolean(locator.gameScene());
   }
 
@@ -721,7 +732,7 @@ export function installSkinPaperController(
   // ---------- 开关与场景 ----------
 
   /** 按开关和场景同步皮肤背景是否显示。 */
-  function syncVisibility(): void {
+  async function syncVisibility(): Promise<void> {
     const show = shouldShow();
     skinTrace('paper-visibility', {
       show,
@@ -731,7 +742,50 @@ export function installSkinPaperController(
       resource: renderer.resource,
       layerFound: Boolean(locator.layer('BackgroundLayer'))
     });
-    void renderer.setEnabled(show);
+    await renderer.setEnabled(show);
+    if (show && useCustom && customResource) await renderer.setBackground(customResource, false);
+  }
+
+  async function measureUpload(file: Blob): Promise<BackgroundResource> {
+    const url = URL.createObjectURL(file);
+    if (typeof createImageBitmap !== 'function') return { url, type: 0, width: 1920, height: 1080 };
+    try {
+      const bitmap = await createImageBitmap(file);
+      const size = { width: bitmap.width, height: bitmap.height };
+      bitmap.close?.();
+      return { url, type: 0, ...size };
+    } catch {
+      return { url, type: 0, width: 1920, height: 1080 };
+    }
+  }
+
+  async function applyCustom(record: CustomBackgroundRecord): Promise<void> {
+    if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
+    customResource = await measureUpload(record.blob);
+    useCustom = true;
+    await syncVisibility();
+    if (!shouldShow()) showToast('已保存，进局后会换成这张背景', 'success');
+    else showToast('背景已换成上传的图片', 'success');
+  }
+
+  async function clearCustom(): Promise<void> {
+    useCustom = false;
+    if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
+    customResource = null;
+    await customStore.clear();
+    // 上传图只画在上层。不先撤掉的话，开关仍开着时会按内存里的地址再画一遍。
+    if (String(renderer.resource.url || '').startsWith('blob:')) renderer.clearBackground(false);
+    await syncVisibility();
+  }
+
+  async function restoreCustom(): Promise<void> {
+    const saved = await customStore.load();
+    if (saved?.active) {
+      if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
+      customResource = await measureUpload(saved.blob);
+      useCustom = true;
+    }
+    await syncVisibility();
   }
 
   function onSwitchChanged(): void {
@@ -769,7 +823,9 @@ export function installSkinPaperController(
   const menuExtension: WallpaperMenuExtension = {
     enabled: isOn,
     onOfficialWallpaperUsed() {
-      // 改用官方背景时清掉皮肤背景。
+      // 改用官方背景时清掉皮肤背景，上传的图先让开，文件还留着。
+      useCustom = false;
+      void customStore.setActive(false);
       if (renderer.hasBackground()) renderer.clearBackground(true);
       favoritesTab.refreshSelection();
     },
@@ -785,15 +841,22 @@ export function installSkinPaperController(
     if (name === 'SkinInfoWindow') onSkinInfoWindow();
     else onChangeSkinWindow();
   });
-  watchSceneSwitch(locator, patcher, tasks, syncVisibility);
+  const unbindCustom = bindCustomBackgroundActions({
+    apply: applyCustom,
+    clear: clearCustom
+  });
+  watchSceneSwitch(locator, patcher, tasks, () => {
+    void syncVisibility();
+  });
   void tasks.poll(() => locator.dispatcher() && locator.scene(), Infinity, 1000).then((ready) => {
-    if (ready) syncVisibility();
+    if (ready) void restoreCustom();
   });
 
   return {
     menuExtension,
     filterMessage,
     dispose() {
+      unbindCustom();
       unsubscribes.splice(0).forEach((unsubscribe) => unsubscribe());
       tasks.dispose();
       favoritesTab.dispose();

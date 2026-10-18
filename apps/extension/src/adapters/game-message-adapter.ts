@@ -3,6 +3,7 @@
  */
 
 import type { GameEvent } from '../runtime/game-event-bus.ts';
+import { readXinyouRoleCards } from '../features/mingpai/xinyou-tag.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -82,7 +83,7 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
   }
   if (className === TEMPORARY_CARD_REORDER_MESSAGE_NAME) return translateSpellOptRep(payload);
   if (className === ROLE_DATA_MESSAGE_NAME) {
-    return [translateShaCount(payload), translateSpellData(payload)]
+    return [translateShaCount(payload), translateSpellData(payload), translateXinyouRoleCards(payload)]
       .filter((item): item is GameEvent => item !== null);
   }
   if (className === CARD_LIST_MESSAGE_NAME) {
@@ -144,6 +145,20 @@ function translateShaCount(payload: UnknownRecord): GameEvent | null {
   const limit = Number(datas[2]);
   if (seatId === null || !Number.isFinite(limit)) return null;
   return { type: 'sha-count-updated', seatId, used: Number.isFinite(used) ? used : 0, limit };
+}
+
+function translateXinyouRoleCards(payload: UnknownRecord): GameEvent | null {
+  const dataId = readNonNegativeInteger(payload, ['DataID', 'DataId', 'dataID', 'dataId']);
+  const datas = payload.Datas ?? payload.datas;
+  const seatId = readSeatId(payload, SEAT_ID_KEYS);
+  if (dataId === null || seatId === null || !isArrayLike(datas)) return null;
+  const cardIds = readXinyouRoleCards({
+    isSend: payload.IsSend === true || payload.isSend === true,
+    dataId,
+    datas: Array.from(datas)
+  });
+  if (!cardIds) return null;
+  return { type: 'xinyou-cards-updated', seatId, cardIds };
 }
 
 function translateSpellData(payload: UnknownRecord): GameEvent | null {

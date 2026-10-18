@@ -2,6 +2,7 @@
  * 皮肤运行时工具：查找皮肤资源与应用状态。
  */
 
+import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../../adapters/browser-settings.ts';
 import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import type { MethodPatcher } from '../../runtime/method-patch.ts';
 
@@ -46,19 +47,31 @@ export function skinTrace(kind: string, detail: Record<string, unknown> = {}): v
 /** 从存储里读 JSON，失败时返回空。 */
 export function readJson<T>(storage: Pick<Storage, 'getItem'> | undefined, key: string, fallback: T): T {
   try {
-    const raw = storage?.getItem(key);
+    const raw = readBrowserSetting(key) ?? storage?.getItem(key);
     return raw ? JSON.parse(raw) as T : fallback;
   } catch {
     return fallback;
   }
 }
 
-/** 把数据写成 JSON 存起来。 */
+/** 把数据写成 JSON，同时写入本机配置，避免更新后丢失。 */
 export function writeJson(storage: Pick<Storage, 'setItem'> | undefined, key: string, value: unknown): void {
+  const raw = JSON.stringify(value);
+  writeBrowserSetting(key, raw);
   try {
-    storage?.setItem(key, JSON.stringify(value));
+    storage?.setItem(key, raw);
   } catch {
-    // 存储满或不可用时放弃本次保存。
+    // 页面存储不可用时，本机配置里仍有一份。
+  }
+}
+
+/** 从本机配置和页面存储里删掉同一条。 */
+export function removeStored(storage: Pick<Storage, 'removeItem'> | undefined, key: string): void {
+  removeBrowserSetting(key);
+  try {
+    storage?.removeItem(key);
+  } catch {
+    // 页面存储不可用时忽略。
   }
 }
 

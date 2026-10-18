@@ -4,7 +4,9 @@
 
 export interface EffectResourceFlags {
   sha: boolean;
+  shan: boolean;
   heal: boolean;
+  shake: boolean;
   interact: boolean;
 }
 
@@ -17,22 +19,27 @@ const SHA_EFFECT_PATH = '/res/assets/animate/game/neweffect/EF_Basic_Sha_';
 const HEAL_EFFECT_PATH = '/res/assets/animate/game/neweffect/OtherEffect/FX_MatchGame_huixie_';
 const HEAL_EFFECT_NAMES = ['FX_', 'xuanhujishi', 'xinglinchunman', 'miaoshouhuichun'];
 const INTERACT_EFFECT_NAMES = ['interactProp/fx_uihd_caoxie', 'interactProp/Ol_DaoJu_jidan'];
+const SHAN_EFFECT_PATH = '/res/assets/animate/game/neweffect/EFF_shan';
+/** 受击只换掉震动骨骼。diaoxie 是掉血数字，开着屏蔽也要继续播。 */
+const SHAKE_EFFECT_PATTERN = /\/res\/assets\/animate\/game\/neweffect\/OtherEffect\/FX_MatchGame_tlls\.sk$/;
 /** 铁索、酒的骨骼同时承担状态标记，替换后会丢失常驻图标。 */
 const PRESERVED_SKELETONS = ['EF_Plot_tiesuo', 'Plot_tiesuolianhuan', 'EFF_jiu', 'EFF_hejiu'];
 
 /** 杀、治疗或互动特效只要开了任意一项屏蔽就生效。 */
 export function hasAnyEffectResourceBlock(flags: EffectResourceFlags): boolean {
-  return flags.sha || flags.heal || flags.interact;
+  return flags.sha || flags.shan || flags.heal || flags.shake || flags.interact;
 }
 
 function isBlockedSkeleton(path: string, flags: EffectResourceFlags): boolean {
   const sha = flags.sha && path.includes(SHA_EFFECT_PATH);
+  const shan = flags.shan && path.includes(SHAN_EFFECT_PATH);
+  const shake = flags.shake && SHAKE_EFFECT_PATTERN.test(path);
   const heal = flags.heal && (
     path.includes(HEAL_EFFECT_PATH)
     || HEAL_EFFECT_NAMES.some((name) => path.includes(`res/assets/animate/game/effect/${name}`))
   );
   const interact = flags.interact && INTERACT_EFFECT_NAMES.some((name) => path.includes(`res/assets/animate/${name}`));
-  return sha || heal || interact;
+  return sha || shan || heal || shake || interact;
 }
 
 /** 被屏蔽的 .sk 资源换成空动画；空动画引用的 placeholder.png 换成透明图。 */

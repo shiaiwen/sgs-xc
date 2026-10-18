@@ -43,22 +43,19 @@ const tooltip = computed(() => {
   return '检查门户上的版本';
 });
 
-function openPage(): void {
-  void props.updateNoticeController?.openUpdatePage();
-}
-
 async function onVersionClick(): Promise<void> {
-  if (snapshot.value.hasUpdate) {
-    openPage();
-    return;
-  }
   if (checking.value) return;
   checking.value = true;
   hint.value = '';
   try {
     const next = await props.updateNoticeController?.checkNow();
-    if (!next || next.hasUpdate) return;
-    hint.value = next.latestVersion ? '已是最新' : (next.failureMessage || '检查失败');
+    if (next?.hasUpdate) {
+      await props.updateNoticeController?.openUpdatePage();
+      if (props.updateNoticeController?.getSnapshot().hasUpdate) return;
+      hint.value = '已是最新';
+      return;
+    }
+    hint.value = next?.latestVersion ? '已是最新' : (next?.failureMessage || '检查失败');
   } finally {
     checking.value = false;
   }

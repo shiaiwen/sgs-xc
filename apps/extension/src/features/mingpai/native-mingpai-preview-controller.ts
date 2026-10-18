@@ -26,6 +26,7 @@ import {
   type Zone4Row
 } from './graph/mingpai-candidates.ts';
 import { readSpellName } from './spell-name.ts';
+import { TANQUE_STATE_ID, tanqueDiffLabel } from './rules/tanque-label.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -564,7 +565,9 @@ export function installNativeMingpaiPreviewController(
         handUis.forEach((cardUi) => installXinyouTagHook(cardUi));
         equipUis.forEach((cardUi) => installXinyouTagHook(cardUi));
         refreshNativeCardTags(equipUis, ['心幽'], true);
-        refreshNativeCardTags(handUis, ['心幽', '椒遇'], true);
+        const tanquePoint = seat.seatId === snapshot.selfSeatId ? readTanquePoint(seatUi) : 0;
+        refreshNativeCardTags(handUis, ['心幽', '椒遇'], true, (card) => tanqueDiffLabel(readCardNumber(card), tanquePoint));
+        refreshNativeCardTags(readShownHandEntries(asRecord(seatUi.seat), seatUi), ['心幽', '椒遇'], true);
       }
       if (seat.seatId === snapshot.selfSeatId) {
         // 本机手牌仍由游戏原生组件承载选牌/技能交互，不能隐藏它。
@@ -703,24 +706,109 @@ export function installNativeMingpaiPreviewController(
     }
   }
 
-  /** 这张牌仍带着心幽 / 椒遇时，把标签放进游戏绘制用的数组。 */
+  /** 心幽、椒遇，以及顺手、火攻这类来源短名，写进游戏绘制用的数组。 */
   function stampPersistentCardTags(cardUi: UnknownRecord): void {
     const card = asRecord(cardUi.Card) ?? asRecord(cardUi.card);
     if (!card) return;
     const cardId = Number(card.cardId ?? card.cardID ?? card.CardId ?? card.CardID ?? card.id ?? card.ID ?? card.key);
     if (!Number.isInteger(cardId) || cardId <= 0) return;
     const persistent = mingpaiEngine?.getPersistentTags(cardId) ?? [];
-    const labels = ['心幽', '椒遇'].filter((label) => persistent.includes(label));
-    if (!labels.length) return;
+    const labels = persistent.filter((label) => label === '心幽' || label === '椒遇' || label.startsWith('['));
     const tagKey = Object.prototype.hasOwnProperty.call(card, 'tagArr1') ? 'tagArr1' : 'TagArr1';
     const tags = Array.isArray(card[tagKey]) ? (card[tagKey] as unknown[]).map(String) : [];
-    const missing = labels.filter((label) => !tags.includes(label));
-    if (!missing.length) return;
-    card[tagKey] = [...tags, ...missing];
+    const kept = tags.filter((tag) => (tag !== '心幽' && tag !== '椒遇') || labels.includes(tag));
+    const missing = labels.filter((label) => !kept.includes(label));
+    if (!missing.length && kept.length === tags.length) return;
+    card[tagKey] = [...kept, ...missing];
+  }
+
+  const tanquePointBySeat = new Map<number, number>();
+  const labelLayoutPatched = new WeakSet<object>();
+
+  /** 来源短名贴在牌面最下方，避开游戏自己的标签。 */
+  function ensureSourceLabelLayout(cardUi: UnknownRecord): void {
+    const prototype = Object.getPrototypeOf(cardUi) as UnknownRecord | null;
+    if (!prototype || labelLayoutPatched.has(prototype)) return;
+    if (typeof prototype.layoutTagUI !== 'function') return;
+    const original = prototype.layoutTagUI as (this: UnknownRecord, ...args: unknown[]) => unknown;
+    let wrapped: (this: UnknownRecord, ...args: unknown[]) => unknown;
+    wrapped = function (this: UnknownRecord, ...args: unknown[]) {
+      const laidOut = original.apply(this, args);
+      const button = asRecord(this.__xcLabelBtn);
+      if (button?.visible) {
+        let y = (Number(this.height) || 0) - 5;
+        for (const key of ['macthCardTagTex', 'macthCardTagTex2']) {
+          const tag = asRecord(this[key]);
+          if (tag?.visible) y -= Number(tag.height) - 5;
+        }
+        for (const key of ['cardTagBtn', 'cardTagBtn2', 'cardTagBtn3']) {
+          const tag = asRecord(this[key]);
+          if (tag?.visible) y -= Number(tag.height);
+        }
+        button.y = y - Number(button.height);
+      }
+      return laidOut;
+    };
+    try {
+      prototype.layoutTagUI = wrapped;
+      labelLayoutPatched.add(prototype);
+    } catch {
+      // 原型不可写时仍把标签按钮挂到牌上。
+    }
+  }
+
+  /** 自己的手牌用牌面按钮显示「火攻」这类短名，不依赖游戏有没有绘制 tagArr1。 */
+  function paintSourceLabelButton(cardUi: UnknownRecord, labels: readonly string[]): void {
+    const text = labels.join('');
+    const existing = asRecord(cardUi.__xcLabelBtn);
+    if (!text) {
+      if (existing) existing.visible = false;
+      return;
+    }
+    ensureSourceLabelLayout(cardUi);
+    let button = existing;
+    if (!button) {
+      if (typeof cardUi.getCardTagBtn !== 'function' || typeof cardUi.addChild !== 'function') return;
+      button = asRecord((cardUi.getCardTagBtn as () => unknown)());
+      if (!button) return;
+      button.mouseEnabled = false;
+      button.mouseChildren = false;
+      cardUi.__xcLabelBtn = button;
+      (cardUi.addChild as (child: unknown) => unknown)(button);
+    }
+    if (button.label !== text) {
+      button.label = text;
+      if (typeof cardUi.resetTagSize === 'function') (cardUi.resetTagSize as (tag: unknown) => unknown)(button);
+    }
+    button.visible = true;
+    if (typeof cardUi.layoutTagUI === 'function') (cardUi.layoutTagUI as () => unknown)();
+  }
+
+  /** 弹雀对照点数在自己座位上，没有或已经清掉时是 0。 */
+  function readTanquePoint(seatUi: UnknownRecord): number {
+    const seat = asRecord(seatUi.seat) ?? seatUi;
+    const seatId = Number(seat.Index ?? seat.SeatID ?? seat.seatId ?? seatUi.seatId);
+    const reader = typeof seat.GetStateValue === 'function'
+      ? seat
+      : typeof seatUi.GetStateValue === 'function' ? seatUi : null;
+    if (reader) {
+      const value = Number((reader.GetStateValue as (stateId: number) => unknown)(TANQUE_STATE_ID));
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+    return tanquePointBySeat.get(seatId) ?? 0;
+  }
+
+  function readCardNumber(card: UnknownRecord): number {
+    return Number(card.CardNumber ?? card.cardNumber);
   }
 
   /** 把持续标签刷回原生卡牌 UI。keepOnCard 时写在牌上，直到调用方去掉标签。 */
-  function refreshNativeCardTags(cardUis: unknown[], labels: readonly string[], keepOnCard: boolean): void {
+  function refreshNativeCardTags(
+    cardUis: unknown[],
+    labels: readonly string[],
+    keepOnCard: boolean,
+    dynamicLabel?: (card: UnknownRecord) => string | null
+  ): void {
     const enabled = configStore.get('display.cardLabelsEnabled');
     for (const rawUi of cardUis) {
       const cardUi = asRecord(rawUi);
@@ -729,13 +817,21 @@ export function installNativeMingpaiPreviewController(
       const cardId = Number(card.cardId ?? card.cardID ?? card.CardId ?? card.CardID ?? card.id ?? card.ID ?? card.key);
       if (!Number.isInteger(cardId) || cardId <= 0) continue;
       const persistent = mingpaiEngine?.getPersistentTags(cardId) ?? [];
-      const extra = enabled ? labels.filter((label) => persistent.includes(label)) : [];
+      const sourceLabels = persistent.filter((label) => label.startsWith('[') && !label.startsWith('[弹雀]'));
+      const dynamic = enabled && dynamicLabel ? dynamicLabel(card) ?? '' : '';
+      const extra = enabled
+        ? [...labels.filter((label) => persistent.includes(label)), ...sourceLabels]
+        : [];
       const tagKey = Object.prototype.hasOwnProperty.call(card, 'tagArr1') ? 'tagArr1' : 'TagArr1';
       const originalTags = card[tagKey];
       const tags = Array.isArray(originalTags) ? originalTags.map(String) : [];
-      const nextTags = [...new Set([...tags.filter((tag) => !labels.includes(tag)), ...extra])];
-      if (!extra.length && !tags.some((tag) => labels.includes(tag))) continue;
-      if (JSON.stringify(tags) === JSON.stringify(nextTags)) continue;
+      const managed = new Set<string>([...labels, ...tags.filter((tag) => tag.startsWith('['))]);
+      const nextTags = [...new Set([...tags.filter((tag) => !managed.has(tag)), ...extra])];
+      const buttonLabels = [...sourceLabels, ...(dynamic ? [dynamic] : [])];
+      if (!extra.length && !dynamic && !tags.some((tag) => managed.has(tag)) && !asRecord(cardUi.__xcLabelBtn)) continue;
+      const changed = JSON.stringify(tags) !== JSON.stringify(nextTags);
+      paintSourceLabelButton(cardUi, buttonLabels);
+      if (!changed) continue;
       try {
         call(cardUi, 'AddCardTag');
         card[tagKey] = nextTags;
@@ -825,8 +921,14 @@ export function installNativeMingpaiPreviewController(
       recommendedBySeat.clear();
       selectedBySeat.clear();
       officialShownBySeat.clear();
+      tanquePointBySeat.clear();
       markTimers.forEach((timerId) => window.clearTimeout(timerId));
       markTimers.clear();
+      return;
+    }
+    if (event.type === 'seat-state-changed' && event.stateId === TANQUE_STATE_ID) {
+      if (event.value > 0) tanquePointBySeat.set(event.seatId, event.value);
+      else tanquePointBySeat.delete(event.seatId);
       return;
     }
     if (event.type !== 'friend-hand-tags-updated') return;

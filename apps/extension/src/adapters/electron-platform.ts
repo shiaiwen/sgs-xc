@@ -1,8 +1,9 @@
 /**
  * Electron 微端平台适配。
  * 外链优先走 preload 的 openExternal，没有时退回浏览器新窗口。
- * 配置读写使用 localStorage。
+ * 配置优先写入本机共享存储，没有时再用页面存储。
  */
+import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from './browser-settings.ts';
 import type { PlatformAdapter } from './platform';
 
 /** Electron 微端适配器。业务层不直接依赖 preload 暴露的 window.electron。 */
@@ -16,8 +17,8 @@ export function createElectronPlatform(): PlatformAdapter {
       }
       window.open(url, '_blank', 'noopener');
     },
-    getSetting: (key) => window.localStorage.getItem(key),
-    setSetting: (key, value) => window.localStorage.setItem(key, value),
-    removeSetting: (key) => window.localStorage.removeItem(key)
+    getSetting: readBrowserSetting,
+    setSetting: writeBrowserSetting,
+    removeSetting: removeBrowserSetting
   };
 }

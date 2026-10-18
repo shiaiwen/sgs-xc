@@ -12,29 +12,59 @@ export interface BlockSetting {
 
 export const BLOCK_EFFECT_SETTINGS: readonly BlockSetting[] = [
   {
-    key: 'block.shaEffect',
-    label: '杀特效',
-    tooltip: '屏蔽普通杀和属性杀的命中特效'
+    key: 'block.selectEffect',
+    label: '选中特效',
+    tooltip: '屏蔽选中目标时的官阶动画'
   },
   {
-    key: 'block.healEffect',
-    label: '回血特效',
-    tooltip: '屏蔽牌局中的回血动画'
+    key: 'block.shaEffect',
+    label: '杀特效',
+    tooltip: '屏蔽杀的命中动画'
+  },
+  {
+    key: 'block.shanEffect',
+    label: '闪特效',
+    tooltip: '屏蔽闪的动画'
   },
   {
     key: 'block.jinnangEffect',
     label: '锦囊特效',
-    tooltip: '屏蔽无中生有、南蛮、无懈等锦囊动画'
+    tooltip: '屏蔽锦囊牌的动画'
+  },
+  {
+    key: 'block.equipEffect',
+    label: '装备特效',
+    tooltip: '屏蔽装备发动、命中和拖尾动画'
+  },
+  {
+    key: 'block.shakeEffect',
+    label: '受击特效',
+    tooltip: '屏蔽角色被攻击时的震动等动画'
+  },
+  {
+    key: 'block.healEffect',
+    label: '回血特效',
+    tooltip: '屏蔽桃、回血动画和回复播报'
   },
   {
     key: 'block.killEffect',
     label: '击杀特效',
-    tooltip: '屏蔽角色被击杀时的终结特效'
+    tooltip: '屏蔽击杀、连杀和高伤害播报'
+  },
+  {
+    key: 'block.skillEffect',
+    label: '武将特效',
+    tooltip: '屏蔽武将大特效、形态转场、震屏和天书动画'
+  },
+  {
+    key: 'block.selfSkinEffect',
+    label: '己方动效',
+    tooltip: '屏蔽自己皮肤的攻击、互动、技能等动画'
   },
   {
     key: 'block.otherSkinState',
-    label: '他人动态',
-    tooltip: '将其他角色的动态皮肤按静态形态显示'
+    label: '他人动效',
+    tooltip: '屏蔽他人皮肤的攻击、互动、技能等动画，动态皮肤按静态显示'
   },
   {
     key: 'block.laoXianWindow',

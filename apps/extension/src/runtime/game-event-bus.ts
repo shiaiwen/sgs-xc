@@ -37,6 +37,12 @@ export type GameEvent =
     phase: number;
   }
   | {
+    /** 角色数据里的心幽牌。空列表表示这一座位的标记已经取消。 */
+    type: 'xinyou-cards-updated';
+    seatId: number;
+    cardIds: number[];
+  }
+  | {
     /** GsCUpdateRoleDataExNtf DataID=1：Datas=[?, 本回合已出杀, 出杀上限]。 */
     type: 'sha-count-updated';
     seatId: number;
@@ -333,6 +339,10 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     const phase = normalizeNonNegativeInteger(event.phase);
     if (phase === null) return null;
     return Object.freeze({ type: event.type, seatId, phase });
+  }
+  if (event.type === 'xinyou-cards-updated') {
+    const cardIds = [...new Set(event.cardIds.map(normalizePositiveInteger).filter(isNumber))];
+    return Object.freeze({ type: event.type, seatId, cardIds: Object.freeze(cardIds) });
   }
   if (event.type === 'sha-count-updated') {
     const used = Number(event.used);

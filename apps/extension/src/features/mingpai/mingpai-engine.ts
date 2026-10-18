@@ -82,6 +82,8 @@ export interface MingpaiEngine {
   observeKnownHandCard(cardId: number, seatId: number, tags?: readonly string[]): void;
   rememberPersistentCardTag(cardId: number, tag: string, originalOwnerSeatId?: number | null): void;
   forgetPersistentCardTag(cardId: number, tag: string): void;
+  /** 持久标签里还带着这个字的牌，包括没出现在当前牌位里的。 */
+  listCardIdsWithPersistentTag(tag: string): number[];
   /**
    * 座位的「官方公开手牌」集合变化时调用。
    * 离开这个集合的牌会丢掉普通标签，只留下会跟着牌走的粘性标签。

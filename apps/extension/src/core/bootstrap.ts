@@ -8,6 +8,7 @@
 
 import { createLifecycle } from '../runtime/lifecycle.js';
 import { installRuntimeBridge } from '../runtime/wait-for-game-runtime.js';
+import { readBrowserSetting } from '../adapters/browser-settings';
 import type { PlatformAdapter } from '../adapters/platform';
 import {
   mountXiaochaoApp,
@@ -68,6 +69,8 @@ import { installClassicRoomFilterController } from '../features/room-filter/clas
 export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const lifecycle = createLifecycle();
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
+  const accountTimer = window.setInterval(() => configStore.syncAccount(), 1000);
+  lifecycle.register(() => window.clearInterval(accountTimer));
   const seatStateStore = createSeatStateStore();
   const gameEvents = createGameEventBus();
   const cardConfigSource = installCardConfigSource(window);
@@ -171,7 +174,9 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   lifecycle.register(autoHg.dispose);
   const autoBot = installAutoBotController(configStore, { gameEvents });
   lifecycle.register(autoBot.dispose);
-  const updateNotice = installUpdateNoticeController(configStore, (url) => platform.openExternal(url));
+  const updateNotice = installUpdateNoticeController(configStore, (url) => platform.openExternal(url), {
+    platform: platform.platform
+  });
   lifecycle.register(updateNotice.dispose);
   const rogue = installRogueController(configStore, { cardConfigSource });
   lifecycle.register(rogue.dispose);
@@ -278,7 +283,7 @@ const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
 
 function readSavedPanelHeight(): number {
   try {
-    const saved = Number(localStorage.getItem('XC::panelExpandedHeight'));
+    const saved = Number(readBrowserSetting('XC::panelExpandedHeight'));
     // 0 表示没有保存过高度，让面板按内容自适应。
     return Number.isFinite(saved) && saved >= 160 ? Math.round(saved) : 0;
   } catch {
