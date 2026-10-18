@@ -12,6 +12,7 @@ export interface SeatTipTarget {
 export interface SeatTipLayaWindow {
   Laya?: {
     Text?: new () => SeatTipTextNode;
+    Sprite?: new () => SeatTipTextNode;
   };
 }
 
@@ -25,6 +26,7 @@ export interface SeatTipTextNode {
   bold?: boolean;
   bgColor?: string;
   leading?: number;
+  wordWrap?: boolean;
   mouseEnabled?: boolean;
   zOrder?: number;
   width?: number;
@@ -32,8 +34,10 @@ export interface SeatTipTextNode {
   text?: string;
   visible?: boolean;
   pos?: (x: number, y: number) => void;
+  addChild?: (child: SeatTipTextNode) => void;
   destroy?: (destroyChildren?: boolean) => void;
   removeSelf?: () => void;
+  __xcTipLines?: SeatTipTextNode[];
 }
 
 const TIP_PROPERTY_PREFIX = '__xcGeneralTip_';
@@ -73,20 +77,20 @@ export function applySeatGeneralTip(options: {
     let node = asTipNode(avatar[property]);
     if (!node && !text) continue;
     if (!node) {
+      const Sprite = globalObject.Laya?.Sprite;
       const Text = globalObject.Laya?.Text;
-      if (!Text) continue;
-      node = new Text();
+      if (!Sprite || !Text) continue;
+      node = new Sprite();
       node.name = `xcGeneralCardTip-${key}`;
-      node.leading = 0;
       node.mouseEnabled = false;
       node.zOrder = 999;
+      node.__xcTipLines = [];
       avatar[property] = node;
-      applyTipStyle(node, avatar, style);
       const addChild = avatar.addChild;
       if (typeof addChild === 'function') addChild.call(avatar, node);
     }
-    applyTipStyle(node, avatar, style);
-    if (node.text !== text) node.text = text;
+    const box = applyTipStyle(node, avatar, style);
+    fillTipLines(node, text, style, box.width, globalObject);
     node.visible = Boolean(text);
   }
 }
@@ -124,18 +128,63 @@ export function collectSeatTipTargets(seatUIs: unknown): SeatTipTarget[] {
   });
 }
 
-function applyTipStyle(node: SeatTipTextNode, avatar: UnknownRecord, style: SeatTipStyle | undefined): void {
-  node.fontSize = style?.fontSize ?? 12;
-  node.color = style?.color ?? '#FFFFFF';
-  node.stroke = style?.stroke ?? 2;
-  node.strokeColor = style?.strokeColor ?? '#000000';
-  node.align = style?.align ?? 'right';
-  node.bold = style?.bold ?? false;
-  node.bgColor = style?.bgColor;
+function applyTipStyle(
+  node: SeatTipTextNode,
+  avatar: UnknownRecord,
+  style: SeatTipStyle | undefined
+): { x: number; y: number; width: number; height: number } {
   const box = style?.place?.(avatar) ?? defaultTipBox(avatar);
   node.width = box.width;
   node.height = box.height;
   node.pos?.(box.x, box.y);
+  return box;
+}
+
+/** 网页端文字组件会丢掉换行符，所以每条增益单独一行。 */
+function fillTipLines(
+  container: SeatTipTextNode,
+  text: string,
+  style: SeatTipStyle | undefined,
+  width: number,
+  globalObject: SeatTipLayaWindow
+): void {
+  const Text = globalObject.Laya?.Text;
+  const lines = text ? text.split('\n') : [];
+  if (container.text) container.text = '';
+  const lineNodes = container.__xcTipLines ?? (container.__xcTipLines = []);
+  const fontSize = style?.fontSize ?? 12;
+  const lineHeight = fontSize + 2;
+  if (Text) {
+    while (lineNodes.length < lines.length) {
+      const line = new Text();
+      line.mouseEnabled = false;
+      line.wordWrap = false;
+      container.addChild?.(line);
+      lineNodes.push(line);
+    }
+  }
+  for (let index = 0; index < lineNodes.length; index += 1) {
+    const line = lineNodes[index];
+    if (!line) continue;
+    if (index >= lines.length) {
+      line.visible = false;
+      continue;
+    }
+    line.visible = true;
+    line.fontSize = fontSize;
+    line.color = style?.color ?? '#FFFFFF';
+    line.stroke = style?.stroke ?? 2;
+    line.strokeColor = style?.strokeColor ?? '#000000';
+    line.align = style?.align ?? 'right';
+    line.bold = style?.bold ?? false;
+    line.bgColor = style?.bgColor;
+    line.wordWrap = false;
+    line.width = width;
+    line.height = lineHeight;
+    line.pos?.(0, index * lineHeight);
+    const lineText = lines[index] ?? '';
+    if (line.text !== lineText) line.text = lineText;
+  }
 }
 
 function defaultTipBox(avatar: UnknownRecord): { x: number; y: number; width: number; height: number } {

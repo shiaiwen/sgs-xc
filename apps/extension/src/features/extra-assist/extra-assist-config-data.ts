@@ -13,7 +13,7 @@ export interface ExtraAssistPeixiuReward {
 export interface ExtraAssistConfigData {
   nanHua: {
     trigger: Record<number, number>;
-    effectHtml: string[];
+    effects: Array<{ type: number; text: string }>;
   };
   shiLun: Array<{
     id: number;
@@ -44,26 +44,13 @@ export function buildExtraAssistConfigData(raw: unknown): ExtraAssistConfigData 
     if (Number.isInteger(id) && id > 0) trigger[id] = type;
   }
 
-  const effectEntries = effects.map((entry) => {
+  const nanHuaEffects = effects.map((entry) => {
     const record = asRecord(entry);
     const type = Number(record?.effectType) || 0;
-    const desc = String(record?.desc || '').replace(/^你可以?(.*?)。?$/, '$1');
-    return { type, desc };
-  }).sort((left, right) => left.type - right.type || left.desc.length - right.desc.length);
-
-  // 同类型效果拼进 HTML 片段数组，供 slice(minType) 使用。
-  const effectHtml: string[] = [];
-  for (let index = 0; index < effectEntries.length; index += 1) {
-    const current = effectEntries[index];
-    const previous = effectEntries[index - 1];
-    let desc = current.desc;
-    if (current.type !== previous?.type) {
-      const pad = Math.max(0, 13 - desc.length);
-      desc += `<span style="color: rgba(0,0,0,0);stroke:none;">${'～'.repeat(pad)}</span>`
-        + `<span style="color: rgba(255,255,0,1);">第${current.type}类型</span>`;
-    }
-    effectHtml.push(desc);
-  }
+    const text = String(record?.desc || '');
+    return { type, text };
+  }).filter((entry) => entry.type > 0 && entry.text)
+    .sort((left, right) => left.type - right.type || left.text.length - right.text.length);
 
   const shiLun = words.map((entry) => {
     const record = asRecord(entry);
@@ -92,7 +79,7 @@ export function buildExtraAssistConfigData(raw: unknown): ExtraAssistConfigData 
     };
   }
 
-  return { nanHua: { trigger, effectHtml }, shiLun, peiXiuRewards };
+  return { nanHua: { trigger, effects: nanHuaEffects }, shiLun, peiXiuRewards };
 }
 
 function asRecord(value: unknown): UnknownRecord | null {

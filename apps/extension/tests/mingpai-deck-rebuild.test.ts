@@ -19,7 +19,7 @@ test('牌堆方向：顶在数组头，看牌按给的顺序落到顶，底端�
   const engine = freshEngine();
   engine.observeKnownDrawPileCards([31, 32], DRAW_PILE_TOP);
   assert.deepEqual(engine.getSnapshot().drawPile.top, [31, 32]);
-  assert.deepEqual(engine.getSnapshot().drawPile.bottom, [32, 31]);
+  assert.deepEqual(engine.getSnapshot().drawPile.bottom, []);
 
   const peek = (position: number) => engine.resolveHiddenMovement({
     cardCount: 2,

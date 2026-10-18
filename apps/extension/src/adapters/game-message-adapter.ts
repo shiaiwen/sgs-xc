@@ -37,6 +37,12 @@ const TARGET_SEAT_ID_KEYS = [
   'DestSeatID', 'DestSeatId'
 ] as const;
 const CARD_ID_KEYS = ['CardID', 'CardId', 'cardID', 'cardId'] as const;
+const DRAW_PILE_ZONE = 1;
+const DRAW_PILE_TOP = 0xff00;
+const DRAW_PILE_BOTTOM = 0;
+
+/** 刚打出的牌。恃才会把它放上牌堆顶，寸目让随后那张摸牌从牌堆底拿。 */
+let playedCard: { seatId: number; cardId: number; placedOnTop: boolean } | null = null;
 const CARD_IDS_KEYS = ['CardIDs', 'CardIds', 'cardIDs', 'cardIds', 'Cards', 'card_ids', 'card_list', 'CardList'] as const;
 
 /** 一条协议可能对应多个业务事件（SpellOptRep = 看牌 + 临时区重排线索）。未知协议直接忽略。 */
@@ -49,6 +55,7 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
   // 心跳不带座位。自动领取用它判断北京时间是否跨天。
   if (className === 'MsgHeartAliveRep') return [{ type: 'heart-alive' }];
   if (className === 'decodeMsgGameStart' || className === 'MsgGameStart') {
+    playedCard = null;
     return [{ type: 'game-started', freshGame: true }];
   }
   if (className === 'MsgReconnectGame') return [{ type: 'game-reconnected' }];
@@ -229,6 +236,8 @@ function translateSingleMessage(payload: UnknownRecord, className: string): Game
 
   const cardIds = readCardIds(payload);
   if (!cardIds.length) return null;
+  const usedCardId = cardIds.find((cardId) => cardId > 0);
+  if (usedCardId) playedCard = { seatId, cardId: usedCardId, placedOnTop: false };
   return {
     type: 'cards-used',
     seatId,
@@ -248,7 +257,7 @@ function translateCardMovement(payload: UnknownRecord): GameEvent | null {
   if (!cardCount || payload.isSend === true || body.isSend === true) return null;
   const fromZone = readNonNegativeInteger(body, ['FromZone', 'fromZone', 'from_zone']) ?? 0;
   const toZone = readNonNegativeInteger(body, ['ToZone', 'toZone', 'to_zone']) ?? 0;
-  return {
+  const moved: Extract<GameEvent, { type: 'cards-moved' }> = {
     type: 'cards-moved',
     cardCount,
     cardIds: readMovementCardIds(body),
@@ -270,6 +279,38 @@ function translateCardMovement(payload: UnknownRecord): GameEvent | null {
     spellId: readNonNegativeInteger(body, ['SpellID', 'SpellId', 'spellID', 'spellId', 'spell_id']) ?? 0,
     srcSeatId: readSeatId(body, SRC_SEAT_ID_KEYS)
   };
+  return adjustPlayedCardPile(moved);
+}
+
+/**
+ * 恃才把刚用的那张牌放上牌堆顶。协议经常不写位置，缺省就变成牌堆底，顶上就看不到这张牌。
+ * 放上去之后寸目摸的那一张从牌堆底拿，不能把刚放上顶的牌摸走。
+ */
+function adjustPlayedCardPile(moved: Extract<GameEvent, { type: 'cards-moved' }>): Extract<GameEvent, { type: 'cards-moved' }> {
+  const pending = playedCard;
+  if (!pending) return moved;
+  const seatId = moved.srcSeatId ?? moved.fromId;
+  if (moved.toZone === DRAW_PILE_ZONE && moved.cardCount === 1 && !pending.placedOnTop && seatId === pending.seatId) {
+    const knownId = moved.cardIds.find((cardId) => cardId > 0) ?? 0;
+    if (knownId === 0 || knownId === pending.cardId) {
+      pending.placedOnTop = true;
+      return {
+        ...moved,
+        toPosition: DRAW_PILE_TOP,
+        cardIds: knownId > 0 ? [...moved.cardIds] : [pending.cardId]
+      };
+    }
+  }
+  if (moved.cardIds.includes(pending.cardId) && moved.toZone !== DRAW_PILE_ZONE) {
+    playedCard = null;
+    return moved;
+  }
+  if (pending.placedOnTop && moved.fromZone === DRAW_PILE_ZONE && moved.toZone === 5
+    && moved.cardCount === 1 && moved.toId === pending.seatId) {
+    playedCard = null;
+    return { ...moved, fromPosition: DRAW_PILE_BOTTOM };
+  }
+  return moved;
 }
 
 /**

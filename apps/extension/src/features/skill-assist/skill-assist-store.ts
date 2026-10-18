@@ -4,7 +4,7 @@
 
 import type { MingpaiEngine } from '../mingpai/mingpai-engine.ts';
 import { MINGPAI_ZONE } from '../mingpai/mingpai-zones.ts';
-import { collectHandAndDeckFaces, partitionCandidatesByMingpai } from '../mingpai/mingpai-queries.ts';
+import { anchorYanxiCandidates, collectHandAndDeckFaces, partitionCandidatesByMingpai } from '../mingpai/mingpai-queries.ts';
 import {
   SKILL_ASSIST_DEFINITIONS,
   type SkillAssistDefinition
@@ -634,6 +634,10 @@ export function createSkillAssistStore(
       gameCardCatalog
     });
     runtime.resultText = inference.resultText;
+    const selfSeatId = findSelfSeatId();
+    if (selfSeatId !== undefined) {
+      anchorYanxiCandidates(selfSeatId, inference.candidateIds, inference.handCardIds);
+    }
     mingpaiEngine.projectSkillCards(MINGPAI_ZONE.YANXI, inference.candidateIds);
   }
 

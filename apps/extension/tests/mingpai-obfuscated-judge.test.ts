@@ -137,6 +137,30 @@ test('3483 从临时区进牌堆时，顶底对调，暗牌不沿用手牌号', 
   assert.equal(moved.cardIds[0], 0);
 });
 
+test('普通摸两张没写位置时从牌堆顶摸，写明牌堆底则留在底', () => {
+  resetSpellMoveState();
+  const omitted = correctMoveCard(move({
+    cardCount: 2,
+    cardIds: [21, 22],
+    fromId: 255,
+    toId: 1,
+    fromPosition: 0xff02,
+    moveType: 1,
+    spellId: 0
+  }), host);
+  assert.equal(omitted.fromPosition, 0xff00);
+  const fromBottom = correctMoveCard(move({
+    cardCount: 1,
+    cardIds: [0],
+    fromId: 255,
+    toId: 1,
+    fromPosition: 0,
+    moveType: 1,
+    spellId: 0
+  }), host);
+  assert.equal(fromBottom.fromPosition, 0);
+});
+
 test('牌堆上换了位置不算原地展示', () => {
   const shown = isInPlaceCardShow(move({
     fromId: 255,

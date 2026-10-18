@@ -367,6 +367,12 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
   if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_TEMP && spellId === SPELL_DRAW_BOTTOM_THREE && count === 3) {
     fromPosition = BOTTOM;
   }
+  // 位置没写是 0xff02。0 是牌堆底，许攸这类从底摸牌不能改成从顶上拿，否则刚放上顶的牌会被当成摸走。
+  if (
+    fromZone === ZONE_DRAW && toZone === ZONE_HAND && spellId === 0
+    && (moveType === MOVE_DEAL || moveType === MOVE_DRAW)
+    && fromPosition === UNSPECIFIED
+  ) fromPosition = TOP;
   if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && moveType === MOVE_DRAW && count === 1) fromPosition = TOP;
   if (fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone === ZONE_SKILL && moveType === MOVE_PUT && spellId === SPELL_DRAW_TOP_TO_SKILL && count === 1) {
     fromPosition = TOP;
@@ -602,7 +608,8 @@ export function takeHiddenZoneCards(
   if (count <= 0) return [...move.cardIds];
   const cards = zoneCardIds.filter((cardId) => cardId > 0);
   const position = move.fromPosition;
-  if (position === TOP && cards.length >= count) return cards.slice(-count);
+  // 牌堆顶的暗牌不能用已知牌列表的末尾去填。观星放在底下的牌会因此被当成从顶上摸走。
+  if (position === TOP && move.fromZone !== ZONE_DRAW && cards.length >= count) return cards.slice(-count);
   if (position !== UNSPECIFIED && position !== TOP && position >= 0 && position + count <= cards.length) {
     return cards.slice(position, position + count);
   }

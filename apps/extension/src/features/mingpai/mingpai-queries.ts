@@ -2,6 +2,7 @@
  * 明牌查询：按引擎归属把候选牌分为手牌/牌堆，供宴戏等面板求交。
  */
 
+import { CardZone, packSlots } from './graph/card-graph.ts';
 import { formatZoneId, type MingpaiEngine } from './mingpai-engine.ts';
 import { MINGPAI_ZONE } from './mingpai-zones.ts';
 
@@ -49,7 +50,50 @@ export function partitionCandidatesByMingpai(
   } else if (hand.length === 1) {
     deck = candidates.filter((id) => !hand.includes(id));
   }
+  const pile = engine.getSnapshot().drawPile;
+  const order = new Map<number, number>();
+  pile.top.forEach((cardId, index) => {
+    if (cardId > 0) order.set(cardId, index);
+  });
+  pile.bottom.forEach((cardId, index) => {
+    if (cardId > 0 && !order.has(cardId)) order.set(cardId, pile.top.length + index);
+  });
+  deck.sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER));
   return { handCardIds: hand, deckCardIds: deck };
+}
+
+/**
+ * 宴戏亮牌时把候选按手牌、牌堆顶的相对顺序捆在一起。
+ * 不从区域里摘走，页面上的牌还在原处，之后摸牌会按这个顺序认。
+ */
+export function anchorYanxiCandidates(
+  seatId: number,
+  candidateIds: readonly number[],
+  handIds: readonly number[]
+): void {
+  if (handIds.length !== 1 && handIds.length !== 2 && handIds.length !== 3) return;
+  const ordered = handIds.length < 3
+    ? [...handIds, ...candidateIds.filter((cardId) => !handIds.includes(cardId))]
+    : [...candidateIds];
+  const handZoneId = `${HAND_ZONE}-${seatId}`;
+  const pileZoneId = formatZoneId(GLOBAL_OWNER, DRAW_PILE_ZONE);
+  const handSlots = ordered.slice(0, handIds.length)
+    .map((cardId) => findZoneSlot(handZoneId, cardId))
+    .filter((slot): slot is NonNullable<typeof slot> => Boolean(slot));
+  const pileSlots = ordered.slice(-2)
+    .map((cardId) => findZoneSlot(pileZoneId, cardId))
+    .filter((slot): slot is NonNullable<typeof slot> => Boolean(slot));
+  const linked = [...handSlots, ...pileSlots];
+  if (handIds.length === 3) packSlots(linked);
+  else if (handIds.length === 1) packSlots(linked.slice(1, 3));
+  else {
+    packSlots(linked.slice(0, 2));
+    packSlots(linked.slice(1, 3));
+  }
+}
+
+function findZoneSlot(zoneId: string, cardId: number) {
+  return new CardZone(zoneId).cards.find((slot) => slot.key === cardId || slot.id === cardId) ?? null;
 }
 
 /** 兼容旧签名：显式传入已知面 ID 集合。 */

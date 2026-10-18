@@ -19,7 +19,7 @@ import {
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { readSeatHandCardCount, readShownHandEntries } from '../seat-display/seat-game-adapter.ts';
 import type { SeatStateStore } from '../seat-display/seat-state-store.ts';
-import { DISCARD_ZONE, DRAW_PILE_ZONE, HAND_ZONE, type MingpaiEngine } from './mingpai-engine.ts';
+import { HAND_ZONE, type MingpaiEngine } from './mingpai-engine.ts';
 import {
   getSeatPossibleCardIds,
   getZone4Rows,
@@ -45,8 +45,10 @@ const VIEWPORT_MARGIN = 12;
 const STRIP_OFFSET_X = 2;
 const STRIP_OFFSET_Y = 10;
 const POPUP_OFFSET = 14;
-const POPUP_CARD_SCALE = 0.5;
+const POPUP_CARD_SCALE = 0.85;
 const POPUP_PADDING = 8;
+const POPUP_CARD_GAP = 8;
+const POPUP_MIN_OVERLAP_GAP = 5;
 const POPUP_TITLE_HEIGHT = 26;
 const HIDE_DELAY_MS = 120;
 const POLL_INTERVAL_MS = 250;
@@ -378,25 +380,26 @@ export function installNativeMingpaiPreviewController(
     const maxWidth = direction === 'right'
       ? viewport.x + viewport.width - VIEWPORT_MARGIN - entry.anchor.x - entry.anchor.width - POPUP_OFFSET
       : entry.anchor.x - viewport.x - VIEWPORT_MARGIN - POPUP_OFFSET;
-    const cardWidth = Math.round(OFFICIAL_CARD_BASE_WIDTH * POPUP_CARD_SCALE);
-    const cardHeight = Math.round(OFFICIAL_CARD_BASE_HEIGHT * POPUP_CARD_SCALE);
+    const cardWidth = Math.max(1, Math.round(OFFICIAL_CARD_BASE_WIDTH * POPUP_CARD_SCALE));
+    const cardHeight = Math.max(1, Math.floor(OFFICIAL_CARD_BASE_HEIGHT * POPUP_CARD_SCALE));
     const available = Math.max(cardWidth + POPUP_PADDING * 2, maxWidth || 1600);
-    const cardGap = 8;
     const sections = [
       { label: `确定牌（${entry.cardIds.length}）`, color: '#FFF3D0', cardIds: entry.cardIds, possible: false },
       { label: `可能牌（${entry.possibleIds.length}）`, color: '#C9C1B1', cardIds: entry.possibleIds, possible: true },
       ...zone4Sections(entry.zone4Rows)
     ].filter((section) => section.cardIds.length).map((section) => {
-      const count = section.cardIds.length;
-      const columns = Math.max(1, Math.min(count, Math.floor(
-        (available - POPUP_PADDING * 2 + cardGap) / (cardWidth + cardGap)
-      ) || 1));
-      const rows = Math.ceil(count / columns);
-      const width = POPUP_PADDING * 2 + columns * cardWidth + Math.max(0, columns - 1) * cardGap;
-      const height = POPUP_TITLE_HEIGHT + rows * cardHeight + Math.max(0, rows - 1) * cardGap;
-      return { ...section, columns, rows, width, height };
+      const count = Math.max(1, section.cardIds.length);
+      const step = count > 1
+        ? Math.max(
+          POPUP_MIN_OVERLAP_GAP,
+          Math.min(cardWidth + POPUP_CARD_GAP, (available - POPUP_PADDING * 2 - cardWidth) / (count - 1))
+        )
+        : 0;
+      const width = Math.min(available, POPUP_PADDING * 2 + cardWidth + step * (count - 1));
+      const height = POPUP_TITLE_HEIGHT + cardHeight;
+      return { ...section, step, width, height };
     });
-    const width = Math.min(available, Math.max(...sections.map((section) => section.width)));
+    const width = Math.max(...sections.map((section) => section.width));
     const height = POPUP_PADDING * 2 + sections.reduce((sum, section) => sum + section.height, 0)
       + Math.max(0, sections.length - 1) * POPUP_SECTION_GAP;
     const teamMarkable = seatStateStore.getSnapshot().controlledSeatIds.includes(entry.seatId)
@@ -428,19 +431,20 @@ export function installNativeMingpaiPreviewController(
           call(created, 'addChild', title);
         }
         section.cardIds.forEach((cardId, index) => {
-          const column = index % section.columns;
-          const row = Math.floor(index / section.columns);
-          const x = POPUP_PADDING + column * (cardWidth + cardGap);
-          const y = top + POPUP_TITLE_HEIGHT + row * (cardHeight + cardGap);
+          const x = POPUP_PADDING + index * section.step;
+          const y = top + POPUP_TITLE_HEIGHT;
           const view = createOfficialCardView(
             created,
             cardId,
             OFFICIAL_CARD_BASE_WIDTH,
             OFFICIAL_CARD_BASE_HEIGHT,
             undefined,
-            { x, y }
+            { x, y },
+            POPUP_CARD_SCALE
           );
           if (view) {
+            view.holder.zOrder = 10 + index;
+            view.ui.zOrder = 10 + index;
             popupCards.push(view);
           } else {
             const tile = createTile(cardId, section.possible, entry.tagsByCardId.get(cardId) ?? []);
@@ -755,9 +759,10 @@ export function installNativeMingpaiPreviewController(
   }
 
   /**
-   * 技能展示别人的手牌时，网页端把牌放进 HandShowCards，微端观星写在 HandShowCardIDs。
-   * 移牌协议不一定带卡号。
-   * 这些牌补进手牌区。牌堆上的观星牌、已经进弃牌堆的牌不改位置。离开展示列表时再移出。
+   * 技能展示别人的手牌时，网页端把牌放进 HandShowCards，微端把卡号写在 HandShowCardIDs。
+   * 移牌协议不一定带卡号，这些牌才补进手牌区。
+   * 观星会把牌堆顶的牌短暂放进展示区，牌位图里已经有位置、且不在这名角色手上的牌不改位置。
+   * 离开展示列表时再移出。
    */
   function syncShownHandCards(
     seatId: number,
@@ -792,24 +797,19 @@ export function installNativeMingpaiPreviewController(
         && !liveHand.has(cardId)
       ) next.delete(cardId);
     }
-    const onDrawPile = new Set((engineSnapshot?.records ?? [])
-      .filter((record) => record.location?.zone === DRAW_PILE_ZONE)
-      .map((record) => record.cardId));
-    const alreadyDiscarded = new Set((engineSnapshot?.records ?? [])
-      .filter((record) => record.location?.zone === DISCARD_ZONE)
-      .map((record) => record.cardId));
-    const ownedByAnotherSeat = (cardId: number) => {
+    const placedOutsideThisHand = (cardId: number) => {
       const location = engineSnapshot?.records.find((record) => record.cardId === cardId)?.location;
-      return location?.zone === HAND_ZONE && location.seatId !== seatId;
+      if (!location) return false;
+      return location.zone !== HAND_ZONE || location.seatId !== seatId;
     };
     const previous = officialShownBySeat.get(seatId) ?? new Set<number>();
     for (const cardId of next) {
-      if (previous.has(cardId) || onDrawPile.has(cardId) || alreadyDiscarded.has(cardId) || ownedByAnotherSeat(cardId)) continue;
+      if (previous.has(cardId) || placedOutsideThisHand(cardId)) continue;
       mingpaiEngine.observeKnownHandCard(cardId, seatId, []);
     }
     // 离开官方公开手牌列表的牌只回收普通标签，不推断它去了哪里。
     mingpaiEngine.syncOfficialHand(seatId, [...next]);
-    const kept = new Set([...next].filter((cardId) => !onDrawPile.has(cardId) && !ownedByAnotherSeat(cardId)));
+    const kept = new Set([...next].filter((cardId) => !placedOutsideThisHand(cardId)));
     if (kept.size) officialShownBySeat.set(seatId, kept);
     else officialShownBySeat.delete(seatId);
   }

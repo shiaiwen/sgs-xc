@@ -55,6 +55,25 @@ type EngineMovement = KnownCardMovement & { spellId?: number; moveType?: number 
 /** 整张图的槽位放在 zones 里的投影长度上限，避免快照无限长。 */
 const MAX_SNAPSHOT_PILE = 64;
 
+/** 顶上只数放到顶上的明牌，底下只数放到底下的明牌。中间隔着未知牌就停下。 */
+function pileEdgeRuns(cards: readonly CardSlot[]): { top: number[]; bottom: number[] } {
+  const top: number[] = [];
+  for (const slot of cards) {
+    if (!(slot.key > 0) || slot.pileEdge === 'bottom') break;
+    top.push(slot.key);
+    if (top.length >= MAX_SNAPSHOT_PILE) break;
+  }
+  const bottom: number[] = [];
+  for (let index = cards.length - 1; index >= 0; index -= 1) {
+    const slot = cards[index];
+    if (!slot || !(slot.key > 0) || slot.pileEdge === 'top') break;
+    if (top.includes(slot.key)) break;
+    bottom.push(slot.key);
+    if (bottom.length >= MAX_SNAPSHOT_PILE) break;
+  }
+  return { top, bottom };
+}
+
 export function createGraphMingpaiEngine(storage: Storage | null = getSessionStorage()): MingpaiEngine {
   void storage;
   // 牌位图是模块级共享状态；新建引擎等同于开一局，先清干净。
@@ -112,9 +131,8 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
       });
     });
 
-    const pileKeys = new CardZone(DRAW_PILE_ZONE_ID).cards.map((slot) => (slot.key > 0 ? slot.key : 0));
-    const top = pileKeys.slice(0, MAX_SNAPSHOT_PILE);
-    const bottom = pileKeys.slice(-MAX_SNAPSHOT_PILE).reverse();
+    const pileCards = new CardZone(DRAW_PILE_ZONE_ID).cards;
+    const { top, bottom } = pileEdgeRuns(pileCards);
     return Object.freeze({
       zones: Object.freeze(zones),
       records: Object.freeze(records),
@@ -325,6 +343,8 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
         getUnknownZoneSlots().delete(slot);
         return slot;
       });
+      const edge = position === DRAW_PILE_TOP ? 'top' : 'bottom';
+      placed.forEach((slot) => { slot.pileEdge = edge; });
       if (position === DRAW_PILE_TOP) cards.unshift(...placed);
       else cards.push(...placed);
       publish();
@@ -345,8 +365,9 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
         && (movement.fromPosition === DRAW_PILE_TOP || movement.fromPosition === DRAW_PILE_BOTTOM)) {
         const cards = new CardZone(DRAW_PILE_ZONE_ID).cards;
         const count = Math.max(0, Math.min(movement.cardCount, cards.length));
+        const fromTop = cards.filter((slot) => !(slot.pileEdge === 'bottom' && slot.key > 0));
         const picked = movement.fromPosition === DRAW_PILE_TOP
-          ? cards.slice(0, count)
+          ? fromTop.slice(0, count)
           : cards.slice(-count).reverse();
         return picked.map((slot) => (slot.key > 0 ? slot.key : 0));
       }
@@ -364,6 +385,8 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
       result.moved.forEach((slot) => {
         slot.position = movement.toPosition;
         slot.zoneParam = movement.toZoneParam;
+        if (movement.toZone === DRAW_PILE_ZONE && movement.toPosition === DRAW_PILE_TOP) slot.pileEdge = 'top';
+        else if (movement.toZone === DRAW_PILE_ZONE && movement.toPosition === DRAW_PILE_BOTTOM) slot.pileEdge = 'bottom';
       });
       // unknown 投影跟随临时区进出。
       const known = uniquePositive(effectiveCardIds);

@@ -1,0 +1,21 @@
+---
+description: Git 提交时排除本地/临时产物与未授权数据文件
+alwaysApply: true
+---
+
+# 提交范围约束（强制）
+
+帮用户 `git add` / 写提交说明 / 创建 commit 时，**默认不得**纳入下列路径。用户明确点名要提交某文件时除外。
+
+## 禁止纳入提交
+
+- `apps/extension/.tmp-decode.js` 及同类临时解码脚本
+- 任意 `.dev-data/` 目录
+- 任意 `dist/`、`dist-ssr/`、`out/`、`release/` 构建产物
+- `apps/extension/tools/console-copy-seats.txt` 及同类本地调试摘录
+- `apps/portal/.next-dev-*/` 等 Next 本地 dev 缓存目录
+- `apps/server/data/gift-codes.json`：除非用户本次明确说要更新礼包码数据，否则不要 stage
+
+## 自检
+
+提交前看 `git status`，若出现上述路径，从暂存区移除，不要写进 commit message 当成功能改动。

@@ -137,6 +137,11 @@ export class CardSlot {
   prev: CardSlot | null;
   /** 进区时协议给的位置，只用于查询，不参与算法。 */
   position = 0;
+  /**
+   * 这张明牌是放在牌堆顶还是牌堆底。
+   * 牌堆里只有这几张时，不能既算顶又算底。
+   */
+  pileEdge: '' | 'top' | 'bottom' = '';
   /** 进区时协议给的区域参数，只用于查询，不参与算法。 */
   zoneParam = 0;
 
@@ -679,6 +684,8 @@ export class CardZone {
     if (this.pos === DRAW_PILE_TOP) {
       taken.push(...this.cards.splice(-(this.count as number)));
       if (Number(this.zone) === 1) taken.reverse();
+    } else if (Number(this.zone) === 1 && this.pos === DRAW_PILE_BOTTOM) {
+      taken.push(...takeKnownTop(this.cards, this.count as number, this.zoneID));
     } else if (this.pos !== POSITION_UNSPECIFIED) {
       taken.push(...this.cards.splice(this.pos, this.count as number));
       if (Number(this.zone) === 1 && DRAW_PILE_ORDER_SPELL_IDS.includes(spellId as number)) taken.reverse();
@@ -778,6 +785,11 @@ export class CardZone {
   add(cards: CardSlot | CardSlot[]): CardSlot | CardSlot[] {
     if (!isCardGraphReady()) return cards;
     const moved = (moveSlots(cards, this.zoneID) as CardSlot[]).slice();
+    if (Number(this.zone) === 1) {
+      // 构造牌堆区时顶底已经对调：内部位置 0 是牌堆顶，0xff00 是牌堆底。
+      const edge = this.pos === DRAW_PILE_BOTTOM ? 'top' : this.pos === DRAW_PILE_TOP ? 'bottom' : '';
+      if (edge) moved.forEach((slot) => { slot.pileEdge = edge; });
+    }
     if (this.pos === POSITION_UNSPECIFIED || this.pos === DRAW_PILE_TOP) {
       this.cards.splice(this.cards.length, 0, ...moved);
     } else {
@@ -793,6 +805,23 @@ export class CardZone {
     zoneStore.set(this.zoneID, moveSlots(cards, this.zoneID) as CardSlot[]);
     drawZone(this.zoneID);
   }
+}
+
+/**
+ * 从牌堆顶摸牌。先拿顶上的明牌和未知牌。
+ * 放在牌堆底的明牌留在原处，不够的张数用新的未知牌补上。
+ */
+function takeKnownTop(cards: CardSlot[], count: number, zoneId: string): CardSlot[] {
+  const taken: CardSlot[] = [];
+  let index = 0;
+  while (taken.length < count && index < cards.length) {
+    const slot = cards[index];
+    if (slot?.pileEdge === 'bottom' && slot.key > 0) break;
+    const [removed] = cards.splice(index, 1);
+    if (removed) taken.push(removed);
+  }
+  while (taken.length < count) taken.push(new CardSlot(0, 0, zoneId));
+  return taken;
 }
 
 /** 把槽位搬到目标区域，并同步明牌标签的生命周期。 */

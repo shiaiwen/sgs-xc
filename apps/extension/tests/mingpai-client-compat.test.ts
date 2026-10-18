@@ -14,6 +14,43 @@ const moveFields = {
   SpellID: 0
 };
 
+test('恃才把刚用的牌放上牌堆顶，随后从牌堆底摸', () => {
+  translateGameMessages([{ ClassName: 'MsgGameStart' }]);
+  translateGameMessages([{
+    ClassName: 'PubGsCUseCard',
+    SeatID: 2,
+    CardIDs: [41]
+  }]);
+  const placed = translateGameMessages([{
+    ClassName: 'PubGsCMoveCard',
+    CardCount: 1,
+    MoveType: 1,
+    CardIDs: [41],
+    FromZone: 5,
+    FromID: 2,
+    ToZone: 1,
+    ToID: 255,
+    ToPosition: 0,
+    SrcSeatID: 2
+  }]);
+  assert.equal(placed[0]?.type, 'cards-moved');
+  if (placed[0]?.type === 'cards-moved') assert.equal(placed[0].toPosition, 0xff00);
+  const drawn = translateGameMessages([{
+    ClassName: 'PubGsCMoveCard',
+    CardCount: 1,
+    MoveType: 1,
+    CardIDs: [0],
+    FromZone: 1,
+    FromID: 255,
+    ToZone: 5,
+    ToID: 2,
+    FromPosition: 0xff00,
+    SrcSeatID: 2
+  }]);
+  assert.equal(drawn[0]?.type, 'cards-moved');
+  if (drawn[0]?.type === 'cards-moved') assert.equal(drawn[0].fromPosition, 0);
+});
+
 test('网页端移牌和看牌字段在 ProtoObj 里也能翻成明牌事件', () => {
   const moved = translateGameMessages([{
     ClassName: 'PubGsCMoveCard',

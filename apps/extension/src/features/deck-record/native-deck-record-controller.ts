@@ -9,6 +9,7 @@ import {
   detachOfficialDrawLayer,
   OFFICIAL_CARD_BASE_HEIGHT,
   OFFICIAL_CARD_BASE_WIDTH,
+  OFFICIAL_CARD_DETAIL_SCALE,
   releaseOfficialCardView,
   type OfficialCardView
 } from '../cards/official-card-renderer.ts';
@@ -52,9 +53,10 @@ const BUTTON_GAP = 8;
 const BUTTON_RADIUS = 4;
 const BUTTON_FONT_SIZE = 12;
 const BUTTON_ROW_GAP = 2;
-const POPUP_CARD_SCALE = 0.5;
+const POPUP_CARD_SCALE = OFFICIAL_CARD_DETAIL_SCALE;
 const POPUP_PADDING = 10;
-const POPUP_MAX_WIDTH = 740;
+const POPUP_CARD_GAP = 8;
+const POPUP_ROW_WIDTH_RATIO = 0.3;
 const POPUP_TITLE_HEIGHT = 29;
 const BUTTON_KINDS: readonly DeckRecordListKind[] = ['top', 'bottom', 'discard'];
 const LIST_TITLES: Record<DeckRecordListKind, string> = {
@@ -329,16 +331,19 @@ function createCardListPopup(
   popup.mouseThrough = false;
   popup.zOrder = 1001;
 
-  const cardWidth = OFFICIAL_CARD_BASE_WIDTH * POPUP_CARD_SCALE;
-  const cardHeight = OFFICIAL_CARD_BASE_HEIGHT * POPUP_CARD_SCALE;
-  const overlapGap = cardIds.length > 1
-    ? Math.max(4, Math.min(cardWidth + 7, (POPUP_MAX_WIDTH - POPUP_PADDING * 2 - cardWidth) / (cardIds.length - 1)))
-    : 0;
+  const cardWidth = Math.round(OFFICIAL_CARD_BASE_WIDTH * POPUP_CARD_SCALE);
+  const cardHeight = Math.round(OFFICIAL_CARD_BASE_HEIGHT * POPUP_CARD_SCALE);
+  const stageWidth = Math.max(1, Number(asRecord(laya?.stage)?.width) || 1600);
+  const rowWidth = Math.max(cardWidth + POPUP_PADDING * 2, stageWidth * POPUP_ROW_WIDTH_RATIO);
+  const columns = Math.max(1, Math.min(cardIds.length, Math.floor(
+    (rowWidth - POPUP_PADDING * 2 + POPUP_CARD_GAP) / (cardWidth + POPUP_CARD_GAP)
+  ) || 1));
+  const rows = cardIds.length ? Math.ceil(cardIds.length / columns) : 0;
   const width = cardIds.length
-    ? Math.min(POPUP_MAX_WIDTH, Math.ceil(POPUP_PADDING * 2 + cardWidth + overlapGap * (cardIds.length - 1)))
+    ? POPUP_PADDING * 2 + columns * cardWidth + Math.max(0, columns - 1) * POPUP_CARD_GAP
     : 184;
   const height = cardIds.length
-    ? Math.ceil(31 + cardHeight + POPUP_PADDING)
+    ? Math.ceil(POPUP_TITLE_HEIGHT + rows * cardHeight + Math.max(0, rows - 1) * POPUP_CARD_GAP + POPUP_PADDING)
     : 54;
   call(popup, 'size', width, height);
   paintPopupBackground(popup, width, height, kind);
@@ -362,13 +367,18 @@ function createCardListPopup(
     const scene = asRecord(locateGameScene(window));
     cardIds.forEach((cardId, index) => {
       if (!(cardId > 0)) return;
+      const column = index % columns;
+      const row = Math.floor(index / columns);
       const view = createOfficialCardView(
         popup,
         cardId,
         OFFICIAL_CARD_BASE_WIDTH,
         OFFICIAL_CARD_BASE_HEIGHT,
         scene,
-        { x: POPUP_PADDING + overlapGap * index, y: POPUP_TITLE_HEIGHT }
+        {
+          x: POPUP_PADDING + column * (cardWidth + POPUP_CARD_GAP),
+          y: POPUP_TITLE_HEIGHT + row * (cardHeight + POPUP_CARD_GAP)
+        }
       );
       if (view) {
         view.ui.zOrder = 10 + index;

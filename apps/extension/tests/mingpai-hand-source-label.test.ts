@@ -25,8 +25,8 @@ test('来源是公共区或自己时不带座位', () => {
   assert.equal(legacyIncomingHandLabel({ ...base, fromId: 1 }), '[顺手]');
 });
 
-test('不是进自己手牌、或移动类型越界时不标', () => {
-  assert.equal(legacyIncomingHandLabel({ ...base, toId: 3 }), null);
+test('进别人手牌也标来源，回收区和越界移动不标', () => {
+  assert.equal(legacyIncomingHandLabel({ ...base, toId: 3 }), '[顺手]2号位');
   assert.equal(legacyIncomingHandLabel({ ...base, fromZone: 12 }), null);
   assert.equal(legacyIncomingHandLabel({ ...base, moveType: 1 }), null);
   assert.equal(legacyIncomingHandLabel({ ...base, moveType: 255 }), null);

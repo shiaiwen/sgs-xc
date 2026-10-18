@@ -16,8 +16,8 @@ export interface OfficialCardView {
 
 export const OFFICIAL_CARD_BASE_WIDTH = 93;
 export const OFFICIAL_CARD_BASE_HEIGHT = 130;
-/** 详情牌一律原尺寸画完，再整张缩到一半。 */
-export const OFFICIAL_CARD_DETAIL_SCALE = 0.5;
+/** 详情牌一律原尺寸画完，再整张缩到 0.75。 */
+export const OFFICIAL_CARD_DETAIL_SCALE = 0.75;
 
 let cachedCardProvider: { scene: UnknownRecord; provider: UnknownRecord } | null = null;
 
@@ -56,7 +56,8 @@ export function createOfficialCardView(
   width = OFFICIAL_CARD_BASE_WIDTH,
   height = OFFICIAL_CARD_BASE_HEIGHT,
   scene = asRecord(locateGameScene(window)),
-  position?: { x: number; y: number }
+  position?: { x: number; y: number },
+  scale = OFFICIAL_CARD_DETAIL_SCALE
 ): OfficialCardView | null {
   if (!host || !(cardId > 0) || !scene) return null;
   const container = findCardContainer(scene);
@@ -75,7 +76,7 @@ export function createOfficialCardView(
     ui.NeedToolTip = cardId > 0;
     const x = Number.isFinite(position?.x) ? Number(position!.x) : 0;
     const y = Number.isFinite(position?.y) ? Number(position!.y) : 0;
-    const holder = createDetailHolder(x, y);
+    const holder = createDetailHolder(x, y, scale);
     if (!holder) {
       call(container, 'ReturnNormalCardUi', ui);
       return null;
@@ -110,7 +111,7 @@ export function readOfficialCardBox(view: OfficialCardView): { width: number; he
   };
 }
 
-function createDetailHolder(x: number, y: number): UnknownRecord | null {
+function createDetailHolder(x: number, y: number, scale = OFFICIAL_CARD_DETAIL_SCALE): UnknownRecord | null {
   const Sprite = asRecord((globalThis as UnknownRecord).Laya)?.Sprite;
   if (typeof Sprite !== 'function') return null;
   const holder = asRecord(new (Sprite as unknown as new () => object)());
@@ -118,8 +119,9 @@ function createDetailHolder(x: number, y: number): UnknownRecord | null {
   holder.name = 'xcOfficialCardDetailHolder';
   holder.mouseEnabled = false;
   holder.mouseThrough = true;
-  holder.scaleX = OFFICIAL_CARD_DETAIL_SCALE;
-  holder.scaleY = OFFICIAL_CARD_DETAIL_SCALE;
+  const detailScale = Number.isFinite(scale) && scale > 0 ? scale : OFFICIAL_CARD_DETAIL_SCALE;
+  holder.scaleX = detailScale;
+  holder.scaleY = detailScale;
   call(holder, 'pos', x, y);
   call(holder, 'size', OFFICIAL_CARD_BASE_WIDTH, OFFICIAL_CARD_BASE_HEIGHT);
   return holder;

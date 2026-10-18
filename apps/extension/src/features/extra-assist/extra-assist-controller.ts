@@ -78,7 +78,7 @@ export function installExtraAssistController(
     isEnabled: () => enabled,
     getConfig: () => {
       const data = readConfig();
-      return data ? { trigger: data.nanHua.trigger, effectHtml: data.nanHua.effectHtml } : null;
+      return data ? { trigger: data.nanHua.trigger, effects: data.nanHua.effects } : null;
     },
     locator,
     patcher,

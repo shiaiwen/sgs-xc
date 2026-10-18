@@ -1,0 +1,16 @@
+---
+description: 逆向对照小抄脚本时只看指定压缩包里的 1.6.30
+alwaysApply: true
+---
+
+# 逆向参考包
+
+对照小抄脚本行为时，只读这个压缩包：
+
+`C:\Users\24745\Downloads\xiaochao-1.6.30-weiduan-1.1.74.zip`
+
+包内是 `app.zip`，脚本路径是 `app/xiaochao.js`，版本 `1.6.30`。
+
+不要用 `apps/extension/.reference/app-bak/xiaochao.js`。那份是 `1.5.71`。
+
+这个压缩包在仓库外面，只为核对参考实现时读取。

@@ -21,15 +21,42 @@ import {
   parseZoneId
 } from './card-graph.ts';
 
+const GROUP_STEMS = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
+
 export interface UncertainGroup {
   /** 组号（负奇数）。 */
   key: number;
+  /** 按手牌区和技能标记区里明组的出现顺序分配，甲乙丙丁，超出用组N。 */
+  label: string;
   /** 这一组在这批牌里出现的次数。 */
   count: number;
   /** 这一组可能包含的具体牌号。 */
   candidateCardIds: number[];
   /** 候选里还有看不见内容的牌。 */
   hasUnknownCandidate: boolean;
+}
+
+/** 手牌区和技能标记区里还看得见的明组，组号从大到小。 */
+function visibleGroupKeys(): number[] {
+  const keys = new Set<number>();
+  for (const zoneId of getZoneIds()) {
+    const parsed = parseZoneId(zoneId);
+    if (parsed?.zone !== 5 && !zoneId.startsWith('4-')) continue;
+    for (const slot of new CardZone(zoneId).cards) {
+      const key = Number(slot?.key);
+      if (!(key < 0) || key % 2 === 0 || hasReshufflePoolKey(key)) continue;
+      keys.add(key);
+    }
+  }
+  return [...keys].sort((left, right) => right - left);
+}
+
+function groupLabel(key: number, order: readonly number[]): string {
+  const index = order.indexOf(key);
+  const stemIndex = index >= 0
+    ? index
+    : Math.max(0, Math.floor((Math.abs(key) - 3) / 2));
+  return GROUP_STEMS[stemIndex] ?? `组${stemIndex + 1}`;
 }
 
 /** 这一组往下还能不能碰到看不见内容的牌。 */
@@ -120,6 +147,7 @@ export function getUncertainGroups(
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const placed = placedCardIds();
+  const order = visibleGroupKeys();
   return [...counts.entries()]
     .map(([key, count]) => {
       const candidates = [...expandGroupCandidates(key)].map(Number);
@@ -129,6 +157,7 @@ export function getUncertainGroups(
       ));
       return {
         key,
+        label: groupLabel(key, order),
         count,
         candidateCardIds,
         hasUnknownCandidate: candidates.some((cardId) => !(cardId > 0)) || groupHasUnknownCandidate(key)
