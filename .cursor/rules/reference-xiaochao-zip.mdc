@@ -14,3 +14,5 @@ alwaysApply: true
 不要用 `apps/extension/.reference/app-bak/xiaochao.js`。那份是 `1.5.71`。
 
 这个压缩包在仓库外面，只为核对参考实现时读取。
+
+对照行为时同时看更新日志：`https://log.xiaochao.org/`。日志比压缩包新时，以日志里多出来的版本说明为准，不要只按压缩包里的旧行为改。

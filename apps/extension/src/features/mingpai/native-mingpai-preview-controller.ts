@@ -878,8 +878,8 @@ export function installNativeMingpaiPreviewController(
     // 技能看牌只进 HandShowCards，不进 HandCards。只有两边卡号有交集时，才用实时手牌判断哪张已经离开。
     if (handCount === 0) next.clear();
     else if (Number.isInteger(handCount) && handCount > 0 && next.size > handCount) {
-      // 展示列表可能残留上一状态的卡号；不能让它把明牌条撑到实际手牌数以上。
-      const current = [...next].slice(0, handCount);
+      // 卡号列表只往后加。超出手牌数时留下最新的几张，旧牌号不再记进明牌。
+      const current = [...next].slice(-handCount);
       next.clear();
       current.forEach((cardId) => next.add(cardId));
     }

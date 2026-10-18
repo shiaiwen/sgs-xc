@@ -18,6 +18,15 @@ export function isAiClientId(clientId: unknown): boolean {
   return aiKind(clientId, false) !== 0;
 }
 
+/** 排位、斗地主里真人座位上要写出的账号编号。人机和其他模式不写。 */
+export function playerIdLabel(clientId: unknown, rankOrDoudizhu: boolean): string {
+  if (!rankOrDoudizhu) return '';
+  if (clientId == null || clientId === '') return '';
+  const id = Number(clientId);
+  if (!Number.isFinite(id) || isAiClientId(id)) return '';
+  return String(id);
+}
+
 /**
  * 真人显示名字，人机隐藏。
  * 编号还没读到时返回 null，调用方不要据此把名字关掉。

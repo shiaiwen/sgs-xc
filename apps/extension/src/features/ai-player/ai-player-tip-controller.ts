@@ -5,13 +5,14 @@
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import { clearSeatGeneralTips, collectSeatTipTargets } from '../extra-assist/seat-general-tips.ts';
+import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
 import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
   beginPlayNameScanBatch,
   endPlayNameScanBatch,
   isPlayNameSyncPaused,
+  isRankOrDoudizhuScene,
   isReplayLikeScene,
   readSeatNickNameForDebug,
   seedPlayNameDirectory,
@@ -172,15 +173,8 @@ export function installAiPlayerTipController(
 
   function scan(): void {
     // 彼此独立扫描：座位 UI 尚未就绪或某一步访问异常时，也要继续挂资料页钩子。
-    try { clearDrawnIds(); } catch { /* 下一轮重试 */ }
     try { scanSeats(); } catch { /* 下一轮重试 */ }
     try { scanProfile(); } catch { /* 下一轮重试 */ }
-  }
-
-  /** 清掉以前写在武将牌上的编号。 */
-  function clearDrawnIds(): void {
-    const scene = asRecord(locateGameScene(globalObject));
-    clearSeatGeneralTips(collectSeatTipTargets(asRecord(scene?.seatContainer)?.seatUIs), 'player-id');
   }
 
   /** 排位和斗地主提示人机；真人的游戏内名字与资料页编号保持可见。 */
@@ -220,10 +214,15 @@ export function installAiPlayerTipController(
       );
     }
 
+    clearSeatGeneralTips(seatUis.map((seatUi) => ({
+      seat: seatUi.seat ?? seatUi,
+      seatAvatar: asRecord(seatUi.seatAvatar)
+    })), 'player-id');
+
     const seats = seatUis
       .map((seatUi) => ({ seatUi, seat: asRecord(seatUi.seat) }))
       .filter((item) => item.seat && item.seat.isHide !== true);
-    if (gameEnded || aiTipShownThisGame || !isAiHintMode(scene, globalObject)) return;
+    if (gameEnded || aiTipShownThisGame || !isRankOrDoudizhuScene(globalObject, scene)) return;
     if (!seats.some(({ seat }) => isAiClientId(readNestedClientId(seat)))) return;
     aiTipShownThisGame = true;
     showToast('对战AI小杀！', 'warning', 4000);
@@ -317,45 +316,6 @@ function findView(node: UnknownRecord, depth: number, allow: () => boolean): Unk
   return null;
 }
 
-function isAiHintMode(scene: UnknownRecord, globalObject: GameRuntimeWindow): boolean {
-  if (scene.isDouDiZhu === true || scene.IsDouDiZhu === true) return true;
-  if ([
-    scene.isRanked,
-    scene.IsRanked,
-    scene.isRank,
-    scene.IsRank,
-    scene.isRankMatch,
-    scene.IsRankMatch,
-    scene.isDuanWei,
-    scene.IsDuanWei,
-    scene.isJingJi,
-    scene.IsJingJi
-  ].some((flag) => flag === true)) return true;
-  const roomList = asRecord(scene.roomListView);
-  const areaLabel = asRecord(asRecord(scene.topMenu)?.areaServerLabel)?.text;
-  const parts: unknown[] = [
-    scene.modeName,
-    scene.ModeName,
-    scene.gameModeName,
-    roomList?.modeName,
-    roomList?.modeLabel,
-    roomList?.title,
-    roomList?.nameTxt,
-    areaLabel
-  ];
-  const context = asRecord((globalObject as UnknownRecord).GameContext);
-  try {
-    const vo = typeof context?.GetModeVO === 'function' ? asRecord(context.GetModeVO()) : null;
-    parts.push(vo?.ModeName, vo?.modeName, vo?.Name, vo?.name);
-  } catch {
-    // 读取不到模式名时不把山河图误认为排位或斗地主。
-  }
-  return /斗地主|dou\s*di\s*zhu|排位|rank(?:ed|ing)?/i.test(
-    parts.filter((part) => typeof part === 'string').join(' ')
-  );
-}
-
-/** 游戏把名字开关放在 otherTopManager，有的座位只挂在 topManager。 */
 function readSeatUis(scene: UnknownRecord): UnknownRecord[] {
   const container = asRecord(scene.seatContainer);
   const list = container?.seatUIs ?? container?.seatUis;

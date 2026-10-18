@@ -146,8 +146,9 @@ function uniqueCards(cards: { cardId: number; name: string; tags: string[] }[]):
 }
 
 /**
- * 网页端展示牌在 HandShowCards，HandShowCardIDs 只增不减，有牌面时不再叠卡号。
- * 微端观星写在 HandShowCardIDs，牌面列表经常是空数组，空列表时两边都读卡号。
+ * 有牌面就只用当前牌面。
+ * 卡号列表只增不减，拼点或摸牌时叠上去会把以前亮过的牌再记进明牌。
+ * 没有牌面时才读卡号，观星这类展示经常只有卡号。
  */
 export function readShownHandEntries(
   seat: UnknownRecord | null,
@@ -157,9 +158,8 @@ export function readShownHandEntries(
     ...readArray(seat, SHOWN_HAND_CARD_KEYS),
     ...readArray(seatUi, SHOWN_HAND_CARD_KEYS)
   ].filter((rawCard) => readBoolean(asRecord(rawCard), ['IsHide', 'isHide']) !== true);
-  if (cards.length > 0 && !isMicroClient()) return cards;
+  if (cards.length > 0) return cards;
   return [
-    ...cards,
     ...readArray(seat, SHOWN_HAND_CARD_ID_KEYS),
     ...readArray(seatUi, SHOWN_HAND_CARD_ID_KEYS)
   ];
@@ -184,12 +184,6 @@ export function readSeatHandCardCount(
     }
   }
   return null;
-}
-
-/** 微端注入了 electron 桥；浏览器脚本没有。两边的明牌字段不一样。 */
-function isMicroClient(): boolean {
-  const bridge = (globalThis as { electron?: { openExternal?: unknown } }).electron;
-  return typeof bridge?.openExternal === 'function';
 }
 
 function equipmentHints(name: string): string[] {

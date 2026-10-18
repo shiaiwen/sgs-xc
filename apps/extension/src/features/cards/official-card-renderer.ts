@@ -12,6 +12,8 @@ export interface OfficialCardView {
   cardId: number;
   /** 包住牌面的外框，缩放在这一层，不改游戏牌面自己的比例。 */
   holder: UnknownRecord;
+  /** 弹层牌面用完销毁，不放回手牌牌面池。 */
+  pooled?: boolean;
 }
 
 export const OFFICIAL_CARD_BASE_WIDTH = 93;
@@ -47,8 +49,8 @@ function resolveCardProvider(scene: UnknownRecord): UnknownRecord | null {
 }
 
 /**
- * 复用游戏 createNormalCardUi + Draw，把官方牌面画到宿主 Sprite 上。
- * 先 SetActualSize / pos，再 Draw 到带 addDrawChild 的宿主。
+ * 用游戏 createNormalCardUi 取出牌面再 Draw。
+ * 用完销毁，不放回手牌牌面池，避免手牌拿到被擦空的牌框。
  */
 export function createOfficialCardView(
   host: UnknownRecord,
@@ -65,12 +67,10 @@ export function createOfficialCardView(
   if (!container || !nativeCard || typeof container.createNormalCardUi !== 'function') return null;
 
   let ui: UnknownRecord | null = null;
+  const pooled = false;
   try {
-    ui = asRecord((container.createNormalCardUi as Function).call(container, nativeCard));
-    if (!ui || typeof ui.Draw !== 'function') {
-      if (ui) releaseOfficialCardView({ ui, owner: container, cardId });
-      return null;
-    }
+    ui = createDetachedCardUi(scene, container, nativeCard);
+    if (!ui || typeof ui.Draw !== 'function') return null;
     ui.mouseEnabled = false;
     ui.mouseThrough = true;
     ui.NeedToolTip = cardId > 0;
@@ -78,7 +78,7 @@ export function createOfficialCardView(
     const y = Number.isFinite(position?.y) ? Number(position!.y) : 0;
     const holder = createDetailHolder(x, y, scale);
     if (!holder) {
-      call(container, 'ReturnNormalCardUi', ui);
+      discardFreshCardUi(ui);
       return null;
     }
     call(host, 'addChild', holder);
@@ -86,7 +86,7 @@ export function createOfficialCardView(
     if (!drawHost) {
       call(holder, 'removeSelf');
       call(holder, 'destroy', false);
-      releaseOfficialCardView({ ui, owner: container, cardId, holder });
+      releaseOfficialCardView({ ui, owner: container, cardId, holder, pooled });
       return null;
     }
     ui.scaleX = 1;
@@ -95,9 +95,9 @@ export function createOfficialCardView(
     call(ui, 'pos', 0, 0);
     (ui.Draw as Function).call(ui, drawHost);
     suppressOfficialCardSkillTags(ui);
-    return { ui, owner: container, cardId, holder };
+    return { ui, owner: container, cardId, holder, pooled };
   } catch {
-    if (ui) releaseOfficialCardView({ ui, owner: container, cardId });
+    if (ui) releaseOfficialCardView({ ui, owner: container, cardId, pooled });
     return null;
   }
 }
@@ -270,29 +270,67 @@ export function detachOfficialDrawLayer(host: UnknownRecord | null | undefined):
   host.__xcCardDrawLayer = null;
 }
 
-/**
- * 牌面 UI 来自游戏对象池，归还后会被手牌复用：
- * 必须 clear 掉挂在宿主上的绘制子项并还原交互状态，否则手牌会丢花色点数、明暗异常。
- */
+/** 弹层牌面用完即销毁，不放回手牌牌面池。 */
 export function releaseOfficialCardView(view: OfficialCardView | null | undefined): void {
   if (!view) return;
   try {
-    call(view.ui, 'clear');
-    call(view.ui, 'removeSelf');
-    view.ui.alpha = 1;
-    view.ui.scaleX = 1;
-    view.ui.scaleY = 1;
-    view.ui.mouseEnabled = true;
-    view.ui.mouseThrough = false;
-    call(view.ui, 'AddCardTag');
-    view.ui.Card = null;
-    call(view.ui, 'UpdateTag');
     detachOfficialDrawLayer(view.holder);
     call(view.holder, 'removeSelf');
-    if (view.holder.name === 'xcOfficialCardDetailHolder') call(view.holder, 'destroy', false);
-    call(view.owner, 'ReturnNormalCardUi', view.ui);
+    if (view.holder?.name === 'xcOfficialCardDetailHolder') call(view.holder, 'destroy', false);
+    discardFreshCardUi(view.ui);
   } catch {
-    // 场景切换时对象池可能已释放。
+    // 场景切换时对象可能已释放。
+  }
+}
+
+const DISPLAYED_CARD_UI_KEYS = [
+  'cardUis', 'cardUIs', 'handCardUis', 'handCardUIs',
+  'equipCardUis', 'equipCardUIs', 'judgeCardUis', 'judgeCardUIs',
+  'decideCardUis', 'decideCardUIs'
+] as const;
+
+/** 座位上正在画的牌面。这些对象清掉后再放回池，手牌就会变成白板。 */
+export function collectDisplayedCardUis(scene: UnknownRecord): Set<object> {
+  const displayed = new Set<object>();
+  const seats = [
+    asRecord(scene.SelfSeatUi),
+    ...readArray(asRecord(scene.seatContainer), 'seatUIs').map(asRecord)
+  ];
+  for (const seatUi of seats) {
+    if (!seatUi) continue;
+    for (const owner of [seatUi, asRecord(seatUi.cardContainer)]) {
+      if (!owner) continue;
+      for (const key of DISPLAYED_CARD_UI_KEYS) {
+        for (const item of readArray(owner, key)) {
+          if (item && typeof item === 'object') displayed.add(item);
+        }
+      }
+    }
+  }
+  return displayed;
+}
+
+function createDetachedCardUi(
+  scene: UnknownRecord,
+  container: UnknownRecord,
+  nativeCard: unknown
+): UnknownRecord | null {
+  const displayed = collectDisplayedCardUis(scene);
+  const created = asRecord((container.createNormalCardUi as Function).call(container, nativeCard));
+  if (!created || typeof created.Draw !== 'function') return null;
+  // 取到的是手上正在显示的那张时不动它，弃牌少画一张，也不把手牌擦空。
+  if (displayed.has(created)) return null;
+  return created;
+}
+
+function discardFreshCardUi(ui: UnknownRecord): void {
+  try {
+    call(ui, 'clear');
+    call(ui, 'removeSelf');
+    ui.Card = null;
+    call(ui, 'destroy', true);
+  } catch {
+    // 新建牌面卸不掉时不要放回手牌池。
   }
 }
 

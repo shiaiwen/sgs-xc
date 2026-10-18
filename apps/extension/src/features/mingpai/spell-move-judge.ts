@@ -108,8 +108,6 @@ const HAND_LOOK_SPELLS = [4, 5, 921, 372, 811, 357, 3119, 501, 3437, 4025] as co
 /** 看别人手牌：只有参数位为 0 时，后面的数才是牌号。 */
 const HAND_LOOK_WHEN_IDLE = [851, 361, 774, 3310, 3876] as const;
 
-/** 这些技能号的看牌消息只是面板提示，参数不是牌号，兜底时要排除。 */
-const PANEL_ONLY_OPT_TARGET_IDS = new Set([945, 3440, 11003, 2900, 2022]);
 const COLOR_RED = 1;
 const COLOR_BLACK = 2;
 
@@ -298,16 +296,7 @@ export function judgeOptTarget(input: OptJudgeInput): CardReveal[] {
     pileShowLeft = params.length;
     showDeck(params, true);
   }
-  // 新技能兜底：我自己发动、有明确的目标座位、参数全是正数牌号，就按「看目标手牌」处理。
-  // 已知属于面板提示的技能号排除在外，避免把提示文案当牌号。
-  if (!reveals.length
-    && !PANEL_ONLY_OPT_TARGET_IDS.has(spellId)
-    && src !== null && myId !== null && (src === myId || input.mySeats.includes(src))
-    && target !== null && target !== undefined && target !== DRAW_PILE_OWNER
-    && lookIds.length > 0
-    && lookIds.every((value) => Number.isInteger(value) && value > 0)) {
-    showHand(target, lookIds, false);
-  }
+  // 出牌让对方响应时，参数里是打出的那张牌。不能因为有目标、有牌号，就记成对方的手牌。
   return reveals;
 }
 

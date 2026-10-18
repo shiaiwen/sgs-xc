@@ -284,8 +284,6 @@ function handleDragStart(event: PointerEvent): void {
     if (!dragStarted) return stopDragging?.();
     const bounds = shell.getBoundingClientRect();
     if (shouldDockToRight(upEvent.clientX, bounds.right, window.innerWidth)) {
-      // 拖到右边时如果是胶囊，先展开再固定。
-      if (panel.isCollapsed.value) panel.toggleCollapsed();
       applyRightDock(shell);
     } else {
       finishAwayFromDock(shell, upEvent.clientX, upEvent.clientY);
@@ -418,9 +416,9 @@ function keepPanelInsideViewport(): void {
   setOwnedPanelLayout(shell, { left: `${position.left}px`, top: `${position.top}px`, right: 'auto' });
 }
 
-/** 展开停靠时压缩游戏区域；折叠后立即归还空间，避免留下无意义空白。 */
+/** 贴在右边时按面板实际宽度压缩游戏区域，折叠成胶囊也一样。 */
 function syncDockedGameLayout(shell: HTMLElement): void {
-  if (isDockedRight.value && !panel.isCollapsed.value) {
+  if (isDockedRight.value) {
     reserveGameAreaForDockedPanel(shell.getBoundingClientRect().width);
   } else {
     restoreFullGameArea();

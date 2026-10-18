@@ -563,9 +563,13 @@ export class CardZone {
     return getSlotsByKey(0).map((slot) => slot.id as number);
   }
 
-  /** 某座位手牌里已经确认牌面的牌号。 */
+  /** 某座位手牌里已经确认牌面的牌号。同一张牌只算一次。 */
   static shoupai(seatId: number | string): number[] {
-    return zoneCards(formatZoneId(seatId, 5)).filter((slot) => slot.key > 0).map((slot) => slot.id as number);
+    const ids = zoneCards(formatZoneId(seatId, 5))
+      .filter((slot) => slot.key > 0)
+      .map((slot) => Number(slot.id))
+      .filter((cardId) => cardId > 0);
+    return [...new Set(ids)];
   }
 
   constructor(
@@ -786,19 +790,29 @@ export class CardZone {
     return taken;
   }
 
-  /** 这些牌进入这一区。 */
+  /** 这些牌进入这一区。已经在这一区里的同一张牌不再放第二次。 */
   add(cards: CardSlot | CardSlot[]): CardSlot | CardSlot[] {
     if (!isCardGraphReady()) return cards;
     const moved = (moveSlots(cards, this.zoneID) as CardSlot[]).slice();
+    const incoming = moved.filter((slot, index) => moved.indexOf(slot) === index);
+    for (const slot of incoming) {
+      const cardId = Number(slot.id);
+      if (!(cardId > 0)) continue;
+      for (let index = this.cards.length - 1; index >= 0; index -= 1) {
+        const existing = this.cards[index];
+        if (existing !== slot && Number(existing.id) === cardId) this.cards.splice(index, 1);
+      }
+    }
+    const fresh = incoming.filter((slot) => !this.cards.includes(slot));
     if (Number(this.zone) === 1) {
       // 构造牌堆区时顶底已经对调：内部位置 0 是牌堆顶，0xff00 是牌堆底。
       const edge = this.pos === DRAW_PILE_BOTTOM ? 'top' : this.pos === DRAW_PILE_TOP ? 'bottom' : '';
-      if (edge) moved.forEach((slot) => { slot.pileEdge = edge; });
+      if (edge) fresh.forEach((slot) => { slot.pileEdge = edge; });
     }
     if (this.pos === POSITION_UNSPECIFIED || this.pos === DRAW_PILE_TOP) {
-      this.cards.splice(this.cards.length, 0, ...moved);
+      this.cards.splice(this.cards.length, 0, ...fresh);
     } else {
-      this.cards.splice(this.pos, 0, ...moved.reverse());
+      this.cards.splice(this.pos, 0, ...fresh.reverse());
     }
     drawZone(this.zoneID);
     return cards;
