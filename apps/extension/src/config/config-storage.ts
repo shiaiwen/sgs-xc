@@ -47,20 +47,22 @@ export function createPlatformConfigStorage(platform: PlatformAdapter): ConfigSt
       const defaults = getDefaultConfig();
       const accountId = currentConfigAccount();
       const accountKey = accountConfigStorageKey(accountId);
-      let raw = platform.getSetting(accountKey);
+      const ownRaw = platform.getSetting(accountKey);
+      let raw = ownRaw;
       let migratedLegacy = false;
-      if (!raw) {
+      if (!ownRaw) {
         raw = platform.getSetting(CONFIG_STORAGE_KEY);
         migratedLegacy = Boolean(raw);
       }
       const document = parseStoredDocument(raw);
       const source = document?.values || {};
       let shouldPersist = !document || document.version !== CONFIG_DOCUMENT_VERSION || migratedLegacy;
+      const adoptShared = !ownRaw;
 
       for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
         const definition = CONFIG_SCHEMA[key];
         let candidate: unknown = source[key];
-        if (candidate === undefined && definition.previousStorageKey) {
+        if (candidate === undefined && adoptShared && definition.previousStorageKey) {
           candidate = parsePreviousValue(platform.getSetting(definition.previousStorageKey));
           if (candidate !== undefined) shouldPersist = true;
         }
@@ -70,6 +72,13 @@ export function createPlatformConfigStorage(platform: PlatformAdapter): ConfigSt
       }
 
       if (shouldPersist) this.write(defaults);
+      if (adoptShared) {
+        platform.removeSetting(CONFIG_STORAGE_KEY);
+        for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
+          const previousKey = CONFIG_SCHEMA[key].previousStorageKey;
+          if (previousKey) platform.removeSetting(previousKey);
+        }
+      }
       return defaults;
     },
     write(config) {

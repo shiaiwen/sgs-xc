@@ -12,6 +12,7 @@ import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import {
+  accountScopedStorageKey,
   accountStorageKey,
   createTaskScope,
   watchSceneSwitch
@@ -141,7 +142,13 @@ export function installAutoTaskController(
 
   function readStoredDayIndex(): number {
     try {
-      const raw = storage?.getItem(LAST_TASK_DATE_KEY);
+      const key = accountScopedStorageKey(LAST_TASK_DATE_KEY, storage);
+      const owned = storage?.getItem(key);
+      const raw = owned ?? storage?.getItem(LAST_TASK_DATE_KEY);
+      if (!owned && raw) {
+        storage?.setItem(key, raw);
+        storage?.removeItem(LAST_TASK_DATE_KEY);
+      }
       const value = raw === null || raw === undefined ? Number.NaN : Number(JSON.parse(raw));
       return Number.isFinite(value) ? value : -1;
     } catch {
@@ -151,7 +158,7 @@ export function installAutoTaskController(
 
   function writeStoredDayIndex(day: number): void {
     try {
-      storage?.setItem(LAST_TASK_DATE_KEY, JSON.stringify(day));
+      storage?.setItem(accountScopedStorageKey(LAST_TASK_DATE_KEY, storage), JSON.stringify(day));
     } catch {
       // 存储不可用时仅靠内存跨天检测。
     }

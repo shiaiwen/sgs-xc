@@ -5,6 +5,7 @@
 import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import { AI_CLIENT_ID_MIN, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { drawRealPlayerNameOnInit } from './real-player-name-init.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -157,7 +158,7 @@ interface PlayNameLayaWindow extends GameRuntimeWindow {
 export type PlayNameMountStrategy = 'native' | 'A' | 'B' | 'C' | 'none';
 
 /**
- * 排位、斗地主会把真人名字藏起来。
+ * 排位、斗地主、八人匹配会把真人名字藏起来。
  * 这些局里名字开关有时只在 topManager，普通房间仍只认 otherTopManager，避免把房间和身份局的名字打开。
  */
 export function isRankOrDoudizhuScene(
@@ -181,25 +182,36 @@ export function isRankOrDoudizhuScene(
     scene.IsJingJi
   ].some(flagOn)) return true;
   const roomList = asRecord(scene.roomListView);
-  const areaLabel = asRecord(asRecord(scene.topMenu)?.areaServerLabel)?.text;
+  const topMenu = asRecord(scene.topMenu);
+  const areaLabel = asRecord(topMenu?.areaServerLabel)?.text;
   const parts: unknown[] = [
     scene.modeName,
     scene.ModeName,
     scene.gameModeName,
+    scene.modelName,
+    scene.ModelName,
+    scene.sectionName,
+    scene.SectionName,
     roomList?.modeName,
     roomList?.modeLabel,
     roomList?.title,
     roomList?.nameTxt,
-    areaLabel
+    areaLabel,
+    asRecord(topMenu?.modeLabel)?.text,
+    asRecord(topMenu?.modeName)?.text
   ];
   const context = asRecord((globalObject as UnknownRecord).GameContext);
   try {
     const vo = typeof context?.GetModeVO === 'function' ? asRecord(context.GetModeVO()) : null;
-    parts.push(vo?.ModeName, vo?.modeName, vo?.Name, vo?.name);
+    parts.push(
+      vo?.ModeName, vo?.modeName, vo?.Name, vo?.name,
+      vo?.SectionName, vo?.sectionName, vo?.ModelName, vo?.modelName,
+      vo?.SectionDesc, vo?.Desc, vo?.desc
+    );
   } catch {
     // 读不到模式名时保持关闭，不凭空当成排位或斗地主。
   }
-  return /斗地主|dou\s*di\s*zhu|排位|rank(?:ed|ing)?/i.test(
+  return /斗地主|dou\s*di\s*zhu|排位|天梯|八人匹配|8人匹配|rank(?:ed|ing)?/i.test(
     parts.filter((part) => typeof part === 'string').join(' ')
   );
 }
@@ -228,11 +240,13 @@ export function syncSeatPlayName(
   const seat = asRecord(seatUi.seat);
   const clientId = readSeatClientId(seat);
   const visible = playNameVisible(clientId);
+  const earlyManager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager);
+  if (earlyManager) hookPlayNameInit(earlyManager);
   if (visible === null) return;
   if (isOwnSeat(seatUi, seat, globalObject)) return;
 
   if (visible === true && isRankOrDoudizhuScene(globalObject)) {
-    revealRankPlayName(seatUi, seat, clientId);
+    revealRankPlayName(seatUi, seat, clientId, globalObject, seatListIndex);
     return;
   }
 
@@ -263,16 +277,52 @@ export function syncSeatPlayName(
   applyPlayNameDisplay(seatUi, manager, visible, name, globalObject);
 }
 
-/** 排位和斗地主只走座位自己的名字开关，不改文字节点。 */
-function revealRankPlayName(seatUi: UnknownRecord, seat: UnknownRecord | null, clientId: unknown): void {
-  const manager = asRecord(seatUi.otherTopManager);
-  const showName = manager?.SetPlayNameVisible;
-  if (typeof showName !== 'function') return;
+/** 排位、斗地主、八人匹配里，真人座位初始化时画出等级和昵称。 */
+const PLAY_NAME_INIT_KEY = '__xcPlayNameInitHook';
+
+function revealRankPlayName(
+  seatUi: UnknownRecord,
+  seat: UnknownRecord | null,
+  clientId: unknown,
+  globalObject: GameRuntimeWindow,
+  seatListIndex: number | null
+): void {
+  const manager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager);
+  if (!manager) return;
   const playerInfo = asRecord(seat?.playerInfo) ?? asRecord(seat?.PlayerInfo);
   const raw = playerInfo?.ClientId ?? playerInfo?.clientId ?? clientId;
   const id = Number(raw);
-  if (!Number.isFinite(id)) return;
-  showName.call(manager, id < AI_CLIENT_ID_MIN);
+  if (!Number.isFinite(id) || !(id < AI_CLIENT_ID_MIN)) return;
+  const name = resolveDisplayName(seatUi, seat, clientId, manager, globalObject, seatListIndex);
+  if (name) {
+    const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, name);
+    if (info) pushPlayerInfoToManagerOnce(manager, info, name);
+  }
+  hookPlayNameInit(manager);
+  callManagerMethod(manager, 'SetPlayNameVisible', true);
+}
+
+function hookPlayNameInit(manager: UnknownRecord): void {
+  if (!isRankOrDoudizhuScene(window as GameRuntimeWindow)) return;
+  const proto = asRecord(Object.getPrototypeOf(manager));
+  if (!proto || proto[PLAY_NAME_INIT_KEY] === true || typeof proto.initUI !== 'function') return;
+  const original = proto.initUI as (...args: unknown[]) => unknown;
+  proto.initUI = function (this: UnknownRecord, ...args: unknown[]) {
+    const result = original.apply(this, args);
+    drawRealPlayerNameOnInit(this);
+    return result;
+  };
+  proto[PLAY_NAME_INIT_KEY] = true;
+}
+
+function callManagerMethod(manager: UnknownRecord, name: string, ...args: unknown[]): void {
+  const method = manager[name];
+  if (typeof method !== 'function') return;
+  try {
+    method.call(manager, ...args);
+  } catch {
+    // 这一层没有昵称时，下一轮再试。
+  }
 }
 
 function isOwnSeat(
@@ -1291,7 +1341,7 @@ function readNickFromSeatBundle(seat: UnknownRecord | null, manager?: UnknownRec
 
 function readNameFromRecord(record: UnknownRecord | null): string {
   if (!record) return '';
-  for (const key of ['playerName', 'nickName', 'NickName', 'name', 'Name', 'UserName', 'userName']) {
+  for (const key of ['playerName', 'nickName', 'NickName', 'Nickname', 'ShowName', 'showName', 'SzNickName', 'name', 'Name', 'UserName', 'userName']) {
     const value = record[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
   }

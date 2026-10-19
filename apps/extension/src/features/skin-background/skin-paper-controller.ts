@@ -20,6 +20,7 @@ import {
   type CustomBackgroundRecord
 } from './custom-background-store.ts';
 import {
+  accountStorageKey,
   asRecord,
   callMethod,
   createTaskScope,
@@ -780,10 +781,14 @@ export function installSkinPaperController(
 
   async function restoreCustom(): Promise<void> {
     const saved = await customStore.load();
+    if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
     if (saved?.active) {
-      if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
       customResource = await measureUpload(saved.blob);
       useCustom = true;
+    } else {
+      customResource = null;
+      useCustom = false;
+      if (String(renderer.resource.url || '').startsWith('blob:')) renderer.clearBackground(false);
     }
     await syncVisibility();
   }
@@ -851,6 +856,18 @@ export function installSkinPaperController(
   void tasks.poll(() => locator.dispatcher() && locator.scene(), Infinity, 1000).then((ready) => {
     if (ready) void restoreCustom();
   });
+  let seenAccount = accountStorageKey(storage);
+  const watchAccount = () => {
+    tasks.later(() => {
+      const next = accountStorageKey(storage);
+      if (next !== seenAccount) {
+        seenAccount = next;
+        void restoreCustom();
+      }
+      watchAccount();
+    }, 1000);
+  };
+  watchAccount();
 
   return {
     menuExtension,

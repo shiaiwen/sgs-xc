@@ -8,7 +8,8 @@
  */
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { writeBrowserSetting } from '../adapters/browser-settings';
+import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
+import { accountScopedStorageKey } from '../features/skin-background/skin-runtime';
 // Vite 在构建时解析这些 Vue 单文件；类型检查缺少项目声明时会误报，这里压掉误报。
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import PanelHeader from './panel/PanelHeader.vue';
@@ -433,7 +434,8 @@ function resolveExpandedHeight(savedHeight: number): number {
 function rememberExpandedHeight(heightPx: number): void {
   expandedHeight = `${heightPx}px`;
   try {
-    writeBrowserSetting('XC::panelExpandedHeight', String(Math.round(heightPx)));
+    const key = accountScopedStorageKey('XC::panelExpandedHeight');
+    writeBrowserSetting(key, String(Math.round(heightPx)));
   } catch {
     // 写不进本地存储时，这次会话里仍然使用刚调好的高度。
   }

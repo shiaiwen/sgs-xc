@@ -83,6 +83,18 @@ export function accountStorageKey(storage: Pick<Storage, 'getItem'> | undefined)
     || 'default';
 }
 
+/** 配置项按当前登录账号分开存。 */
+export function accountScopedStorageKey(base: string, storage?: Pick<Storage, 'getItem'>): string {
+  let account = 'default';
+  try {
+    account = accountStorageKey(storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage));
+  } catch {
+    account = 'default';
+  }
+  const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
+  return `${base}::${safe}`;
+}
+
 /** 定时任务作用域：控制器销毁后所有回调自动失效。 */
 export interface TaskScope {
   readonly disposed: boolean;

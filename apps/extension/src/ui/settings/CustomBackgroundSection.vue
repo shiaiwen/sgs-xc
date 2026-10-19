@@ -38,6 +38,11 @@ onBeforeUnmount(() => {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
 });
 
+function openDialog() {
+  isOpen.value = true;
+  void reload();
+}
+
 function openPicker() {
   inputRef.value?.click();
 }
@@ -79,7 +84,7 @@ async function clearBackground() {
     type="button"
     class="xiaochao-block-entry xiaochao-block-entry--center xiaochao-custom-bg-entry"
     data-tooltip="上传一张图片当作牌桌背景，只在自己屏幕上显示"
-    @click="isOpen = true"
+    @click="openDialog"
   >
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3" y="5" width="18" height="14" rx="2" />

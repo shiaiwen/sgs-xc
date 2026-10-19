@@ -12,6 +12,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import { accountScopedStorageKey } from '../skin-background/skin-runtime.ts';
 import {
   AUTO_BOT_ENABLED_KEY,
   AUTO_BOT_TAVERN_TARGET_KEY,
@@ -70,16 +71,21 @@ function asRecord(value: unknown): UnknownRecord | null {
 
 function persistEnabled(globalObject: LayaRuntimeWindow, enabled: boolean): void {
   try {
-    if (enabled) globalObject.localStorage?.setItem?.(STATE_KEY, '1');
-    else globalObject.localStorage?.removeItem?.(STATE_KEY);
+    const key = accountScopedStorageKey(STATE_KEY, globalObject.localStorage);
+    if (enabled) globalObject.localStorage?.setItem?.(key, '1');
+    else globalObject.localStorage?.removeItem?.(key);
   } catch {
     // 忽略异常
   }
 }
 
+function sessionStorageKey(globalObject: LayaRuntimeWindow): string {
+  return accountScopedStorageKey(SESSION_KEY, globalObject.localStorage);
+}
+
 function persistSession(globalObject: LayaRuntimeWindow, session: AutoBotRoomSession): void {
   try {
-    globalObject.localStorage?.setItem?.(SESSION_KEY, JSON.stringify({
+    globalObject.localStorage?.setItem?.(sessionStorageKey(globalObject), JSON.stringify({
       managedRoom: session.managedRoom,
       kind: session.kind,
       baiShengGeneralId: session.baiShengGeneralId,
@@ -93,7 +99,13 @@ function persistSession(globalObject: LayaRuntimeWindow, session: AutoBotRoomSes
 function restoreSession(globalObject: LayaRuntimeWindow): AutoBotRoomSession {
   const session = emptyRoomSession();
   try {
-    const raw = globalObject.localStorage?.getItem?.(SESSION_KEY);
+    const key = sessionStorageKey(globalObject);
+    const owned = globalObject.localStorage?.getItem?.(key);
+    const raw = owned ?? globalObject.localStorage?.getItem?.(SESSION_KEY);
+    if (!owned && raw) {
+      globalObject.localStorage?.setItem?.(key, raw);
+      globalObject.localStorage?.removeItem?.(SESSION_KEY);
+    }
     if (!raw) return session;
     const parsed = JSON.parse(raw) as Partial<AutoBotRoomSession>;
     if (typeof parsed.managedRoom === 'boolean') session.managedRoom = parsed.managedRoom;

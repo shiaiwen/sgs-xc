@@ -8,7 +8,8 @@
 
 import { createLifecycle } from '../runtime/lifecycle.js';
 import { installRuntimeBridge } from '../runtime/wait-for-game-runtime.js';
-import { readBrowserSetting } from '../adapters/browser-settings';
+import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
+import { accountScopedStorageKey } from '../features/skin-background/skin-runtime';
 import type { PlatformAdapter } from '../adapters/platform';
 import {
   mountXiaochaoApp,
@@ -283,7 +284,16 @@ const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
 
 function readSavedPanelHeight(): number {
   try {
-    const saved = Number(readBrowserSetting('XC::panelExpandedHeight'));
+    const key = accountScopedStorageKey('XC::panelExpandedHeight');
+    let raw = readBrowserSetting(key);
+    if (!raw) {
+      raw = readBrowserSetting('XC::panelExpandedHeight');
+      if (raw) {
+        writeBrowserSetting(key, raw);
+        removeBrowserSetting('XC::panelExpandedHeight');
+      }
+    }
+    const saved = Number(raw);
     // 0 表示没有保存过高度，让面板按内容自适应。
     return Number.isFinite(saved) && saved >= 160 ? Math.round(saved) : 0;
   } catch {

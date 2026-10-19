@@ -1,10 +1,12 @@
 /**
- * 自定义背景图存在本机，同一时间只保留一张。
+ * 自定义背景图存在本机，每个登录账号一张。
  */
+
+import { accountStorageKey } from './skin-runtime.ts';
 
 const DB_NAME = 'xiaochao-custom-background';
 const STORE = 'background';
-const KEY = 'current';
+const LEGACY_KEY = 'current';
 const DB_VERSION = 1;
 export const CUSTOM_BACKGROUND_MAX_BYTES = 3 * 1024 * 1024;
 const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -52,13 +54,40 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+function currentAccountKey(): string {
+  let account = 'default';
+  try {
+    account = accountStorageKey(typeof localStorage === 'undefined' ? undefined : localStorage);
+  } catch {
+    account = 'default';
+  }
+  const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
+  return `account:${safe}`;
+}
+
 export function createCustomBackgroundStore(): CustomBackgroundStore {
   const listeners = new Set<() => void>();
   let database: Promise<IDBDatabase> | null = null;
+  let migrated = false;
 
   function db(): Promise<IDBDatabase> {
     database ??= openDb();
     return database;
+  }
+
+  async function migrateLegacy(): Promise<void> {
+    if (migrated) return;
+    migrated = true;
+    const database = await db();
+    const reading = database.transaction(STORE, 'readonly').objectStore(STORE);
+    const legacy = await requestToPromise(reading.get(LEGACY_KEY));
+    if (!legacy) return;
+    const key = currentAccountKey();
+    const existing = await requestToPromise(database.transaction(STORE, 'readonly').objectStore(STORE).get(key));
+    const writing = database.transaction(STORE, 'readwrite').objectStore(STORE);
+    const jobs = [requestToPromise(writing.delete(LEGACY_KEY))];
+    if (!existing) jobs.unshift(requestToPromise(writing.put(legacy, key)));
+    await Promise.all(jobs);
   }
 
   function notify(): void {
@@ -66,8 +95,10 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
   }
 
   async function load(): Promise<CustomBackgroundRecord | null> {
+    await migrateLegacy();
+    const account = currentAccountKey();
     const store = (await db()).transaction(STORE, 'readonly').objectStore(STORE);
-    const row = await requestToPromise(store.get(KEY));
+    const row = await requestToPromise(store.get(account));
     if (!row || typeof row !== 'object' || !(row.blob instanceof Blob)) return null;
     return { blob: row.blob, active: row.active !== false, updatedAt: Number(row.updatedAt) || 0 };
   }
@@ -77,8 +108,9 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
     async save(file) {
       assertCustomBackgroundFile(file);
       const record: CustomBackgroundRecord = { blob: file, active: true, updatedAt: Date.now() };
+      await migrateLegacy();
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
-      await requestToPromise(store.put(record, KEY));
+      await requestToPromise(store.put(record, currentAccountKey()));
       notify();
       return record;
     },
@@ -86,12 +118,13 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
       const current = await load();
       if (!current) return;
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
-      await requestToPromise(store.put({ ...current, active }, KEY));
+      await requestToPromise(store.put({ ...current, active }, currentAccountKey()));
       notify();
     },
     async clear() {
+      await migrateLegacy();
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
-      await requestToPromise(store.delete(KEY));
+      await requestToPromise(store.delete(currentAccountKey()));
       notify();
     },
     subscribe(listener) {

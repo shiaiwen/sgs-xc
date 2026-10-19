@@ -15,7 +15,9 @@ import {
   callMethod,
   createTaskScope,
   prototypeOf,
+  accountScopedStorageKey,
   readJson,
+  removeStored,
   seatGeneral,
   seatHoldsGeneral,
   skinTrace,
@@ -122,9 +124,21 @@ export function installSkinChangeController(
 
   // ---------- 自己的皮肤选择 ----------
 
+  function skinsKey(): string {
+    return accountScopedStorageKey(SAVED_SKINS_KEY, storage);
+  }
+
   function savedSkins(): Record<string, SavedSkin> {
-    const value = readJson<unknown>(storage, SAVED_SKINS_KEY, {});
-    return value && typeof value === 'object' ? value as Record<string, SavedSkin> : {};
+    const key = skinsKey();
+    const current = readJson<unknown>(storage, key, null);
+    if (current && typeof current === 'object') return current as Record<string, SavedSkin>;
+    const legacy = readJson<unknown>(storage, SAVED_SKINS_KEY, null);
+    if (legacy && typeof legacy === 'object') {
+      writeJson(storage, key, legacy);
+      removeStored(storage, SAVED_SKINS_KEY);
+      return legacy as Record<string, SavedSkin>;
+    }
+    return {};
   }
 
   function savedSkin(generalID: unknown): SavedSkin | null {
@@ -134,7 +148,7 @@ export function installSkinChangeController(
 
   function saveSkin(generalID: number, skinID: number, isDynamic: boolean): void {
     if (!(generalID > 0)) return;
-    writeJson(storage, SAVED_SKINS_KEY, { ...savedSkins(), [generalID]: { skinID, isDynamic } });
+    writeJson(storage, skinsKey(), { ...savedSkins(), [generalID]: { skinID, isDynamic } });
   }
 
   function selfSeat(): UnknownRecord | null {
