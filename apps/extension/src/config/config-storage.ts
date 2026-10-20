@@ -55,13 +55,21 @@ export function createPlatformConfigStorage(platform: PlatformAdapter): ConfigSt
         migratedLegacy = Boolean(raw);
       }
       const document = parseStoredDocument(raw);
-      const source = document?.values || {};
+      const source: Record<string, unknown> = { ...(document?.values || {}) };
       let shouldPersist = !document || document.version !== CONFIG_DOCUMENT_VERSION || migratedLegacy;
+      if (source['rogue.mapEnabled'] !== undefined && source['shanhetu.mapEnabled'] === undefined) {
+        source['shanhetu.mapEnabled'] = source['rogue.mapEnabled'];
+        shouldPersist = true;
+      }
+      if (source['rogue.hideStory'] !== undefined && source['shanhetu.hideStory'] === undefined) {
+        source['shanhetu.hideStory'] = source['rogue.hideStory'];
+        shouldPersist = true;
+      }
       const adoptShared = !ownRaw;
 
       for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
         const definition = CONFIG_SCHEMA[key];
-        let candidate: unknown = source[key];
+        let candidate: unknown = source[key as string];
         if (candidate === undefined && adoptShared && definition.previousStorageKey) {
           candidate = parsePreviousValue(platform.getSetting(definition.previousStorageKey));
           if (candidate !== undefined) shouldPersist = true;

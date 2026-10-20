@@ -7,7 +7,11 @@
  */
 
 import { createLifecycle } from '../runtime/lifecycle.js';
-import { installRuntimeBridge } from '../runtime/wait-for-game-runtime.js';
+import {
+  getMissingGameRuntimeDependencies,
+  installRuntimeBridge,
+  waitForGameRuntime
+} from '../runtime/wait-for-game-runtime.js';
 import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
 import { accountScopedStorageKey } from '../features/skin-background/skin-runtime';
 import type { PlatformAdapter } from '../adapters/platform';
@@ -47,6 +51,7 @@ import { createSkillAssistStore } from '../features/skill-assist/skill-assist-st
 import { installSkillAssistController } from '../features/skill-assist/skill-assist-controller';
 import { registerSpellNameLookup } from '../features/skill-assist/skill-visibility';
 import { installBlockEffectsController } from '../features/block-effects/block-effects-controller';
+import { shouldDropNoticeProtocol } from '../features/block-effects/block-message-filters';
 import {
   installOfficialBackgroundController,
   type OfficialBackgroundController
@@ -54,7 +59,7 @@ import {
 import { installSkinChangeController } from '../features/skin-background/skin-change-controller';
 import { installSkinPaperController } from '../features/skin-background/skin-paper-controller';
 import { installAutoTaskController } from '../features/auto-task';
-import { installRogueController } from '../features/rogue';
+import { installShanhetuController } from '../features/shanhetu';
 import { createPeixiuRouteStore, installExtraAssistController } from '../features/extra-assist';
 import { installAutoHgController } from '../features/auto-hg';
 import { installAutoBotController } from '../features/auto-bot';
@@ -66,12 +71,66 @@ import { installSelectionToolsController } from '../features/cards/selection-too
 import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-controller';
 import { installClassicRoomFilterController } from '../features/room-filter/classic-room-filter-controller';
 
+const panelStartupStatus: Record<string, unknown> = {};
+
+interface XiaochaoCoreRuntime {
+  mountPanelShell(layout?: XiaochaoPanelLayout): ReturnType<typeof mountXiaochaoApp> | undefined;
+  teardownPanel(): void;
+  syncRuntimeSession(): void;
+}
+
 /** Electron 和油猴共用的启动边界；平台差异只能通过 adapter 注入。 */
 export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const lifecycle = createLifecycle();
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
-  const accountTimer = window.setInterval(() => configStore.syncAccount(), 1000);
-  lifecycle.register(() => window.clearInterval(accountTimer));
+  (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
+
+  let core: XiaochaoCoreRuntime | null = null;
+
+  const probeRuntimeReady = () => getMissingGameRuntimeDependencies({ globalObject: window });
+
+  const syncAccountSession = () => {
+    configStore.syncAccount();
+    const missing = probeRuntimeReady();
+    panelStartupStatus.missing = missing;
+    if (missing.length > 0) {
+      core?.teardownPanel();
+      panelStartupStatus.state = 'waiting';
+      return;
+    }
+    if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
+    core.syncRuntimeSession();
+    if (!document.body) return;
+    core.mountPanelShell();
+    panelStartupStatus.state = 'ready';
+  };
+
+  installRuntimeBridge(window, {
+    lifecycle,
+    platform,
+    getMissingGameRuntimeDependencies,
+    waitForGameRuntime,
+    mountPanelShell: () => core?.mountPanelShell()
+  });
+
+  void waitForGameRuntime({
+    probe: probeRuntimeReady,
+    initialize: () => {
+      syncAccountSession();
+      const sessionTimer = window.setInterval(syncAccountSession, 1000);
+      lifecycle.register(() => window.clearInterval(sessionTimer));
+      return true;
+    },
+    registerCleanup: (cleanup) => lifecycle.register(cleanup),
+    status: panelStartupStatus
+  }).catch((error: unknown) => console.error('[xiaochao] 启动失败', error));
+}
+
+function startXiaochaoCore(
+  platform: PlatformAdapter,
+  lifecycle: ReturnType<typeof createLifecycle>,
+  configStore: ReturnType<typeof createConfigStore>
+): XiaochaoCoreRuntime {
   const seatStateStore = createSeatStateStore();
   const gameEvents = createGameEventBus();
   const cardConfigSource = installCardConfigSource(window);
@@ -143,7 +202,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   lifecycle.register(installHandSortController(configStore));
   lifecycle.register(installSelectionToolsController());
   lifecycle.register(installTiesuoRecastController());
-  const blockEffects = installBlockEffectsController(configStore);
+  const blockEffects = installBlockEffectsController(configStore, { gameEvents });
   lifecycle.register(blockEffects.dispose);
   const skinChange = installSkinChangeController(configStore);
   lifecycle.register(skinChange.dispose);
@@ -157,9 +216,26 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     menuExtension: skinPaper.menuExtension
   });
   lifecycle.register(officialBackground.dispose);
-  const autoTask = installAutoTaskController(configStore, gameEvents, {
-    cardConfigSource
-  });
+  let autoTask: ReturnType<typeof installAutoTaskController>;
+  try {
+    autoTask = installAutoTaskController(configStore, gameEvents, {
+      cardConfigSource
+    });
+  } catch (error) {
+    console.error('[xiaochao] 自动领取初始化失败，面板仍可用', error);
+    autoTask = {
+      schedule: () => false,
+      getStatus: () => ({
+        phase: 'idle',
+        lastReason: '',
+        lastStartedAt: 0,
+        lastFinishedAt: 0,
+        message: '自动领取未加载'
+      }),
+      subscribe: () => () => {},
+      dispose: () => {}
+    };
+  }
   lifecycle.register(autoTask.dispose);
   lifecycle.register(installGiftCodeController());
   lifecycle.register(installRuntimeSearchController());
@@ -179,13 +255,13 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     platform: platform.platform
   });
   lifecycle.register(updateNotice.dispose);
-  const rogue = installRogueController(configStore, { cardConfigSource });
-  lifecycle.register(rogue.dispose);
+  const shanhetu = installShanhetuController(configStore, { cardConfigSource });
+  lifecycle.register(shanhetu.dispose);
   const messageFilters = [
     blockEffects.filterMessage,
     skinChange.filterMessage,
     skinPaper.filterMessage,
-    rogue.filterMessage,
+    shanhetu.filterMessage,
     autoHg.filterMessage,
     autoBot.filterMessage
   ];
@@ -198,7 +274,11 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
           console.warn('[xiaochao] 协议改写失败', className, error);
         }
       }
-    }
+    },
+    shouldDropProtocolEvent: (className, payload) => (
+      configStore.get('block.noticeWindow') === true
+      && shouldDropNoticeProtocol(className, payload)
+    )
   }));
   lifecycle.register(installNativeRecentCardController(configStore, recentCardStore));
   lifecycle.register(installNativeDeckRecordController(
@@ -240,15 +320,22 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
       turnStatusStore,
       autoTask,
       () => blockEffects.clearRedDots(),
-      rogue,
+      shanhetu,
       updateNotice
     );
     lifecycle.register(mountedApp.unmount);
     return mountedApp;
   }
-  const bridge = installRuntimeBridge(window, {
+  function teardownPanel(): void {
+    if (!mountedApp) return;
+    mountedApp.unmount();
+    mountedApp = undefined;
+  }
+  installRuntimeBridge(window, {
     lifecycle,
     platform,
+    getMissingGameRuntimeDependencies,
+    waitForGameRuntime,
     getSeatState: () => seatStateStore.getSnapshot(),
     getRecentCardState: () => recentCardStore.getSnapshot(),
     getDeckRecordState: () => deckRecordStore.getSnapshot(),
@@ -259,20 +346,14 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     mountPanelShell
   });
   mountPlayNameProbe(window);
-  (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
-  void bridge.waitForGameRuntime({
-    probe: () => bridge.getMissingGameRuntimeDependencies({ globalObject: window }),
-    initialize: () => {
-      if (!document.body) return false;
-      mountPanelShell();
-      return true;
-    },
-    registerCleanup: (cleanup: () => void) => lifecycle.register(cleanup),
-    status: panelStartupStatus
-  }).catch((error: unknown) => console.error('[xiaochao] 面板挂载失败', error));
+  return {
+    mountPanelShell,
+    teardownPanel,
+    syncRuntimeSession() {
+      blockEffects.armNoticeBlock();
+    }
+  };
 }
-
-const panelStartupStatus: Record<string, unknown> = {};
 
 const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
   top: 31,

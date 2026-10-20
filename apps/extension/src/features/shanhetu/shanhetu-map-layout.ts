@@ -7,8 +7,8 @@ import {
   ROGUE_MAP_STYLE,
   type RogueMapPanelLayout,
   type RogueRect
-} from './rogue-map-types.ts';
-import type { RogueMapViewport } from './rogue-map-geometry.ts';
+} from './shanhetu-map-types.ts';
+import type { RogueMapViewport } from './shanhetu-map-geometry.ts';
 
 function overlaps(a: RogueRect, b: RogueRect, gap: number): boolean {
   return !(

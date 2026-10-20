@@ -7,13 +7,13 @@ import {
   type RogueChooseMeta,
   type RogueCityMeta,
   type RogueFightMeta,
-  type RogueMapConfigData,
+  type ShanhetuMapConfigData,
   type RoguePlotMeta
-} from './rogue-map-types.ts';
+} from './shanhetu-map-types.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface RogueMapNameTables {
+export interface ShanhetuMapNameTables {
   /** spellId → { name, desc }，来自 cha_spell */
   spells?: Map<number, { name: string; desc: string }>;
   /** cardId → { name, desc, subType?, type?, color?, number? }，来自 sys_playcard */
@@ -269,7 +269,7 @@ function buildRewardNames(root: UnknownRecord): Record<string, string> {
 }
 
 /** 战法、技能、卡牌三张表合并。 */
-function buildRplot(root: UnknownRecord, names: RogueMapNameTables = {}): Record<string, RoguePlotMeta> {
+function buildRplot(root: UnknownRecord, names: ShanhetuMapNameTables = {}): Record<string, RoguePlotMeta> {
   const table: Record<string, RoguePlotMeta> = {};
   for (const entry of asArray(root.Tactics)) {
     const record = asRecord(entry);
@@ -500,7 +500,7 @@ function buildRchapBoss(root: UnknownRecord): Record<string, Record<string, numb
   return table;
 }
 
-function emptyConfig(): RogueMapConfigData {
+function emptyConfig(): ShanhetuMapConfigData {
   return {
     Rcity: {},
     Rfight: {},
@@ -523,10 +523,10 @@ function emptyConfig(): RogueMapConfigData {
  * 从 `hd_roguelike.sgs` 构建地图透视表。
  * 缩写展开、RewardGroup、Rplot（战法/技能/卡牌）、奇遇选项解析、成长表。
  */
-export function buildRogueMapConfigData(
+export function buildShanhetuMapConfigData(
   raw: unknown,
-  names: RogueMapNameTables = {}
-): RogueMapConfigData {
+  names: ShanhetuMapNameTables = {}
+): ShanhetuMapConfigData {
   const root = rootOf(raw);
   if (!root) return emptyConfig();
   const abbreviation = readAbbreviationMap(raw);
@@ -560,6 +560,6 @@ export function buildRogueMapConfigData(
 }
 
 /** 山河图地图配置是否已经能用来画。 */
-export function isRogueMapConfigReady(data: RogueMapConfigData | null | undefined): boolean {
+export function isShanhetuMapConfigReady(data: ShanhetuMapConfigData | null | undefined): boolean {
   return Boolean(data && Object.keys(data.Rcity).length > 0);
 }

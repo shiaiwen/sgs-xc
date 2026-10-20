@@ -83,14 +83,47 @@ export function installSelectionToolsController(runtime: LayaRuntimeWindow = win
 
 /** 读取选牌窗内可选卡牌 UI 列表。 */
 function readCards(win: Node): Node[] {
-  for (const key of ['selectCardUis', 'cardUis', 'cardUIs', 'itemUis', 'itemList']) {
-    if (Array.isArray(win[key])) return win[key];
-  }
-  return [];
+  const container = win.cardContainer ?? win;
+  const lists = [
+    container.handCardUis,
+    container.cardUis,
+    container.equipCardUis,
+    container.equipCardUIs,
+    container.activatedCardtems,
+    container.activatedCardItems,
+    container.selectCardUis,
+    win.selectCardUis,
+    win.cardUis,
+    win.cardUIs,
+    win.itemUis,
+    win.itemList
+  ];
+  const cards = lists.flatMap((list) => Array.isArray(list) ? list : []);
+  return [...new Set(cards)];
 }
 
-function selected(card: Node): boolean {
-  return card.selected === true || card.isSelected === true || card.Selected === true;
+function cardId(card: Node): number {
+  const inner = card.Card ?? card.theCard ?? card;
+  const raw = inner.CardID ?? inner.cardId ?? inner.ID ?? card.CardID ?? card.cardId;
+  const id = Number(raw);
+  return Number.isFinite(id) ? id : 0;
+}
+
+function selected(win: Node, card: Node): boolean {
+  const container = win.cardContainer ?? win;
+  const chosen = new Set([
+    ...(Array.isArray(container.selectCardUis) ? container.selectCardUis : []),
+    ...(Array.isArray(container.selectedCardUis) ? container.selectedCardUis : []),
+    ...(Array.isArray(win.selectCardUis) ? win.selectCardUis : [])
+  ]);
+  if (chosen.has(card)) return true;
+  const inner = card.Card ?? card.theCard;
+  const flags = [card.selected, card.Selected, card.isSelected, inner?.Selected, inner?.selected];
+  if (flags.some((flag) => flag === true)) return true;
+  const context = container.SelectContext ?? container.selectCardContext ?? win.SelectContext ?? win.selectCardContext;
+  const ids = new Set((Array.isArray(context?.SelectedCardIds) ? context.SelectedCardIds : []).map(Number));
+  const id = cardId(card);
+  return id > 0 && ids.has(id);
 }
 
 function selectable(card: Node): boolean {
@@ -98,42 +131,50 @@ function selectable(card: Node): boolean {
 }
 
 function limits(win: Node, count: number): { min: number; max: number } {
-  const min = Math.max(0, Number(win.SelectCountMin ?? win.selectCountMin ?? win.TargetCountMin) || 0);
-  const rawMax = Number(win.TargetCountMax ?? win.SelectCountMax ?? win.selectCountMax);
+  const container = win.cardContainer ?? win;
+  const context = container.SelectContext ?? container.selectCardContext ?? win.SelectContext ?? win.selectCardContext ?? {};
+  const min = Math.max(0, Number(context.SelectCountMin ?? win.SelectCountMin ?? win.selectCountMin ?? win.TargetCountMin) || 0);
+  const rawMax = Number(context.SelectCountMax ?? context.TargetCountMax ?? win.TargetCountMax ?? win.SelectCountMax ?? win.selectCountMax);
   const max = rawMax > 0 ? rawMax : count;
   return { min, max: Math.max(min, Math.min(count, max)) };
 }
 
-function setSelected(win: Node, card: Node, value: boolean): void {
-  if (selected(card) === value) return;
-  for (const method of ['setSelected', 'SetSelected', '__setSelected']) {
-    if (typeof card[method] === 'function') {
-      card[method](value);
-      return;
-    }
+function toggleCard(win: Node, card: Node): void {
+  if (typeof card.CardUI_Click === 'function') {
+    card.CardUI_Click(null);
+    return;
   }
-  for (const method of ['onSelectedClicked', 'onTouchCard', 'CardUI_Click']) {
+  for (const method of ['onSelectedClicked', 'onTouchCard']) {
     if (typeof win[method] === 'function') {
       win[method](card);
       return;
     }
   }
-  card.selected = value;
-  card.isSelected = value;
+  for (const method of ['setSelected', 'SetSelected']) {
+    if (typeof card[method] === 'function') {
+      card[method](!selected(win, card));
+      return;
+    }
+  }
 }
 
 /** 按动作改写选中态：全选、反选、或选满合法数量。 */
 function apply(win: Node, action: 'all' | 'invert' | 'quick'): void {
   const cards = readCards(win).filter(selectable);
   const { min, max } = limits(win, cards.length);
-  const selectedCards = cards.filter(selected);
+  const selectedCards = cards.filter((card) => selected(win, card));
   const target = action === 'all'
     ? cards.slice(0, max)
     : action === 'invert'
-      ? cards.filter((card) => !selected(card)).slice(0, max)
+      ? cards.filter((card) => !selected(win, card)).slice(0, max)
       : cards.slice(0, Math.max(min, Math.min(max, selectedCards.length || max)));
   const wanted = new Set(target);
-  cards.forEach((card) => setSelected(win, card, wanted.has(card)));
+  for (const card of cards) {
+    if (selected(win, card) && !wanted.has(card)) toggleCard(win, card);
+  }
+  for (const card of cards) {
+    if (!selected(win, card) && wanted.has(card)) toggleCard(win, card);
+  }
   for (const method of ['UpdateSelectCards', 'updateSelectCards', 'UpdateButtonState', 'updateButtonState']) {
     if (typeof win[method] === 'function') {
       win[method]();

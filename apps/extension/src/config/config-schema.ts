@@ -62,8 +62,8 @@ export interface XiaochaoConfig {
   'autoTask.skipSignTrialCard': boolean;
   'autoTask.skipDiJiaQuan': boolean;
   'autoTask.skipHuanLeDou': boolean;
-  'rogue.mapEnabled': boolean;
-  'rogue.hideStory': boolean;
+  'shanhetu.mapEnabled': boolean;
+  'shanhetu.hideStory': boolean;
   'assist.extraEnabled': boolean;
   'assist.sunquanEnabled': boolean;
   'assist.peixiuEnabled': boolean;
@@ -102,7 +102,7 @@ const booleanDefinition = (
 const PANEL_TAB_LABELS: Record<string, XiaochaoPanelTabId> = {
   cards: 'cards',
   others: 'others',
-  rogue: 'others',
+  shanhetu: 'others',
   tools: 'others',
   settings: 'cards',
   卡牌: 'cards',
@@ -218,8 +218,8 @@ export const CONFIG_SCHEMA: {
   'autoTask.skipSignTrialCard': booleanDefinition(true, 'AUTO_SIGN_SKIP_SWITCH'),
   'autoTask.skipDiJiaQuan': booleanDefinition(true, 'AUTO_TASK_SKIP_DI_JIA_QUAN'),
   'autoTask.skipHuanLeDou': booleanDefinition(true, 'AUTO_TASK_SKIP_HUAN_LE_DOU'),
-  'rogue.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
-  'rogue.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
+  'shanhetu.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
+  'shanhetu.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
   'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),
   'assist.sunquanEnabled': booleanDefinition(true),
   'assist.peixiuEnabled': booleanDefinition(true),

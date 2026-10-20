@@ -127,6 +127,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     return locator.manager(name);
   }
 
+  function newFuLiManager(): UnknownRecord | null {
+    return manager('NewFuLiManager')
+      ?? locator.findManagerByPredicate((item) => typeof item.SendSetOutRewardAllReq === 'function');
+  }
+
   function resolveMethod(target: UnknownRecord | null, owner: string, method: string): ((...args: unknown[]) => unknown) | null {
     if (!target) return null;
     const direct = target[method];
@@ -182,6 +187,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       skipDiJiaQuan: options.skipDiJiaQuan,
       skipHuanLeDou: options.skipHuanLeDou,
       taskIds: deps.configData()?.taskIds ?? null,
+      newFuliTaskIds: deps.configData()?.newFuliTaskIds ?? null,
+      returnUnlockTaskIds: deps.configData()?.returnUnlockTaskIds ?? null,
       goodsName,
       goodsHasPropItem: (itemId) => Boolean(goodsConfig(itemId)?.CheckHasPropItem)
     };
@@ -225,19 +232,45 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   // ---------- 任务 ----------
 
-  async function claimTasks(): Promise<void> {
-    const taskManager = manager('TaskManager');
-    if (!active() || !taskManager) return;
+  async function refreshTaskListFromServer(taskManager: UnknownRecord): Promise<void> {
     try {
-      await Promise.resolve(call(taskManager, 'getTaskListFromServer'));
+      await Promise.resolve(invoke(taskManager, 'TaskManager', 'getTaskListFromServer'));
     } catch {
       // 同步失败时用本地已有任务。
     }
-    const options = deps.options();
-    if (!options.skipTavern && has(taskManager, 'reqTaskProgressByIds')) {
-      claims.throttled('tavern:sync', () => call(taskManager, 'reqTaskProgressByIds', [...TAVERN_TASK_IDS]));
+    const direct = taskManager.getTaskListFromServer ?? taskManager.GetTaskListFromServer;
+    if (typeof direct === 'function') {
+      try {
+        await Promise.resolve(direct.call(taskManager));
+      } catch {
+        // 忽略单次同步失败。
+      }
     }
-    await delay(500);
+  }
+
+  function reqTaskProgress(taskManager: UnknownRecord, ids: readonly number[]): void {
+    if (!ids.length) return;
+    invoke(taskManager, 'TaskManager', 'reqTaskProgressByIds', [...ids]);
+    const direct = taskManager.reqTaskProgressByIds ?? taskManager.ReqTaskProgressByIds;
+    if (typeof direct === 'function') direct.call(taskManager, [...ids]);
+  }
+
+  async function claimTasks(): Promise<void> {
+    const taskManager = manager('TaskManager');
+    if (!active() || !taskManager) return;
+    await refreshTaskListFromServer(taskManager);
+    const options = deps.options();
+    if (!options.skipTavern) {
+      claims.throttled('tavern:sync', () => reqTaskProgress(taskManager, TAVERN_TASK_IDS));
+    }
+    const progressIds = [
+      ...(deps.configData()?.newFuliTaskIds ?? []),
+      ...(deps.configData()?.returnUnlockTaskIds ?? [])
+    ];
+    if (progressIds.length) {
+      claims.throttled('welfare:sync', () => reqTaskProgress(taskManager, progressIds));
+    }
+    await delay(progressIds.length ? 1200 : 500);
     if (!active()) return;
     const access: TaskManagerAccess = {
       manager: taskManager,
@@ -414,26 +447,83 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     return rewards;
   }
 
-  function claimNewFuLiSetOut(fuli: UnknownRecord): void {
-    if (!has(fuli, 'SendSetOutRewardAllReq')) return;
-    if (has(fuli, 'SendAllSetOutGidtInfoReq')) claims.throttled('newFuLi:setOut:sync:info', () => call(fuli, 'SendAllSetOutGidtInfoReq'));
-    if (has(fuli, 'SendAllTaskInfoReq')) claims.throttled('newFuLi:setOut:sync:task', () => call(fuli, 'SendAllTaskInfoReq'));
+  function setOutPassId(data: unknown): unknown {
+    const record = asRecord(data);
+    if (!record) return undefined;
+    return asRecord(record.vo)?.id ?? record.passId ?? record.PassID ?? record.PassId ?? record.id ?? record.ID;
+  }
+
+  function collectSetOutPasses(fuli: UnknownRecord): Array<{ id: unknown; data: unknown }> {
     const passes = new Map<string, { id: unknown; data: unknown }>();
-    for (const data of flattenGameCollection(fuli.passDataDic)) {
-      const record = asRecord(data);
-      const rawId = asRecord(record?.vo)?.id ?? record?.passId ?? record?.PassID ?? record?.id ?? record?.ID;
-      if (rawId === undefined || rawId === null || rawId === '') continue;
-      const numeric = Number(rawId);
-      const id = Number.isFinite(numeric) && String(rawId).trim() !== '' ? numeric : rawId;
-      if (!passes.has(String(id))) passes.set(String(id), { id, data });
+    for (const key of ['passDataDic', 'PassDataDic', 'passDic', 'PassDic']) {
+      for (const data of flattenGameCollection(fuli[key])) {
+        const rawId = setOutPassId(data);
+        if (rawId === undefined || rawId === null || rawId === '') continue;
+        const numeric = Number(rawId);
+        const id = Number.isFinite(numeric) && String(rawId).trim() !== '' ? numeric : rawId;
+        if (!passes.has(String(id))) passes.set(String(id), { id, data });
+      }
     }
-    passes.forEach(({ id, data }) => {
+    return [...passes.values()];
+  }
+
+  function syncSetOutPassData(fuli: UnknownRecord): void {
+    for (const method of [
+      'SendAllSetOutGidtInfoReq',
+      'SendAllSetOutGiftInfoReq',
+      'SetOutGidtInfoReq',
+      'SendAllTaskInfoReq',
+      'SendClientSetOutGiftInfoReq',
+      'SendSetOutGiftInfoReq'
+    ]) {
+      if (typeof fuli[method] === 'function') {
+        try {
+          fuli[method]();
+        } catch {
+          // 继续尝试其他同步接口。
+        }
+      }
+    }
+  }
+
+  function passHasClaimableReward(pass: UnknownRecord): boolean {
+    const checker = pass.HasCanGetReward;
+    if (typeof checker === 'function') {
+      try {
+        return Boolean(checker.call(pass));
+      } catch {
+        return false;
+      }
+    }
+    return Boolean(checker);
+  }
+
+  async function claimNewFuLiSetOut(fuli: UnknownRecord): Promise<void> {
+    if (typeof fuli.SendSetOutRewardAllReq !== 'function') return;
+    syncSetOutPassData(fuli);
+    claims.throttled('newFuLi:setOut:sync:info', () => syncSetOutPassData(fuli));
+    if (typeof fuli.SendAllTaskInfoReq === 'function') {
+      claims.throttled('newFuLi:setOut:sync:task', () => call(fuli, 'SendAllTaskInfoReq'));
+    }
+    await delay(1200);
+    if (!active()) return;
+    for (const { id, data } of collectSetOutPasses(fuli)) {
       const pass = asRecord(call(fuli, 'GetPassData', id)) ?? asRecord(data);
-      if (!pass || !has(pass, 'HasCanGetReward') || !call(pass, 'HasCanGetReward')) return;
+      if (!pass || !passHasClaimableReward(pass)) continue;
       const rewards = setOutPassRewards(pass);
-      if (rewards.length && blocked(rewards)) return;
-      claims.throttled(`newFuLi:setOut:${String(id)}`, () => call(fuli, 'SendSetOutRewardAllReq', id));
-    });
+      if (rewards.length && blocked(rewards)) continue;
+      const sent = claims.throttled(`newFuLi:setOut:${String(id)}`, () => call(fuli, 'SendSetOutRewardAllReq', id));
+      if (sent !== false) await delay(600);
+    }
+  }
+
+  async function claimNewFuLiWelfare(): Promise<void> {
+    const fuli = newFuLiManager();
+    if (!active() || !fuli) return;
+    await claimNewFuLiSetOut(fuli);
+    if (!active()) return;
+    await delay(800);
+    await claimNewFuLiSetOut(fuli);
   }
 
   async function claimActivities(): Promise<void> {
@@ -459,8 +549,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         claims.throttled(`task:JDCalcQuest:${index}`, () => call(taskManager, 'SendGetJdCalcQuestRewardReq', index));
       }
     }
-    const fuli = manager('NewFuLiManager');
-    if (fuli) claimNewFuLiSetOut(fuli);
+    const fuli = newFuLiManager();
+    if (fuli) await claimNewFuLiSetOut(fuli);
   }
 
   // ---------- 邮件 ----------
@@ -956,6 +1046,20 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     void claimDailySignAndOfficer(deps.options().skipSignTrialCard);
     const generalManager = manager('GameGeneralManager');
     if (!generalManager) return;
+    for (const method of [
+      'ClientGeneralFromRep',
+      'SendClientGeneralAtlasReq',
+      'ReqGeneralAtlasData',
+      'SendGeneralAtlasDataReq'
+    ]) {
+      if (!has(generalManager, method)) continue;
+      try {
+        call(generalManager, method);
+      } catch {
+        // 同步失败时仍尝试用已有图鉴缓存领奖。
+      }
+      break;
+    }
     for (const series of deps.configData()?.seriesList ?? []) {
       if (call(generalManager, 'LampRewardCanAward', series) && !call(generalManager, 'LampHasReward', series)) {
         claims.throttled(`generalLamp:${series}`, () => call(generalManager, 'LampRewardReq', series));
@@ -1001,6 +1105,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   return {
     runPass() {
       if (!active()) return;
+      runStep('武将福利', claimNewFuLiWelfare);
       runStep('任务', claimTasks);
       runStep('活动', claimActivities);
       runStep('邮件', claimMail);

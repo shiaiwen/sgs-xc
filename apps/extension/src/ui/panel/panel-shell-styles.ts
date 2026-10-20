@@ -276,13 +276,13 @@ const PANEL_SHELL_CSS_SOURCE = `
   padding: 0 10px;
   font-size: 12px;
 }
-#createIframe .xiaochao-settings-grid.xiaochao-rogue-switch-grid {
+#createIframe .xiaochao-settings-grid.xiaochao-shanhetu-switch-grid {
   grid-template-columns: 1fr 1fr;
   gap: 4px 6px;
   margin-bottom: 4px;
   padding: 4px 6px;
 }
-#createIframe .xiaochao-rogue-switch-grid > .xiaochao-block-switch {
+#createIframe .xiaochao-shanhetu-switch-grid > .xiaochao-block-switch {
   min-width: 0;
 }
 #createIframe .xiaochao-settings-grid.xiaochao-display-switch-grid {
@@ -307,18 +307,18 @@ const PANEL_SHELL_CSS_SOURCE = `
 #createIframe .xiaochao-display-switch-grid .xiaochao-block-switch__toggle {
   margin: 0 auto;
 }
-#createIframe .xiaochao-rogue-shop-btn {
+#createIframe .xiaochao-shanhetu-shop-btn {
   width: calc(100% - 12px);
   margin: 2px 6px 6px;
 }
-#createIframe .xiaochao-rogue-shop-preview {
+#createIframe .xiaochao-shanhetu-shop-preview {
   margin: 2px 6px 4px;
   padding: 0;
   border: none;
   background: transparent;
   box-sizing: border-box;
 }
-#createIframe .xiaochao-rogue-shop-preview__title {
+#createIframe .xiaochao-shanhetu-shop-preview__title {
   margin: 0 2px 4px;
   color: #c9c1b1;
   font-size: 11px;
@@ -329,7 +329,7 @@ const PANEL_SHELL_CSS_SOURCE = `
  * 接缝：只用 grid gap 露一次底色，禁止每格四边 border（会双线）。
  * 等级辨识：左侧色条 + 同色浅底 + 文字色（1 灰、2 蓝、3 紫、4 橙）。
  */
-#createIframe .xiaochao-rogue-shop-preview__list {
+#createIframe .xiaochao-shanhetu-shop-preview__list {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 3px;
@@ -339,9 +339,9 @@ const PANEL_SHELL_CSS_SOURCE = `
   box-sizing: border-box;
   background: transparent;
 }
-#createIframe .xiaochao-rogue-shop-preview__item {
-  --rogue-shop-accent: rgba(242, 222, 156, 0.45);
-  --rogue-shop-glow: rgba(242, 222, 156, 0.08);
+#createIframe .xiaochao-shanhetu-shop-preview__item {
+  --shanhetu-shop-accent: rgba(242, 222, 156, 0.45);
+  --shanhetu-shop-glow: rgba(242, 222, 156, 0.08);
   width: auto;
   min-width: 0;
   height: 24px;
@@ -360,28 +360,28 @@ const PANEL_SHELL_CSS_SOURCE = `
   text-overflow: ellipsis;
   cursor: default;
   background:
-    linear-gradient(90deg, var(--rogue-shop-glow) 0%, transparent 42%),
+    linear-gradient(90deg, var(--shanhetu-shop-glow) 0%, transparent 42%),
     linear-gradient(180deg, #342e27 0%, #251f1a 100%);
-  box-shadow: inset 3px 0 0 var(--rogue-shop-accent);
+  box-shadow: inset 3px 0 0 var(--shanhetu-shop-accent);
 }
-#createIframe .xiaochao-rogue-shop-preview__item[data-level="1"] {
-  --rogue-shop-accent: #b9b3a6;
-  --rogue-shop-glow: rgba(214, 210, 200, 0.14);
+#createIframe .xiaochao-shanhetu-shop-preview__item[data-level="1"] {
+  --shanhetu-shop-accent: #b9b3a6;
+  --shanhetu-shop-glow: rgba(214, 210, 200, 0.14);
   color: #e4e0d6;
 }
-#createIframe .xiaochao-rogue-shop-preview__item[data-level="2"] {
-  --rogue-shop-accent: #5ea6ff;
-  --rogue-shop-glow: rgba(94, 166, 255, 0.2);
+#createIframe .xiaochao-shanhetu-shop-preview__item[data-level="2"] {
+  --shanhetu-shop-accent: #5ea6ff;
+  --shanhetu-shop-glow: rgba(94, 166, 255, 0.2);
   color: #9cccff;
 }
-#createIframe .xiaochao-rogue-shop-preview__item[data-level="3"] {
-  --rogue-shop-accent: #c07cff;
-  --rogue-shop-glow: rgba(192, 124, 255, 0.22);
+#createIframe .xiaochao-shanhetu-shop-preview__item[data-level="3"] {
+  --shanhetu-shop-accent: #c07cff;
+  --shanhetu-shop-glow: rgba(192, 124, 255, 0.22);
   color: #d7b0ff;
 }
-#createIframe .xiaochao-rogue-shop-preview__item[data-level="4"] {
-  --rogue-shop-accent: #ff9f2e;
-  --rogue-shop-glow: rgba(255, 159, 46, 0.24);
+#createIframe .xiaochao-shanhetu-shop-preview__item[data-level="4"] {
+  --shanhetu-shop-accent: #ff9f2e;
+  --shanhetu-shop-glow: rgba(255, 159, 46, 0.24);
   color: #ffc56d;
   text-shadow: 0 0 8px rgba(255, 159, 46, 0.28);
 }
@@ -774,6 +774,9 @@ const PANEL_SHELL_CSS_SOURCE = `
 .xiaochao-block-group:first-child { margin-top: 0; }
 .xiaochao-block-select-bar + .xiaochao-block-group { margin-top: 0; }
 .xiaochao-block-group__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   box-sizing: border-box;
   min-height: 28px;
   margin: 0;
@@ -786,6 +789,10 @@ const PANEL_SHELL_CSS_SOURCE = `
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
+}
+.xiaochao-block-group__toggle {
+  flex: none;
+  margin-left: 12px;
 }
 .xiaochao-block-group__grid {
   display: grid;

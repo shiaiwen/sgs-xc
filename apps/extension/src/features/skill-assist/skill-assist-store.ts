@@ -161,7 +161,15 @@ export function createSkillAssistStore(
   const turnState = { quanbianCount: 0, quanbianSuits: [] as string[], luanjiSuits: [] as string[] };
   let snapshot = buildSnapshot();
   const listeners = new Set<(snapshot: Readonly<SkillAssistSnapshot>) => void>();
-  const stopMingpai = mingpaiEngine.subscribe(() => publish(buildSnapshot()));
+  let mingpaiRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSnapshotFromMingpai = () => {
+    if (mingpaiRebuildTimer) clearTimeout(mingpaiRebuildTimer);
+    mingpaiRebuildTimer = setTimeout(() => {
+      mingpaiRebuildTimer = null;
+      publish(buildSnapshot());
+    }, 120);
+  };
+  const stopMingpai = mingpaiEngine.subscribe(() => scheduleSnapshotFromMingpai());
 
   function buildSnapshot(): Readonly<SkillAssistSnapshot> {
     return Object.freeze({
@@ -382,6 +390,8 @@ export function createSkillAssistStore(
       return () => listeners.delete(listener);
     },
     clear() {
+      if (mingpaiRebuildTimer) clearTimeout(mingpaiRebuildTimer);
+      mingpaiRebuildTimer = null;
       stopMingpai();
       listeners.clear();
       inGame = false;

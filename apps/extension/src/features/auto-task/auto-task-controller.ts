@@ -11,6 +11,7 @@ import {
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   accountScopedStorageKey,
   accountStorageKey,
@@ -20,9 +21,11 @@ import {
 import { beijingDayIndex, createAutoTaskClaims } from './auto-task-claims.ts';
 import { createAutoTaskRunner, type AutoTaskOptions } from './auto-task-runner.ts';
 import { ALL_AUTO_TASK_KEYS, AUTO_TASK_ENABLED_KEY, AUTO_TASK_SKIP_SETTINGS } from './auto-task-settings.ts';
+import { mountAutoTaskProbe, probeAutoTaskRuntime } from './auto-task-probe.ts';
+import type { TaskRuleContext } from './auto-task-rules.ts';
 import { createAutoTaskWindows } from './auto-task-windows.ts';
 
-export type AutoTaskReason = 'login' | 'gameEnd' | 'postGame' | 'switch' | 'tavern' | 'heartbeat' | 'auto';
+export type AutoTaskReason = 'login' | 'gameEnd' | 'postGame' | 'switch' | 'tavern' | 'heartbeat' | 'auto' | 'timer';
 
 export interface AutoTaskPayload {
   reason: string;
@@ -63,20 +66,12 @@ const MANAGER_WAIT_ATTEMPTS = 30;
 const MANAGER_WAIT_INTERVAL = 1000;
 const SCHEDULE_DELAY_MS = 2000;
 const ACCOUNT_POLL_MS = 1000;
+const PERIODIC_AUTO_TASK_MS = 10 * 60 * 1000;
+const PERIODIC_AUTO_TASK_FIRST_MS = 90 * 1000;
 const LAST_TASK_DATE_KEY = 'XC::lastTaskDate';
 
-function isUsableAccountId(value: unknown): boolean {
-  if (value == null) return false;
-  const text = String(value).trim();
-  return text.length > 0 && text !== '0';
-}
-
-function isPresent(value: unknown): boolean {
-  return value != null && String(value).trim().length > 0;
-}
-
 /**
- * 自动领取：账号资料到达、局结束、开关、心跳跨天后调度一轮任务、活动、邮件、福利等。
+ * 自动领取：登录、局结束、开关、跨天心跳、定时补领等时机调度一轮任务、活动、邮件、福利等。
  */
 export function installAutoTaskController(
   configStore: XiaochaoConfigStore,
@@ -107,6 +102,21 @@ export function installAutoTaskController(
   let postGameScheduledAt = 0;
   let lastDayIndex = readStoredDayIndex();
   let loginAccountId = '';
+  let lastPeriodicScheduleAt = 0;
+
+  function probeRuleContext(): TaskRuleContext {
+    const data = options.cardConfigSource?.getAutoTaskData() ?? null;
+    return {
+      skipTavern: configStore.get('autoTask.skipTavern'),
+      skipDiJiaQuan: configStore.get('autoTask.skipDiJiaQuan'),
+      skipHuanLeDou: configStore.get('autoTask.skipHuanLeDou'),
+      taskIds: data?.taskIds ?? null,
+      newFuliTaskIds: data?.newFuliTaskIds ?? null,
+      returnUnlockTaskIds: data?.returnUnlockTaskIds ?? null,
+      goodsName: () => '',
+      goodsHasPropItem: () => false
+    };
+  }
 
   const runner = createAutoTaskRunner({
     locator,
@@ -117,6 +127,16 @@ export function installAutoTaskController(
     options: readOptions,
     configData: () => options.cardConfigSource?.getAutoTaskData() ?? null
   });
+
+  try {
+    mountAutoTaskProbe(globalObject as Window, () => probeAutoTaskRuntime(
+      locator,
+      options.cardConfigSource?.getAutoTaskData() ?? null,
+      probeRuleContext()
+    ));
+  } catch (error) {
+    console.warn('[自动领取] 探测接口挂载失败:', error);
+  }
 
   function readOptions(): AutoTaskOptions {
     return {
@@ -165,8 +185,7 @@ export function installAutoTaskController(
   }
 
   function managersReady(): boolean {
-    return Boolean(locator.dispatcher() && locator.manager('TaskManager')
-      && locator.manager('ActivityManager') && locator.manager('NewFuLiManager'));
+    return Boolean(locator.dispatcher() && locator.manager('TaskManager') && locator.manager('ActivityManager'));
   }
 
   function mergePayload(left: AutoTaskPayload | null, right: AutoTaskPayload): AutoTaskPayload {
@@ -263,28 +282,28 @@ export function installAutoTaskController(
     if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule(reason, true);
   }
 
-  function readArrivedAccountId(): string {
-    try {
-      const ctor = globalObject.Laya?.ClassUtils?.getClass?.('UserData') as { Self?: unknown } | undefined;
-      const self = ctor?.Self;
-      if (!self || typeof self !== 'object') return '';
-      const record = self as Record<string, unknown>;
-      const id = record.clientId ?? record.ClientId ?? record.ClientID;
-      const nickname = record.nickname ?? record.NickName;
-      if (!isUsableAccountId(id) || !isPresent(nickname)) return '';
-      return String(id).trim();
-    } catch {
-      return '';
-    }
-  }
-
-  // 账号资料到了领一轮。同一账号再到达不重复领，换号再领。
-  // 总开关关着只记住账号，不领。管理器未就绪由调度自己等，避免启动时再领一轮。
+  // 账号到了领一轮。同一账号不重复领，换号再领。
   function noteAccountArrival(): void {
-    const id = readArrivedAccountId();
+    const id = resolveGameAccountId(globalObject, locator);
     if (!id || id === loginAccountId) return;
     loginAccountId = id;
     if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('login', true);
+  }
+
+  function periodicAutoTask(): void {
+    if (!configStore.get(AUTO_TASK_ENABLED_KEY) || tasks.disposed) return;
+    if (!resolveGameAccountId(globalObject, locator)) return;
+    const time = now();
+    if (lastPeriodicScheduleAt && time - lastPeriodicScheduleAt < PERIODIC_AUTO_TASK_MS) return;
+    if (status.phase === 'running') return;
+    if (schedule('timer', false)) lastPeriodicScheduleAt = time;
+  }
+
+  function armPeriodicAutoTask(delayMs = PERIODIC_AUTO_TASK_FIRST_MS): void {
+    tasks.later(() => {
+      periodicAutoTask();
+      if (!tasks.disposed) armPeriodicAutoTask(PERIODIC_AUTO_TASK_MS);
+    }, delayMs);
   }
 
   function watchAccount(): void {
@@ -304,7 +323,22 @@ export function installAutoTaskController(
     }
   }
 
+  const onAutoTaskConfigReady = () => {
+    if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('auto', true);
+  };
+  globalObject.addEventListener?.('xiaochao-autotask-config', onAutoTaskConfigReady);
+  unsubscribes.push(() => globalObject.removeEventListener?.('xiaochao-autotask-config', onAutoTaskConfigReady));
+
   watchAccount();
+  armPeriodicAutoTask();
+
+  if (configStore.get(AUTO_TASK_ENABLED_KEY) && resolveGameAccountId(globalObject, locator)) {
+    tasks.later(() => {
+      if (!configStore.get(AUTO_TASK_ENABLED_KEY) || tasks.disposed) return;
+      if (!resolveGameAccountId(globalObject, locator)) return;
+      schedule('auto', true);
+    }, SCHEDULE_DELAY_MS);
+  }
 
   unsubscribes.push(gameEvents.subscribe((event) => {
     if (event.type === 'game-ended') onGameEnded();
@@ -346,6 +380,14 @@ export function installAutoTaskController(
       running = false;
       pending = null;
       setStatus({ phase: 'idle', message: '已卸载' });
+      const host = globalObject as Window & {
+        __XC_PROBE_AUTO_TASK__?: () => unknown;
+        __xcProbeAutoTask?: () => unknown;
+      };
+      delete host.__XC_PROBE_AUTO_TASK__;
+      delete host.__xcProbeAutoTask__;
+      const bridge = (globalObject as unknown as Record<string, unknown>).__XIAOCHAO_ENGINEERING__;
+      if (bridge && typeof bridge === 'object') delete (bridge as Record<string, unknown>).probeAutoTask;
     }
   };
 }

@@ -66,6 +66,13 @@ export function locateGameEventDispatcher(globalObject: GameRuntimeWindow): Unkn
   return cachedDispatcher;
 }
 
+/** 分发器单例晚于小抄启动时才可用，重新解析避免一直挂在旧引用上。 */
+export function refreshGameEventDispatcher(globalObject: GameRuntimeWindow): UnknownRecord | null {
+  cachedDispatcher = null;
+  nextDispatcherLookupAt = 0;
+  return locateGameEventDispatcher(globalObject);
+}
+
 function readGameEventDispatcher(globalObject: GameRuntimeWindow): unknown {
   const classUtils = globalObject.Laya?.ClassUtils;
   try {

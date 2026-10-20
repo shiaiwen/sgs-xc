@@ -9,12 +9,12 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
-import { ROGUE_HIDE_STORY_KEY } from './rogue-settings.ts';
+import { SHANHETU_HIDE_STORY_KEY } from './shanhetu-settings.ts';
 
 const STORY_WINDOW = 'RogueChapterStoryWindow';
 /** 运行时自检用假窗名：走与真对白相同的 Close 路径，不调游戏 ShowWindow 原实现。 */
 const STORY_PROBE_WINDOW = '__XIAOCHAO_STORY_PROBE__';
-const STORY_READY_FLAG = '__XIAOCHAO_ROGUE_STORY_READY__';
+const STORY_READY_FLAG = '__XIAOCHAO_SHANHETU_STORY_READY__';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -55,11 +55,11 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
     && typeof (value as PromiseLike<unknown>).then === 'function';
 }
 
-export interface RogueStoryController {
+export interface ShanhetuStoryController {
   dispose(): void;
 }
 
-export interface RogueStoryOptions {
+export interface ShanhetuStoryOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
 }
@@ -69,10 +69,10 @@ export interface RogueStoryOptions {
  * 若 `rogue.hideStory` 开启则 `Close`；关闭时原样返回，对白正常显示。
  * 只认 configStore，不读写 XC / 旧 DOM / 旧存储键。
  */
-export function installRogueStoryController(
+export function installShanhetuStoryController(
   configStore: XiaochaoConfigStore,
-  options: RogueStoryOptions = {}
-): RogueStoryController {
+  options: ShanhetuStoryOptions = {}
+): ShanhetuStoryController {
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const patcher = createMethodPatcher();
@@ -80,7 +80,7 @@ export function installRogueStoryController(
   let disposed = false;
   let patched = false;
 
-  const isOn = () => configStore.get(ROGUE_HIDE_STORY_KEY) === true;
+  const isOn = () => configStore.get(SHANHETU_HIDE_STORY_KEY) === true;
 
   function later(callback: () => void, delay = 0): void {
     if (disposed) return;
@@ -173,7 +173,7 @@ export function installRogueStoryController(
     });
   }
 
-  const unsubscribe = configStore.subscribe(ROGUE_HIDE_STORY_KEY, ({ value }) => {
+  const unsubscribe = configStore.subscribe(SHANHETU_HIDE_STORY_KEY, ({ value }) => {
     if (value) closeStoryWindows();
   });
 

@@ -8,6 +8,11 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
+import {
+  isValidGameAccountId,
+  readUserDataSelf,
+  resolveGameAccountId
+} from '../../runtime/game-account-session.ts';
 import { createTaskScope } from '../skin-background/skin-runtime.ts';
 import { createAutoTaskWindows } from '../auto-task/auto-task-windows.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
@@ -59,66 +64,6 @@ function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
-}
-
-function isValidAccountId(value: unknown): boolean {
-  if (value == null) return false;
-  const text = String(value).trim();
-  return text.length > 0 && text !== '0';
-}
-
-/** 账号编号。当前用户在 UserData.Self.clientId，类表上不一定能直接拿到。 */
-function accountId(
-  userDataSelf: UnknownRecord | null,
-  locator: LayaObjectLocator
-): string {
-  const manager = locator.manager('UserInfoManger');
-  const managerSelf = asRecord(manager?.Self) ?? asRecord(manager?.self);
-  const value = userDataSelf?.clientId
-    ?? userDataSelf?.ClientId
-    ?? userDataSelf?.ClientID
-    ?? managerSelf?.clientId
-    ?? managerSelf?.ClientId
-    ?? managerSelf?.ClientID
-    ?? manager?.clientId
-    ?? manager?.ClientId
-    ?? manager?.userID
-    ?? manager?.UserID;
-  return isValidAccountId(value) ? String(value).trim() : '';
-}
-
-/**
- * UserData 不在管理器事件表里。生日祝福窗不走 Init，调用 refreshIcon 后
- * userData 才指向当前用户。静态 Self 挂在 userData 的构造函数上。
- * 窗口未挂到舞台时立刻关掉。
- */
-function readUserDataSelf(globalObject: LayaRuntimeWindow): UnknownRecord | null {
-  const classUtils = globalObject.Laya?.ClassUtils as {
-    getClass?: (name: string) => { Self?: unknown };
-    getInstance?: (name: string, args?: unknown) => UnknownRecord | null;
-  } | undefined;
-  if (!classUtils) return null;
-  const direct = asRecord(classUtils.getClass?.('UserData')?.Self);
-  if (direct?.clientId || direct?.ClientId || direct?.ClientID) return direct;
-  let wish: UnknownRecord | null = null;
-  try {
-    wish = asRecord(classUtils.getInstance?.('BirthdayWishWin', null));
-    if (typeof wish?.refreshIcon === 'function') (wish.refreshIcon as () => void).call(wish);
-  } catch {
-    wish = null;
-  }
-  const userData = asRecord(wish?.userData);
-  const ctor = userData ? asRecord(Object.getPrototypeOf(userData)?.constructor) : null;
-  const self = asRecord(ctor?.Self) ?? userData;
-  if (wish && !wish.parent) {
-    try {
-      if (typeof wish.Close === 'function') (wish.Close as () => void).call(wish);
-      else if (typeof wish.destroy === 'function') (wish.destroy as (all?: boolean) => void).call(wish, true);
-    } catch {
-      // 临时窗口关掉失败不影响读取账号。
-    }
-  }
-  return self;
 }
 
 /** 规范化远程返回的码列表：去空、去重、保序。 */
@@ -212,11 +157,13 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
 
   function currentAccountId(): string {
     const cachedId = cachedUserDataSelf?.clientId ?? cachedUserDataSelf?.ClientId ?? cachedUserDataSelf?.ClientID;
-    if (isValidAccountId(cachedId)) return accountId(cachedUserDataSelf, locator);
+    if (isValidGameAccountId(cachedId)) {
+      return resolveGameAccountId(globalObject, locator, cachedUserDataSelf);
+    }
     const found = readUserDataSelf(globalObject);
     const foundId = found?.clientId ?? found?.ClientId ?? found?.ClientID;
-    if (isValidAccountId(foundId)) cachedUserDataSelf = found;
-    return accountId(cachedUserDataSelf, locator);
+    if (isValidGameAccountId(foundId)) cachedUserDataSelf = found;
+    return resolveGameAccountId(globalObject, locator, cachedUserDataSelf);
   }
 
   /** GET 远程礼包码接口，校验 ok 字段后返回码数组。 */

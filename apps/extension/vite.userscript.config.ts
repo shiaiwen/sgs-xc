@@ -118,8 +118,10 @@ function mountUserscriptStyle(css: string): void {
  * 开发脚本在页面脚本之前执行。原挂载会用带下划线的策略名，
  * 浏览器直接拒绝，整个脚本停在这一行。这里改成合法名字，并等到节点出现再插入。
  */
+const DEV_USERSCRIPT_MOUNT_BROKEN =
+  /if \(window\.trustedTypes\)[\s\S]*?\(document\.head \|\| document\.documentElement\)\.append\(script\);/;
+
 function patchDevUserscriptMount(): Plugin {
-  const broken = 'if (window.trustedTypes) script.src = window.trustedTypes.createPolicy(key, { createScriptURL: (input) => input }).createScriptURL(entrySrc);\n\telse script.src = entrySrc;\n\t(document.head || document.documentElement).append(script);';
   const fixed = `try {
 \t\tconst policy = window.trustedTypes && window.trustedTypes.createPolicy('xc-monkey', { createScriptURL: (input) => input });
 \t\tscript.src = policy ? policy.createScriptURL(entrySrc) : entrySrc;
@@ -143,14 +145,19 @@ function patchDevUserscriptMount(): Plugin {
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (!req.url?.includes('/__vite-plugin-monkey.install.user.js')) {
+        const path = req.url?.split('?')[0] ?? '';
+        if (path !== '/__vite-plugin-monkey.install.user.js' && path !== '/xiaochao-dev.user.js') {
           next();
           return;
         }
+        res.setHeader(
+          'Content-Disposition',
+          'attachment; filename="xiaochao-dev.user.js"'
+        );
         const end = res.end.bind(res);
         res.end = ((chunk?: unknown, encoding?: unknown, callback?: unknown) => {
           const text = Buffer.isBuffer(chunk) || typeof chunk === 'string'
-            ? String(chunk).replace(broken, fixed)
+            ? String(chunk).replace(DEV_USERSCRIPT_MOUNT_BROKEN, fixed)
             : chunk;
           return end(text as never, encoding as never, callback as never);
         }) as typeof res.end;
@@ -160,21 +167,85 @@ function patchDevUserscriptMount(): Plugin {
   };
 }
 
+const isDevUserscriptBundle = process.env.XC_USERSCRIPT_DEV === '1';
+
+/** 开发期安装引导页，配合 vite-plugin-monkey 热更新安装脚本。 */
+function devUserscriptInstallPage(port: number): Plugin {
+  const installPath = '/__vite-plugin-monkey.install.user.js';
+  const installUrl = `http://127.0.0.1:${port}${installPath}`;
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小抄油猴开发安装</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
+    a.button { display: inline-block; margin: 1rem 0; padding: 0.75rem 1.25rem; background: #c45a2c; color: #fff; text-decoration: none; border-radius: 8px; }
+    code { word-break: break-all; background: #f4f4f4; padding: 0.15rem 0.35rem; border-radius: 4px; }
+    ol { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <h1>小抄本地开发 · 油猴安装</h1>
+  <p>请用已安装 <strong>Tampermonkey</strong> 的 Chrome 或 Edge 打开本页，不要用 Cursor 内置浏览器。</p>
+  <p><a class="button" href="${installPath}">安装开发脚本</a></p>
+  <p>安装地址：<code>${installUrl}</code></p>
+  <p>改代码后保存，<strong>刷新游戏页</strong>即可；终端保持运行。</p>
+  <h2>没有出现「安装」时</h2>
+  <ol>
+    <li>点浏览器右上角油猴图标，确认扩展已启用。</li>
+    <li>油猴 → 管理面板 → 实用工具 → <strong>从 URL 安装</strong>，粘贴上面的安装地址。</li>
+    <li>关掉线上脚本，只保留 <code>server:三国杀小抄</code>。</li>
+  </ol>
+</body>
+</html>`;
+  const attach = (server: { middlewares: { use: (fn: (req: { url?: string }, res: {
+    statusCode: number;
+    setHeader: (k: string, v: string) => void;
+    end: (body?: string) => void;
+  }, next: () => void) => void) => void } }) => {
+    server.middlewares.use((req, res, next) => {
+      const reqPath = req.url?.split('?')[0] ?? '';
+      if (reqPath !== '/userscript-dev') {
+        next();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(html);
+    });
+  };
+  return {
+    name: 'xiaochao-dev-install-page',
+    configureServer: attach
+  };
+}
+
 const xiaochaoVersion = String(
   JSON.parse(readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')).version || '0.0.0'
 );
+
+const devPort = Number(process.env.XC_USERSCRIPT_DEV_PORT || 5173);
 
 export default defineConfig({
   define: {
     __XIAOCHAO_VERSION__: JSON.stringify(xiaochaoVersion)
   },
+  server: {
+    host: '127.0.0.1',
+    port: devPort,
+    strictPort: true,
+    open: '/userscript-dev'
+  },
   plugins: [
+    devUserscriptInstallPage(devPort),
     vue(),
     patchDevUserscriptMount(),
     monkey({
       entry: 'src/entries/userscript.ts',
       userscript: {
-        name: '三国杀小抄',
+        name: isDevUserscriptBundle ? 'dev:三国杀小抄' : '三国杀小抄',
         namespace: 'https://95chong.cn/',
         version: xiaochaoVersion,
         description: '三国杀OL辅助插件',

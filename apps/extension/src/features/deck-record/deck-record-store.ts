@@ -63,6 +63,7 @@ const MAX_MOVEMENT_HISTORY = 120;
 const MAX_DISCARD_HISTORY = 160;
 const PERSISTED_SNAPSHOT_KEY = 'XC::vueDeckRecordSnapshot';
 const PERSISTED_SNAPSHOT_MAX_AGE = 3 * 60 * 60 * 1000;
+const PERSIST_DEBOUNCE_MS = 1500;
 
 /**
  * 保存原始移动记录并维护可靠的弃牌集合。
@@ -74,7 +75,23 @@ export function createDeckRecordStore(
   drawPileSource: DrawPileOrderSource | null = null
 ): DeckRecordStore {
   const restoredSnapshot = readPersistedSnapshot(storage);
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let keepSnapshotOnFirstGameStart = Boolean(restoredSnapshot);
+
+  const queuePersistSnapshot = (immediate = false) => {
+    if (!storage) return;
+    if (immediate) {
+      if (persistTimer) clearTimeout(persistTimer);
+      persistTimer = null;
+      persistSnapshot(storage, snapshot);
+      return;
+    }
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      persistSnapshot(storage, snapshot);
+    }, PERSIST_DEBOUNCE_MS);
+  };
   let sequence = restoredSnapshot?.movements.at(-1)?.sequence ?? 0;
   let turnCount = 0;
   let round = 0;
@@ -116,7 +133,7 @@ export function createDeckRecordStore(
       deckBottomCardIds: parts.deckBottomCardIds ?? [...snapshot.deckBottomCardIds],
       ...sourcedDrawPile()
     });
-    persistSnapshot(storage, snapshot);
+    queuePersistSnapshot();
     listeners.forEach((listener) => listener(snapshot));
   };
 
@@ -150,7 +167,7 @@ export function createDeckRecordStore(
       clearCurrentTurnDiscards();
       observedKnownDiscardIds = new Set(drawPileSource?.getKnownDiscardCardIds?.() ?? []);
       snapshot = freezeSnapshot(createEmptySnapshot());
-      persistSnapshot(storage, snapshot);
+      queuePersistSnapshot(true);
       listeners.forEach((listener) => listener(snapshot));
       return;
     }
@@ -255,6 +272,8 @@ export function createDeckRecordStore(
       return () => listeners.delete(listener);
     },
     clear() {
+      if (persistTimer) clearTimeout(persistTimer);
+      persistTimer = null;
       stopGameEvents();
       stopDrawPileSource?.();
       listeners.clear();

@@ -1,15 +1,15 @@
 /**
- * 山河地图配置源适配：从 CardConfigSource 取 RogueMapConfigData。
+ * 山河地图配置源适配：从 CardConfigSource 取 ShanhetuMapConfigData。
  */
 
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
 import {
-  isRogueMapConfigReady,
-  type RogueMapConfigData
-} from './rogue-map-config-data.ts';
+  isShanhetuMapConfigReady,
+  type ShanhetuMapConfigData
+} from './shanhetu-map-config-data.ts';
 
-export interface RogueMapConfigSource {
-  get(): RogueMapConfigData | null;
+export interface ShanhetuMapConfigSource {
+  get(): ShanhetuMapConfigData | null;
   ready(): boolean;
   dispose(): void;
 }
@@ -18,12 +18,12 @@ export interface RogueMapConfigSource {
  * 山河配置挂在卡牌配置同源加载上（同一份 Config_w.sgs / 同一套解码库），
  * 避免再独立轮询解码库导致「卡牌已就绪、山河一直超时」。
  */
-export function createRogueMapConfigSourceFromCardConfig(
-  cardConfigSource: Pick<CardConfigSource, 'getRogueMapData'>
-): RogueMapConfigSource {
+export function createShanhetuMapConfigSourceFromCardConfig(
+  cardConfigSource: Pick<CardConfigSource, 'getShanhetuMapData'>
+): ShanhetuMapConfigSource {
   return {
-    get: () => cardConfigSource.getRogueMapData(),
-    ready: () => isRogueMapConfigReady(cardConfigSource.getRogueMapData()),
+    get: () => cardConfigSource.getShanhetuMapData(),
+    ready: () => isShanhetuMapConfigReady(cardConfigSource.getShanhetuMapData()),
     dispose() {
       // 生命周期由 CardConfigSource 管理。
     }

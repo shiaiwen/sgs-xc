@@ -21,7 +21,7 @@ export interface IncomingHandLabelInput {
   seatLabel?: (seatId: number) => string;
 }
 
-export function legacyIncomingHandLabel(input: IncomingHandLabelInput): string | null {
+export function buildIncomingHandSourceLabel(input: IncomingHandLabelInput): string | null {
   if (!input.spellId || input.moveType >= 255) return null;
   const name = readSpellName(input.spellId);
   if (!name) return null;

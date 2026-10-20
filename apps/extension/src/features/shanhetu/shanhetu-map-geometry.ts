@@ -7,7 +7,7 @@ import {
   type RogueCityGeometry,
   type RogueCityMeta,
   type RogueRect
-} from './rogue-map-types.ts';
+} from './shanhetu-map-types.ts';
 
 type UnknownRecord = Record<string, unknown>;
 

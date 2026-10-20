@@ -24,7 +24,7 @@ import ClearRedDotSection from './settings/ClearRedDotSection.vue';
 import GuanxingEntry from './settings/GuanxingEntry.vue';
 import SkinBackgroundSettingsSection from './settings/SkinBackgroundSettingsSection.vue';
 import AutoTaskSettingsSection from './settings/AutoTaskSettingsSection.vue';
-import RogueSettingsSection from './settings/RogueSettingsSection.vue';
+import ShanhetuSettingsSection from './settings/ShanhetuSettingsSection.vue';
 import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue';
 import CustomBackgroundSection from './settings/CustomBackgroundSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -50,7 +50,7 @@ import type { DeckRecordStore } from '../features/deck-record/deck-record-store'
 import type { SkillAssistStore } from '../features/skill-assist/skill-assist-store';
 import type { PeixiuRouteStore } from '../features/extra-assist/peixiu-route-store';
 import type { AutoTaskController } from '../features/auto-task';
-import type { RogueController } from '../features/rogue';
+import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
 import type { XiaochaoPanelLayout } from './mount-xiaochao-app';
 import { showToast } from './toast/show-toast';
@@ -78,7 +78,7 @@ const props = defineProps<{
   turnStatusStore: TurnStatusStore;
   autoTaskController: AutoTaskController | null;
   clearRedDots: () => { found: boolean; count: number };
-  rogueController: RogueController | null;
+  shanhetuController: ShanhetuController | null;
   updateNoticeController: UpdateNoticeController | null;
 }>();
 /** 折叠态只保留标题栏，做成状态胶囊。 */
@@ -526,11 +526,11 @@ function handleResizeStart(event: PointerEvent): void {
       v-show="!isCollapsed && panel.activeTabId.value === 'others'"
       class="xiaochao-panel__content xiaochao-others-entry"
     >
-      <RogueSettingsSection
+      <ShanhetuSettingsSection
         :config-store="configStore"
-        :open-shop="() => rogueController?.openShop() ?? false"
-        :get-shop-preview="() => rogueController?.getShopPreview() ?? []"
-        :subscribe-shop-preview="(listener) => rogueController?.subscribeShopPreview(listener) ?? (() => {})"
+        :open-shop="() => shanhetuController?.openShop() ?? false"
+        :get-shop-preview="() => shanhetuController?.getShopPreview() ?? []"
+        :subscribe-shop-preview="(listener) => shanhetuController?.subscribeShopPreview(listener) ?? (() => {})"
       />
       <section class="xiaochao-settings-section" aria-label="工具栏">
         <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">

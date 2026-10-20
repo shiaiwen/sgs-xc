@@ -6,8 +6,8 @@ import {
   ROGUE_LINE_BREAK,
   ROGUE_MAP_STYLE,
   type RogueMapPanelLayout
-} from './rogue-map-types.ts';
-import { dashSegments } from './rogue-map-geometry.ts';
+} from './shanhetu-map-types.ts';
+import { dashSegments } from './shanhetu-map-geometry.ts';
 
 type UnknownRecord = Record<string, unknown>;
 

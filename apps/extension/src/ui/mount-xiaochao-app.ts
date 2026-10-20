@@ -15,7 +15,7 @@ import type { SkillAssistStore } from '../features/skill-assist/skill-assist-sto
 import type { PeixiuRouteStore } from '../features/extra-assist/peixiu-route-store';
 import type { TurnStatusStore } from '../features/turn-status/turn-status-store';
 import type { AutoTaskController } from '../features/auto-task';
-import type { RogueController } from '../features/rogue';
+import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
 
 export interface XiaochaoPanelLayout {
@@ -47,7 +47,7 @@ export function mountXiaochaoApp(
   turnStatusStore: TurnStatusStore,
   autoTaskController: AutoTaskController | null = null,
   clearRedDots: () => { found: boolean; count: number } = () => ({ found: false, count: 0 }),
-  rogueController: RogueController | null = null,
+  shanhetuController: ShanhetuController | null = null,
   updateNoticeController: UpdateNoticeController | null = null
 ): MountedXiaochaoApp {
   const removePanelShellStyles = installPanelShellStyles();
@@ -66,7 +66,7 @@ export function mountXiaochaoApp(
     turnStatusStore,
     autoTaskController,
     clearRedDots,
-    rogueController,
+    shanhetuController,
     updateNoticeController
   });
   app.mount(rootElement);

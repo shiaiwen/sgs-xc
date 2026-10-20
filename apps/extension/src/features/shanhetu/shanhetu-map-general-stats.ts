@@ -2,7 +2,7 @@
  * 山河图武将战力/属性统计辅助：从配置与场景数据汇总展示用数值。
  */
 
-import type { RogueMapConfigData, RogueMapRuntime } from './rogue-map-types.ts';
+import type { ShanhetuMapConfigData, RogueMapRuntime } from './shanhetu-map-types.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -121,7 +121,7 @@ interface GrowContext {
 }
 
 function buildGrowContext(
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   runtime: RogueMapRuntime
 ): GrowContext {
   const difficulty = num(runtime.difficulty);
@@ -148,7 +148,7 @@ function buildGrowContext(
 }
 
 function readNumGrowRow(
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   fight: UnknownRecord,
   cityId: string | number | undefined,
   grow: GrowContext
@@ -170,7 +170,7 @@ function readNumGrowRow(
 /** 武将属性行：血、牌、摸、杀、甲。 */
 export function formatGeneralStatsLine(
   general: UnknownRecord,
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   runtime: RogueMapRuntime,
   fight: UnknownRecord,
   cityId?: string | number

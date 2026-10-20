@@ -128,7 +128,7 @@ export function readSeatStateFromGameScene(
       spectating: !selfSeat,
       nationWar: gameScene?.isGuoZhan === true,
       doudizhu: gameScene?.isDouDiZhu === true,
-      rogue: gameScene?.isShanHeTu === true,
+      shanhetu: gameScene?.isShanHeTu === true,
       rogue1v1: gameScene?.isRoguelike1v1 === true,
       swjg: gameScene?.isSWJG === true
     }),

@@ -10,7 +10,7 @@ import {
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import type { RoguePlotMeta } from './rogue-map-types.ts';
+import type { RoguePlotMeta } from './shanhetu-map-types.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -38,22 +38,22 @@ export const ROGUE_SHOP_TYPE_LABELS: Readonly<Record<number, string>> = Object.f
   5: '装备'
 });
 
-export interface RogueShopPreviewItem {
+export interface ShanhetuShopPreviewItem {
   id: string;
   label: string;
   title: string;
   level: number;
 }
 
-export type RogueShopPreviewListener = (items: readonly RogueShopPreviewItem[]) => void;
+export type ShanhetuShopPreviewListener = (items: readonly ShanhetuShopPreviewItem[]) => void;
 
-export interface RogueShopController {
+export interface ShanhetuShopController {
   /** 打开山河图集市窗口，并启用集市透视（强制 shopData.bShow）。 */
   openShop(): boolean;
   /** 当前集市透视列表（商品或默认方案）。 */
-  getPreview(): readonly RogueShopPreviewItem[];
+  getPreview(): readonly ShanhetuShopPreviewItem[];
   /** 订阅透视列表变化。 */
-  subscribePreview(listener: RogueShopPreviewListener): () => void;
+  subscribePreview(listener: ShanhetuShopPreviewListener): () => void;
   /**
    * 协议分发前改写：
    * dataMark bit4 时强制 `shopData.bShow`；缺 shopData 则 `RogueLikeDataReq`；
@@ -63,10 +63,10 @@ export interface RogueShopController {
   dispose(): void;
 }
 
-export interface RogueShopOptions {
+export interface ShanhetuShopOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
-  cardConfigSource?: Pick<CardConfigSource, 'getRogueMapData'>;
+  cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData'>;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -149,13 +149,13 @@ function isRplotReady(rplot: Record<string, RoguePlotMeta> | null | undefined): 
  * 用 Rplot 解析 shopData.itemId。
  * 无数据 / 解析不出商品时返回空列表（界面不展示占位方案名）。
  */
-export function buildRogueShopPreviewItems(
+export function buildShanhetuShopPreviewItems(
   itemIds: unknown,
   rplot: Record<string, RoguePlotMeta> | null | undefined
-): RogueShopPreviewItem[] {
+): ShanhetuShopPreviewItem[] {
   const ids = asArray(itemIds);
   const table = rplot && typeof rplot === 'object' ? rplot : {};
-  const goods: RogueShopPreviewItem[] = [];
+  const goods: ShanhetuShopPreviewItem[] = [];
   for (const rawId of ids) {
     if (rawId == null || rawId === '') continue;
     const id = String(rawId);
@@ -181,21 +181,21 @@ export function buildRogueShopPreviewItems(
 /**
  * 打开集市并启用透视：强制 bShow，并用商品 id 刷新列表。
  */
-export function installRogueShopController(
-  options: RogueShopOptions = {}
-): RogueShopController {
+export function installShanhetuShopController(
+  options: ShanhetuShopOptions = {}
+): ShanhetuShopController {
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const cardConfigSource = options.cardConfigSource;
   const patcher = createMethodPatcher();
   const timers = new Set<ReturnType<typeof setTimeout>>();
-  const previewListeners = new Set<RogueShopPreviewListener>();
+  const previewListeners = new Set<ShanhetuShopPreviewListener>();
   let disposed = false;
   /** 同步包里原始 bShow；为 false 时购买提示改为“月份未到”。 */
   let originalShopVisible: boolean | null = null;
   /** 避免重复发送 RogueLikeDataReq。 */
   let shopDataRequested = false;
-  let previewItems: RogueShopPreviewItem[] = [];
+  let previewItems: ShanhetuShopPreviewItem[] = [];
   /**
    * 同步包先于 Rplot 到达时暂存 itemId；Rplot 还是空对象时
    * 为 0 时解析不出商品——我们不展示占位方案，因此等配置就绪后再刷一次。
@@ -203,7 +203,7 @@ export function installRogueShopController(
   let pendingShopItemIds: unknown[] | null = null;
   let rplotWait: Promise<void> | null = null;
 
-  function publishPreview(next: RogueShopPreviewItem[]): void {
+  function publishPreview(next: ShanhetuShopPreviewItem[]): void {
     previewItems = next;
     for (const listener of previewListeners) {
       try {
@@ -244,21 +244,21 @@ export function installRogueShopController(
   function ensureRplotThenRefresh(): void {
     if (rplotWait) return;
     rplotWait = poll(() => {
-      const rplot = cardConfigSource?.getRogueMapData()?.Rplot ?? null;
+      const rplot = cardConfigSource?.getShanhetuMapData()?.Rplot ?? null;
       return isRplotReady(rplot) ? rplot : null;
     }).then((rplot) => {
       rplotWait = null;
       if (!rplot || !pendingShopItemIds || disposed) return;
       const ids = pendingShopItemIds;
       pendingShopItemIds = null;
-      publishPreview(buildRogueShopPreviewItems(ids, rplot));
+      publishPreview(buildShanhetuShopPreviewItems(ids, rplot));
     });
   }
 
   function refreshPreviewFromShopData(shopData: UnknownRecord): void {
     const itemIds = shopData.itemId ?? shopData.ItemId;
     const ids = asArray(itemIds);
-    const rplot = cardConfigSource?.getRogueMapData()?.Rplot ?? null;
+    const rplot = cardConfigSource?.getShanhetuMapData()?.Rplot ?? null;
     // 有商品 id 但 Rplot 尚未加载：空列表不推占位，等配置就绪后再解析。
     if (ids.length && !isRplotReady(rplot)) {
       pendingShopItemIds = ids;
@@ -267,7 +267,7 @@ export function installRogueShopController(
       return;
     }
     pendingShopItemIds = null;
-    publishPreview(buildRogueShopPreviewItems(itemIds, rplot));
+    publishPreview(buildShanhetuShopPreviewItems(itemIds, rplot));
   }
 
   /** 强制可见，并记下协议里的原始 bShow。 */

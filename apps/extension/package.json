@@ -1,6 +1,6 @@
 {
   "name": "SGSOL",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "packageId": 1,
   "IsTest": false,
   "IsDebug": true,
@@ -59,7 +59,7 @@
     "deploy": "node tools/deploy-release.js",
     "dev": "npm run dev:electron",
     "dev:electron": "node tools/dev.js",
-    "dev:userscript": "vite --config vite.userscript.config.ts",
+    "dev:userscript": "node tools/dev-userscript.js",
     "dev:ui": "vite --config vite.ui.config.ts",
     "typecheck": "node -e \"console.log('TypeScript checking is temporarily disabled.')\""
   },
@@ -68,6 +68,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitejs/plugin-vue": "^6.0.9",
     "electron": "^44.3.0",
     "esbuild": "^0.28.2",

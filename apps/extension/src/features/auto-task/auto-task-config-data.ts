@@ -6,8 +6,12 @@ type UnknownRecord = Record<string, unknown>;
 
 /** 自动任务需要的静态配置（来自 Config_w.sgs）。 */
 export interface AutoTaskConfigData {
-  /** 当前有效的任务 id：sys_h5_quest / ff_task_daily / gn_new_fuli。 */
+  /** 当前有效的任务 id：sys_h5_quest / ff_task_daily / gn_new_fuli / gn_newoldBack。 */
   taskIds: ReadonlySet<number>;
+  /** 当期武将福利任务 id，来自 gn_new_fuli.sgs 的 taskteam。 */
+  newFuliTaskIds: ReadonlySet<number>;
+  /** 新武将回归等入口可能藏起来的任务 id，来自 gn_newoldBack.sgs。 */
+  returnUnlockTaskIds: ReadonlySet<number>;
   /** 武将灯系列 id：cha_dbs_general_series。 */
   seriesList: readonly number[];
   /** 物品 id → 名称：sys_gs_dbs_fs_goodsbaseinfo。 */
@@ -18,6 +22,7 @@ export const AUTO_TASK_CONFIG_FILES = [
   'sys_h5_quest.sgs',
   'ff_task_daily.sgs',
   'gn_new_fuli.sgs',
+  'gn_newoldBack.sgs',
   'cha_dbs_general_series.sgs',
   'sys_gs_dbs_fs_goodsbaseinfo.sgs'
 ] as const;
@@ -71,8 +76,44 @@ export function buildAutoTaskConfigData(
       addTaskId(record.taskid);
     }
   }
-  for (const team of asArray(rootOf(files['gn_new_fuli.sgs'])?.taskteam)) {
-    if (isConfigEntryActive(team, today)) addTaskId(asRecord(team)?.taskid);
+  const newFuliTaskIds = new Set<number>();
+  const addNewFuliTaskId = (value: unknown) => {
+    const id = Number(value);
+    if (!Number.isFinite(id) || id <= 0) return;
+    newFuliTaskIds.add(id);
+    taskIds.add(id);
+  };
+  const newFuliRoot = rootOf(files['gn_new_fuli.sgs']);
+  for (const key of ['taskteam', 'TaskTeam', 'taskTeam']) {
+    for (const team of asArray(newFuliRoot?.[key])) {
+      const record = asRecord(team);
+      if (!record) continue;
+      if (!isConfigEntryActive(record, today)) continue;
+      addNewFuliTaskId(record.taskid ?? record.taskId ?? record.TaskId);
+    }
+  }
+  if (newFuliRoot) collectNestedTaskIds(newFuliRoot, newFuliTaskIds);
+
+  const returnUnlockTaskIds = new Set<number>();
+  const addReturnUnlockId = (value: unknown) => {
+    const id = Number(value);
+    if (!Number.isFinite(id) || id <= 0) return;
+    returnUnlockTaskIds.add(id);
+    taskIds.add(id);
+  };
+  const newOldBackRoot = rootOf(files['gn_newoldBack.sgs']);
+  if (newOldBackRoot) {
+    for (const key of [
+      'returnunlock', 'ReturnUnlock', 'returnUnlock', 'ReturnUnlockTask',
+      'task', 'Task', 'tasks', 'Tasks', 'taskteam', 'TaskTeam'
+    ]) {
+      for (const entry of asArray(newOldBackRoot[key])) {
+        const record = asRecord(entry);
+        if (!record || !isConfigEntryActive(record, today)) continue;
+        addReturnUnlockId(record.id ?? record.Id ?? record.taskid ?? record.taskId ?? record.TaskId);
+      }
+    }
+    collectReturnUnlockTaskIdsFromRoot(newOldBackRoot, today).forEach((id) => addReturnUnlockId(id));
   }
 
   const seriesList: number[] = [];
@@ -92,11 +133,60 @@ export function buildAutoTaskConfigData(
     if (Number.isFinite(id) && typeof record?.b === 'string') goodsNames.set(id, record.b);
   }
 
-  return { taskIds, seriesList, goodsNames };
+  for (const id of newFuliTaskIds) taskIds.add(id);
+
+  return { taskIds, newFuliTaskIds, returnUnlockTaskIds, seriesList, goodsNames };
 }
 
+/** 配置根节点可能是 root 或 Root。 */
 function rootOf(file: unknown): UnknownRecord | null {
-  return asRecord(asRecord(file)?.root);
+  const record = asRecord(file);
+  if (!record) return null;
+  return asRecord(record.Root) ?? asRecord(record.root);
+}
+
+/** gn_newoldBack 里带 gamemodel 的规则表，任务 id 在同一张表。 */
+/** gn_new_fuli 里 taskteam 可能嵌套，扫一遍带 taskid 的节点。 */
+function collectNestedTaskIds(value: unknown, out: Set<number>, depth = 0, seen?: WeakSet<object>): void {
+  if (depth > 6) return;
+  const record = asRecord(value);
+  if (!record) return;
+  const tracker = seen ?? new WeakSet<object>();
+  if (tracker.has(record)) return;
+  tracker.add(record);
+  const id = Number(record.taskid ?? record.taskId ?? record.TaskId);
+  if (Number.isFinite(id) && id > 0) out.add(id);
+  for (const child of Object.values(record)) {
+    if (Array.isArray(child)) child.forEach((item) => collectNestedTaskIds(item, out, depth + 1, tracker));
+    else collectNestedTaskIds(child, out, depth + 1, tracker);
+  }
+}
+
+function collectReturnUnlockTaskIdsFromRoot(root: UnknownRecord, today: string): number[] {
+  const ids: number[] = [];
+  const tryEntry = (entry: unknown) => {
+    const record = asRecord(entry);
+    if (!record) return;
+    const id = Number(record.id ?? record.Id ?? record.taskid ?? record.taskId ?? record.TaskId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    if (!isConfigEntryActive(record, today)) return;
+    ids.push(id);
+  };
+  for (const value of Object.values(root)) {
+    const arr = asArray(value);
+    if (arr.length === 0 || arr.length > 500) continue;
+    const looksLikeUnlockRules = arr.every((entry) => {
+      const record = asRecord(entry);
+      if (!record) return false;
+      const hasId = record.id != null || record.Id != null || record.taskid != null || record.taskId != null;
+      if (!hasId) return false;
+      return record.gamemodel != null || record.gameModel != null || record.GameModel != null
+        || record.Gamemodel != null;
+    });
+    if (!looksLikeUnlockRules) continue;
+    arr.forEach(tryEntry);
+  }
+  return ids;
 }
 
 function asArray(value: unknown): unknown[] {

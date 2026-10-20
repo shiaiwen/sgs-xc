@@ -10,9 +10,9 @@ import {
   type AutoTaskConfigFileName
 } from '../features/auto-task/auto-task-config-data.ts';
 import {
-  buildRogueMapConfigData,
-  type RogueMapConfigData
-} from '../features/rogue/rogue-map-config-data.ts';
+  buildShanhetuMapConfigData,
+  type ShanhetuMapConfigData
+} from '../features/shanhetu/shanhetu-map-config-data.ts';
 import type { ExtraAssistConfigData } from '../features/extra-assist/extra-assist-config-data.ts';
 import { buildExtraAssistConfigData } from '../features/extra-assist/extra-assist-config-data.ts';
 
@@ -33,7 +33,7 @@ export interface CardConfigSource {
   /** 自动任务用的任务 id、武将灯系列与物品名；配置未就绪时返回 null。 */
   getAutoTaskData(): AutoTaskConfigData | null;
   /** 山河地图透视表（hd_roguelike.sgs）；配置未就绪时返回 null。 */
-  getRogueMapData(): RogueMapConfigData | null;
+  getShanhetuMapData(): ShanhetuMapConfigData | null;
   /** 进阶辅助用的南华/许劭表（cha_spellextend.sgs）；配置未就绪时返回 null。 */
   getExtraAssistData(): ExtraAssistConfigData | null;
   /** 进阶辅助原始表，供控制器按需解析；配置未就绪时返回 null。 */
@@ -66,7 +66,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
   let dictionary: CardConfigDictionary | null = null;
   let spellIdsByName = new Map<string, number[]>();
   let autoTaskData: AutoTaskConfigData | null = null;
-  let rogueMapData: RogueMapConfigData | null = null;
+  let shanhetuMapData: ShanhetuMapConfigData | null = null;
   let extraAssistData: ExtraAssistConfigData | null = null;
   let spellExtendRaw: unknown = null;
   let disposed = false;
@@ -93,7 +93,14 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
         dictionary = result.cards;
         spellIdsByName = result.spellIdsByName;
         autoTaskData = result.autoTaskData;
-        rogueMapData = result.rogueMapData;
+        if (result.autoTaskData) {
+          try {
+            globalObject.dispatchEvent(new CustomEvent('xiaochao-autotask-config'));
+          } catch {
+            // 非浏览器环境忽略。
+          }
+        }
+        shanhetuMapData = result.shanhetuMapData;
         extraAssistData = result.extraAssistData;
         spellExtendRaw = result.spellExtendRaw;
         globalObject.__XIAOCHAO_OFFICIAL_CARD_DICTIONARY__ = result.cards;
@@ -119,8 +126,8 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
     getAutoTaskData() {
       return autoTaskData;
     },
-    getRogueMapData() {
-      return rogueMapData;
+    getShanhetuMapData() {
+      return shanhetuMapData;
     },
     getExtraAssistData() {
       return extraAssistData;
@@ -145,12 +152,12 @@ async function loadCardDictionary(
   cards: CardConfigDictionary;
   spellIdsByName: Map<string, number[]>;
   autoTaskData: AutoTaskConfigData | null;
-  rogueMapData: RogueMapConfigData | null;
+  shanhetuMapData: ShanhetuMapConfigData | null;
   extraAssistData: ExtraAssistConfigData | null;
   spellExtendRaw: unknown;
 }> {
   const archive = await codecs.loadZip(await downloadArchive(resolveConfigUrl(globalObject)));
-  const [playCards, spells, autoTaskData, rogueRaw, spellExtendRaw] = await Promise.all([
+  const [playCards, spells, autoTaskData, shanhetuRaw, spellExtendRaw] = await Promise.all([
     readConfigFile(archive, codecs, 'sys_playcard.sgs'),
     readConfigFile(archive, codecs, 'cha_spell.sgs'),
     loadAutoTaskData(archive, codecs),
@@ -164,13 +171,13 @@ async function loadCardDictionary(
     })
   ]);
   const cards = buildCardDictionary(playCards, spells);
-  let rogueMapData: RogueMapConfigData | null = null;
-  if (rogueRaw) {
+  let shanhetuMapData: ShanhetuMapConfigData | null = null;
+  if (shanhetuRaw) {
     try {
-      rogueMapData = buildRogueMapConfigData(rogueRaw, buildRogueNameTables(playCards, spells));
-      if (!Object.keys(rogueMapData.Rcity).length) {
+      shanhetuMapData = buildShanhetuMapConfigData(shanhetuRaw, buildShanhetuNameTables(playCards, spells));
+      if (!Object.keys(shanhetuMapData.Rcity).length) {
         console.warn('[xiaochao] 山河配置解析后 Rcity 为空');
-        rogueMapData = null;
+        shanhetuMapData = null;
       }
     } catch (error) {
       console.warn('[xiaochao] 山河配置解析失败', error);
@@ -188,7 +195,7 @@ async function loadCardDictionary(
     cards,
     spellIdsByName: buildSpellIdsByName(spells),
     autoTaskData,
-    rogueMapData,
+    shanhetuMapData,
     extraAssistData,
     spellExtendRaw
   };
@@ -213,7 +220,7 @@ async function loadAutoTaskData(archive: ZipArchive, codecs: GameConfigCodecs): 
 }
 
 /** 山河 Rplot 需要技能名 / 牌名；与卡牌字典同源解析。 */
-function buildRogueNameTables(playCards: unknown, spells: unknown): {
+function buildShanhetuNameTables(playCards: unknown, spells: unknown): {
   spells: Map<number, { name: string; desc: string }>;
   cards: Map<number, {
     name: string;

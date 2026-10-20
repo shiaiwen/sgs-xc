@@ -27,23 +27,33 @@ const values = reactive(Object.fromEntries(
 const unsubscribe = ALL_BLOCK_SETTINGS.map(({ key }) => props.configStore.subscribe(key, ({ value }) => {
   values[key] = value;
 }));
-const enabledCount = computed(() => ALL_BLOCK_SETTINGS.filter(({ key }) => values[key]).length);
-const allEnabled = computed(() => enabledCount.value === ALL_BLOCK_SETTINGS.length);
+const enabledCount = computed(() => ALL_BLOCK_SETTINGS.filter(({ key }) => values[key] === true).length);
+const allSelected = computed(() => enabledCount.value === ALL_BLOCK_SETTINGS.length);
 
 onBeforeUnmount(() => unsubscribe.forEach((stop) => stop()));
 
 function updateSetting(key, event) {
-  props.configStore.set(key, event.currentTarget.checked);
+  const checked = event.currentTarget.checked === true;
+  values[key] = checked;
+  props.configStore.set(key, checked);
 }
 
-function setAll(enabled) {
+function writeAll(resolveNext) {
+  const next = {};
+  for (const { key } of ALL_BLOCK_SETTINGS) next[key] = resolveNext(key) === true;
+  for (const { key } of ALL_BLOCK_SETTINGS) values[key] = next[key];
   for (const { key } of ALL_BLOCK_SETTINGS) {
-    props.configStore.set(key, enabled);
+    try {
+      props.configStore.set(key, next[key]);
+    } catch {
+      // 某一项的后续处理失败时，剩下的开关继续写。
+    }
   }
 }
 
-function toggleSelectAll() {
-  setAll(!allEnabled.value);
+function toggleAll() {
+  const enable = !allSelected.value;
+  writeAll(() => enable);
 }
 </script>
 
@@ -70,10 +80,10 @@ function toggleSelectAll() {
         <button
           type="button"
           class="xiaochao-block-select-btn"
-          :data-tooltip="allEnabled ? '关闭全部屏蔽项' : '开启全部屏蔽项'"
-          @click="toggleSelectAll"
+          :data-tooltip="allSelected ? '关闭全部屏蔽项' : '开启全部屏蔽项'"
+          @click="toggleAll"
         >
-          {{ allEnabled ? '一键取消' : '一键全选' }}
+          {{ allSelected ? '一键关闭' : '一键开启' }}
         </button>
       </div>
       <section
@@ -98,7 +108,7 @@ function toggleSelectAll() {
               <input
                 type="checkbox"
                 :aria-label="setting.label"
-                :checked="values[setting.key]"
+                :checked="values[setting.key] === true"
                 @change="updateSetting(setting.key, $event)"
               >
               <span class="xiaochao-block-switch__slider" />

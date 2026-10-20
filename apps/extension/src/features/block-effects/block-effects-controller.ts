@@ -2,7 +2,9 @@
  * 屏蔽特效/弹窗总控：按配置关闭广告、MVP、特效资源与协议字段改写。
  */
 
-import type { XiaochaoConfigStore } from '../../config/config-store.ts';
+import { CONFIG_CHANGE_EVENT, type XiaochaoConfigStore } from '../../config/config-store.ts';
+import { refreshGameEventDispatcher } from '../../features/seat-display/game-scene-locator.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
   createLayaObjectLocator,
   type LayaObjectLocator,
@@ -10,8 +12,16 @@ import {
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
-import { applyBlockMessageFilters } from './block-message-filters.ts';
-import { collectMarqueeUis, createMarqueeVisibilityBlocker } from './marquee-visibility.ts';
+import { applyBlockMessageFilters, shouldDropNoticeProtocol } from './block-message-filters.ts';
+import { installPersistentMarqueeEventBlock } from './marquee-event-hook.ts';
+import {
+  collectMarqueeUis,
+  collectMarqueeUisFromDisplayTree,
+  collectDogTuoBannerNodes,
+  createMarqueeVisibilityBlocker,
+  isDogTuoBannerNode,
+  sweepDogTuoTextOnStage
+} from './marquee-visibility.ts';
 import {
   hasAnyEffectResourceBlock,
   replaceBlockedEffectUrl,
@@ -33,10 +43,18 @@ const JINNANG_PLAY_METHODS = [
   'PlayJuedouEffect',
   'PlayTaoyuanEffect'
 ];
-const BLOCKED_INTERACT_ANIMATIONS = ['fx_uihd_caoxie', 'Ol_DaoJu_jidan'];
 const LOBBY_AD_BUTTON_TYPE = 0x27cb;
 const MARQUEE_EVENTS = ['CHAT_MARQUEE_ADD', 'CHAT_MARQUEE2023_ADD', 'CHAT_MARQUEE2023_ACT_ADD'];
 const MARQUEE_SHOW_METHODS = ['ShowMarquee', 'intActDataMarquee', 'ShowNextActMarquee'];
+const MARQUEE_MANAGER_CLASS_NAMES = [
+  'ChatMarqueeManager',
+  'MarqueeManager',
+  'SystemNoticeManager',
+  'ChatSysMarqueeManager',
+  'ChatMarquee2023Manager',
+  'Marquee2023Manager',
+  'ChatSysMarquee2023Manager'
+];
 const SELF_GENERAL_KEYS = ['generalIds', 'GeneralIds', 'WuJiangs', 'generals'];
 
 /** 显示后需要处理的窗口及其对应开关；未开启时不轮询窗口。 */
@@ -62,12 +80,15 @@ export interface BlockEffectsController {
   filterMessage(payload: UnknownRecord, className: string): void;
   /** 清掉红点树上仍亮着的叶子。 */
   clearRedDots(): { found: boolean; count: number };
+  /** 账号或场景就绪后重挂狗托屏蔽，配置已开时不必再拨开关。 */
+  armNoticeBlock(): void;
   dispose(): void;
 }
 
 export interface BlockEffectsOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
+  gameEvents?: GameEventBus;
 }
 
 /**
@@ -85,8 +106,19 @@ export function installBlockEffectsController(
   const cleanups: Array<() => void> = [];
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const unsubscribes: Array<() => void> = [];
-  let disposed = false;
+  const skillEffects = new Set<UnknownRecord>();
+  const effectControllers = new Set<UnknownRecord>();
   let manualRecordView = false;
+  let disposed = false;
+
+  if (options.gameEvents) {
+    unsubscribes.push(options.gameEvents.subscribe((event) => {
+      if (event.type === 'game-ended') skillEffects.clear();
+      if (isOn('block.noticeWindow') && (event.type === 'game-started' || event.type === 'game-reconnected')) {
+        applyNoticeBlockState();
+      }
+    }));
+  }
 
   const isOn = (key: BlockSettingKey) => configStore.get(key) === true;
   const resourceFlags = (): EffectResourceFlags => ({
@@ -211,21 +243,73 @@ export function installBlockEffectsController(
     return closed;
   }
 
-  /** 隐藏大厅右侧广告位。 */
+  /** 隐藏大厅右侧和底部已经摆出来的广告。 */
   function hideLobbyAd(retries = 0): boolean {
     if (!isOn('block.adWindow')) return false;
     let hidden = false;
     const scenes = new Set([locator.scene(), ...locator.findInLayer('SceneLayer', 'ModeScene')].filter(Boolean));
     scenes.forEach((scene) => {
-      if (typeof scene?.hideAdView !== 'function') return;
-      try {
-        scene.hideAdView();
-        hidden = true;
-      } catch (error) {
-        console.warn('[屏蔽设置] 隐藏大厅广告失败:', error);
+      if (typeof scene?.hideAdView === 'function') {
+        try {
+          scene.hideAdView();
+          hidden = true;
+        } catch (error) {
+          console.warn('[屏蔽设置] 隐藏大厅广告失败:', error);
+        }
       }
+      hidden = hideAdNodes(scene, false) || hidden;
+      hidden = hideAdNodes(asRecord(scene?.bottomView), true) || hidden;
+      hidden = hideAdNodes(asRecord(scene?.leftView), false) || hidden;
+      hidden = hideAdButtons(asRecord(scene?.leftView)) || hidden;
     });
     if (retries > 0) later(() => hideLobbyAd(retries - 1), 500);
+    return hidden;
+  }
+
+  const AD_NODE_KEYS = ['adView', 'AdView', 'adUI', 'adUi', 'bottomAd', 'bannerView', 'activityAd', 'adSpr', 'adNode'];
+
+  function hideAdNodes(owner: UnknownRecord | null, scanChildren: boolean): boolean {
+    if (!owner) return false;
+    let hidden = false;
+    for (const key of AD_NODE_KEYS) {
+      const node = asRecord(owner[key]);
+      if (!node || node.visible === false) continue;
+      try {
+        node.visible = false;
+        callMethod(node, 'stop');
+        hidden = true;
+      } catch {
+        // 这个节点藏不了就跳过，不能打断后面的开关。
+      }
+    }
+    if (!scanChildren) return hidden;
+    const count = Number(owner.numChildren);
+    if (!Number.isInteger(count) || typeof owner.getChildAt !== 'function') return hidden;
+    for (let index = 0; index < count; index += 1) {
+      const child = asRecord(owner.getChildAt(index));
+      const name = String(child?.name ?? '');
+      if (!/^(ad|banner|广告)/i.test(name)) continue;
+      if (child && child.visible !== false) {
+        child.visible = false;
+        hidden = true;
+      }
+    }
+    return hidden;
+  }
+
+  function hideAdButtons(leftView: UnknownRecord | null): boolean {
+    if (!leftView) return false;
+    let hidden = false;
+    for (const key of ['btnList', 'btns', 'buttonList']) {
+      const list = leftView[key];
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        const button = asRecord(item);
+        if (!button || button.type !== LOBBY_AD_BUTTON_TYPE || button.visible === false) continue;
+        button.visible = false;
+        hidden = true;
+      }
+    }
     return hidden;
   }
 
@@ -298,6 +382,12 @@ export function installBlockEffectsController(
       return undefined;
     });
     hideLobbyAd(3);
+    const adTimer = setInterval(() => {
+      if (disposed || !isOn('block.adWindow')) return;
+      closeBySwitch('block.adWindow');
+      hideLobbyAd(0);
+    }, 2000);
+    cleanups.push(() => clearInterval(adTimer));
     const leftViewPrototype = await poll(
       () => {
         const leftView = asRecord(locator.scene()?.leftView);
@@ -321,52 +411,448 @@ export function installBlockEffectsController(
   // ---------- 狗托（顶部跑马灯） ----------
 
   let marqueeManager: UnknownRecord | null = null;
+  let marqueeDispatcherHooksBound = false;
+  const wrappedMarqueePrototypes = new WeakSet<object>();
+  const wrappedMarqueeManagerInstances = new WeakSet<UnknownRecord>();
+  let noticeManagerHookGeneration = 0;
+  let noticeManagerPollActive = false;
+  const marqueeSceneHookOwner = {};
+  let chatSysNewsIngressWrapped = false;
+  let gameDispatcherMarqueeGuardWrapped = false;
+  let gedPersistentMarqueeHooked = false;
+  let marqueeGedHookTarget: UnknownRecord | null = null;
+  let marqueeFrameLoopBound = false;
+  let marqueeBlockInstallPromise: Promise<void> | null = null;
+  let displayAddChildGuardWrapped = false;
+  const wrappedMarqueeListenerRecords = new WeakSet<object>();
+
+  function marqueeDisplayLayers(): Array<UnknownRecord | null> {
+    return [
+      locator.layer('TopUILayer'),
+      locator.layer('PromptLayer'),
+      locator.layer('WindowLayer'),
+      asRecord(locator.scene()?.topView),
+      asRecord(locator.scene()?.noticeView),
+      asRecord(locator.scene()?.marqueeView),
+      asRecord(locator.scene()?.chatMarquee),
+      asRecord(locator.manager('ChatSysNewsManager'))
+    ];
+  }
+
+  function collectAllMarqueeUis(): UnknownRecord[] {
+    const fromManager = marqueeManager ? collectMarqueeUis(marqueeManager) : [];
+    const fromTree = collectMarqueeUisFromDisplayTree(marqueeDisplayLayers());
+    const fromBannerScan = isOn('block.noticeWindow') ? collectDogTuoBannerNodes(globalObject) : [];
+    return Array.from(new Set([...fromManager, ...fromTree, ...fromBannerScan]));
+  }
+
+  function looksLikeMarqueeManager(caller: UnknownRecord): boolean {
+    return typeof caller.ShowMarquee === 'function'
+      && typeof caller.HideAllMarquee === 'function';
+  }
 
   function syncMarquee(): void {
-    marqueeBlocker.sync(marqueeManager ? collectMarqueeUis(marqueeManager) : [], isOn('block.noticeWindow'));
+    const blocked = isOn('block.noticeWindow');
+    if (blocked && marqueeManager && typeof marqueeManager.HideAllMarquee === 'function') {
+      callMethod(marqueeManager, 'HideAllMarquee');
+    }
+    marqueeBlocker.sync(collectAllMarqueeUis(), blocked);
+    if (blocked) sweepDogTuoTextOnStage(globalObject, true);
+  }
+
+  function listenersOnEvent(events: UnknownRecord | null, eventName: string): unknown[] {
+    const bucket = events?.[eventName];
+    if (!bucket) return [];
+    return Array.isArray(bucket) ? bucket : [bucket];
   }
 
   function findMarqueeManager(): UnknownRecord | null {
     const events = asRecord(locator.dispatcher()?._events);
-    for (const eventName of MARQUEE_EVENTS) {
-      const listeners = events?.[eventName];
-      for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
-        const caller = asRecord(asRecord(listener)?.caller);
-        if (typeof caller?.ShowMarquee === 'function' && typeof caller.HideAllMarquee === 'function') return caller;
+    if (events) {
+      for (const eventName of Object.keys(events)) {
+        if (!/MARQUEE/i.test(eventName) && !/marquee/i.test(eventName)) continue;
+        for (const listener of listenersOnEvent(events, eventName)) {
+          const caller = asRecord(asRecord(listener)?.caller);
+          if (caller && looksLikeMarqueeManager(caller)) return caller;
+        }
+      }
+      for (const eventName of Object.keys(events)) {
+        for (const listener of listenersOnEvent(events, eventName)) {
+          const caller = asRecord(asRecord(listener)?.caller);
+          if (caller && looksLikeMarqueeManager(caller)) return caller;
+        }
       }
     }
-    return null;
+    return locator.findManagerByPredicate((manager) => looksLikeMarqueeManager(manager));
   }
 
-  async function installMarqueeBlock(): Promise<void> {
-    const manager = await poll(findMarqueeManager, 120, 250);
-    if (!manager) return;
-    marqueeManager = manager;
+  function wrapMarqueeDispatchListeners(): void {
+    const events = asRecord(locator.dispatcher()?._events);
+    if (!events) return;
+    for (const eventName of Object.keys(events)) {
+      if (!/MARQUEE/i.test(eventName)) continue;
+      for (const listener of listenersOnEvent(events, eventName)) {
+        const record = asRecord(listener);
+        if (!record || wrappedMarqueeListenerRecords.has(record)) continue;
+        const caller = asRecord(record.caller);
+        const methodName = typeof record.method === 'string' ? record.method : null;
+        if (!caller || !methodName || typeof caller[methodName] !== 'function') continue;
+        if (patcher.wrap(caller, methodName, (original) => function (this: unknown, ...args: unknown[]) {
+          if (isOn('block.noticeWindow')) {
+            syncMarquee();
+            return undefined;
+          }
+          return original.apply(this, args);
+        })) {
+          wrappedMarqueeListenerRecords.add(record);
+        }
+      }
+    }
+  }
+
+  function tryInstallGedPersistentMarqueeHook(): void {
+    let ged = locator.dispatcher();
+    if (!ged || (gedPersistentMarqueeHooked && marqueeGedHookTarget === ged)) return;
+    if (marqueeGedHookTarget && marqueeGedHookTarget !== ged) {
+      gedPersistentMarqueeHooked = false;
+    }
+    if (!gedPersistentMarqueeHooked) {
+      ged = refreshGameEventDispatcher(globalObject) ?? ged;
+    }
+    if (!ged) return;
+    if (installPersistentMarqueeEventBlock(ged, () => isOn('block.noticeWindow'), () => syncMarquee())) {
+      marqueeGedHookTarget = ged;
+      gedPersistentMarqueeHooked = true;
+      dispatcherMarqueeGuardInstalled = true;
+      if (isOn('block.noticeWindow')) syncMarquee();
+    }
+  }
+
+  function ensureMarqueeFrameSweep(): void {
+    if (marqueeFrameLoopBound || !isOn('block.noticeWindow')) return;
+    marqueeFrameLoopBound = true;
+    const sweepTimer = setInterval(() => {
+      if (disposed || !isOn('block.noticeWindow')) return;
+      syncMarquee();
+    }, 120);
+    cleanups.push(() => {
+      clearInterval(sweepTimer);
+      marqueeFrameLoopBound = false;
+    });
+  }
+
+  function wrapMarqueeManagerInstance(manager: UnknownRecord): void {
+    if (wrappedMarqueeManagerInstances.has(manager)) return;
+    let wrappedAny = false;
     for (const method of MARQUEE_SHOW_METHODS) {
-      patcher.wrap(manager, method, (original) => function (this: unknown, ...args) {
+      if (typeof manager[method] !== 'function') continue;
+      const ok = patcher.wrap(manager, method, (original) => function (this: unknown, ...args: unknown[]) {
         const result = original.apply(this, args);
-        syncMarquee();
+        if (isOn('block.noticeWindow')) {
+          syncMarquee();
+          return undefined;
+        }
         return result;
       });
+      if (ok) wrappedAny = true;
     }
-    const dispatcher = locator.dispatcher();
-    MARQUEE_EVENTS.forEach((eventName) => callMethod(dispatcher, 'on', eventName, manager, syncMarquee));
-    cleanups.push(() => {
-      MARQUEE_EVENTS.forEach((eventName) => callMethod(dispatcher, 'off', eventName, manager, syncMarquee));
-      marqueeBlocker.restoreAll();
-      marqueeManager = null;
+    if (wrappedAny) wrappedMarqueeManagerInstances.add(manager);
+  }
+
+  /** 与参考脚本 FB 一致：先挂上跑马灯管理器钩子，开关只决定藏不藏。 */
+  function ensureNoticeManagerAttached(): void {
+    if (disposed || noticeManagerPollActive) return;
+    const readyManager = findMarqueeManager();
+    if (readyManager && wrappedMarqueeManagerInstances.has(readyManager)) return;
+    const generation = noticeManagerHookGeneration;
+    noticeManagerPollActive = true;
+    void poll(() => findMarqueeManager(), 120, 250).then((manager) => {
+      noticeManagerPollActive = false;
+      if (disposed || generation !== noticeManagerHookGeneration) return;
+      if (!manager) return;
+      wrapMarqueeManagerInstance(manager);
+      bindMarqueeManager(manager);
+      applyNoticeBlockState();
     });
+  }
+
+  function wrapMarqueeShowPrototype(prototype: UnknownRecord | null): void {
+    if (!prototype || wrappedMarqueePrototypes.has(prototype)) return;
+    let wrappedAny = false;
+    for (const method of MARQUEE_SHOW_METHODS) {
+      if (typeof prototype[method] !== 'function') continue;
+      const ok = patcher.wrap(prototype, method, (original) => function (this: unknown, ...args: unknown[]) {
+        const result = original.apply(this, args);
+        if (isOn('block.noticeWindow')) {
+          syncMarquee();
+          return undefined;
+        }
+        return result;
+      });
+      if (ok) wrappedAny = true;
+    }
+    if (wrappedAny) wrappedMarqueePrototypes.add(prototype);
+  }
+
+  function wrapMarqueeManagersFromList(): void {
+    const windowManager = locator.manager('WindowManager');
+    const list = windowManager?.managerList;
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      const record = asRecord(item);
+      if (!record || !looksLikeMarqueeManager(record)) continue;
+      wrapMarqueeShowPrototype(asRecord(Object.getPrototypeOf(record)));
+      wrapMarqueeManagerInstance(record);
+    }
+  }
+
+  function installDisplayAddChildGuard(): void {
+    if (displayAddChildGuardWrapped) return;
+    const classNames = ['Node', 'Sprite', 'Box', 'UIComponent', 'View'];
+    let wrapped = false;
+    for (const className of classNames) {
+      const prototype = locator.classPrototype(className);
+      if (!prototype || typeof prototype.addChild !== 'function') continue;
+      if (patcher.wrap(prototype, 'addChild', (original) => function (this: unknown, child: unknown, ...rest: unknown[]) {
+        const result = original.apply(this, [child, ...rest]);
+        if (!isOn('block.noticeWindow')) return result;
+        const node = asRecord(child);
+        if (node && isDogTuoBannerNode(node)) {
+          marqueeBlocker.sync(collectDogTuoBannerNodes(globalObject), true);
+        }
+        return result;
+      })) wrapped = true;
+    }
+    if (wrapped) displayAddChildGuardWrapped = true;
+  }
+
+  function wrapChatSysNewsIngress(): void {
+    if (chatSysNewsIngressWrapped) return;
+    const manager = locator.manager('ChatSysNewsManager');
+    const prototype = locator.classPrototype('ChatSysNewsManager')
+      ?? (manager ? asRecord(Object.getPrototypeOf(manager)) : null);
+    if (!prototype) return;
+    let wrappedAny = false;
+    for (const key of Object.getOwnPropertyNames(prototype)) {
+      if (key === 'constructor' || typeof prototype[key] !== 'function') continue;
+      const isChatIngress = /SSCChatmsg|ChatmsgNtf/i.test(key);
+      const isMarqueeShow = MARQUEE_SHOW_METHODS.includes(key);
+      if (!isChatIngress && !isMarqueeShow) continue;
+      const ok = patcher.wrap(prototype, key, (original) => function (this: unknown, ...args: unknown[]) {
+        if (!isOn('block.noticeWindow')) return original.apply(this, args);
+        if (isMarqueeShow) {
+          syncMarquee();
+          return undefined;
+        }
+        const payload = asRecord(args[0]);
+        const className = /decode/i.test(key) ? key : 'decodeSSCChatmsgNtf';
+        if (payload && shouldDropNoticeProtocol(className, payload)) return undefined;
+        return original.apply(this, args);
+      });
+      if (ok) wrappedAny = true;
+    }
+    if (wrappedAny) chatSysNewsIngressWrapped = true;
+  }
+
+  function installKnownMarqueePrototypes(): void {
+    for (const className of MARQUEE_MANAGER_CLASS_NAMES) {
+      wrapMarqueeShowPrototype(locator.classPrototype(className));
+    }
+    wrapMarqueeManagersFromList();
+    wrapChatSysNewsIngress();
+    const manager = findMarqueeManager();
+    if (manager) wrapMarqueeShowPrototype(asRecord(Object.getPrototypeOf(manager)));
+  }
+
+  function bindMarqueeManager(manager: UnknownRecord): void {
+    wrapMarqueeManagerInstance(manager);
+    wrapMarqueeShowPrototype(asRecord(Object.getPrototypeOf(manager)));
+    const dispatcher = locator.dispatcher();
+    if (marqueeManager && marqueeManager !== manager && dispatcher) {
+      MARQUEE_EVENTS.forEach((eventName) => (
+        callMethod(dispatcher, 'off', eventName, marqueeManager, syncMarquee)
+      ));
+    }
+    if (marqueeManager === manager && marqueeDispatcherHooksBound) {
+      syncMarquee();
+      return;
+    }
+    marqueeManager = manager;
+    if (!marqueeDispatcherHooksBound) {
+      marqueeDispatcherHooksBound = true;
+      cleanups.push(() => {
+        if (!dispatcher) return;
+        MARQUEE_EVENTS.forEach((eventName) => (
+          callMethod(dispatcher, 'off', eventName, manager, syncMarquee)
+        ));
+        marqueeBlocker.restoreAll();
+        marqueeManager = null;
+        marqueeDispatcherHooksBound = false;
+      });
+    }
+    if (dispatcher) {
+      MARQUEE_EVENTS.forEach((eventName) => callMethod(dispatcher, 'on', eventName, manager, syncMarquee));
+    }
     syncMarquee();
   }
 
+  /** 配置已为开、或运行时刚挂上钩子时，主动套用狗托屏蔽，不依赖用户再拨一次开关。 */
+  function applyNoticeBlockState(): void {
+    if (!isOn('block.noticeWindow')) {
+      noticeManagerHookGeneration += 1;
+      noticeManagerPollActive = false;
+      marqueeBlocker.restoreAll();
+      syncMarquee();
+      return;
+    }
+    ensureNoticeManagerAttached();
+    tickMarqueeBlock();
+    later(() => tickMarqueeBlock(), 0);
+    later(() => tickMarqueeBlock(), 400);
+    later(() => tickMarqueeBlock(), 1200);
+    later(() => tickMarqueeBlock(), 3000);
+    ensureMarqueeFrameSweep();
+  }
+
+  function refreshMarqueeBlock(): void {
+    applyNoticeBlockState();
+  }
+
+  function tickMarqueeBlock(): void {
+    tryInstallGedPersistentMarqueeHook();
+    wrapMarqueeDispatchListeners();
+    installDisplayAddChildGuard();
+    installKnownMarqueePrototypes();
+    const manager = findMarqueeManager();
+    if (manager) bindMarqueeManager(manager);
+    else syncMarquee();
+    if (isOn('block.noticeWindow')) ensureMarqueeFrameSweep();
+  }
+
+  function installMarqueeSceneHooks(): void {
+    const dispatcher = locator.dispatcher();
+    if (!dispatcher) return;
+    const onSceneChange = () => {
+      later(() => refreshMarqueeBlock(), 0);
+      later(() => refreshMarqueeBlock(), 800);
+    };
+    callMethod(dispatcher, 'on', 'SWITCH_SCENE', marqueeSceneHookOwner, onSceneChange);
+    cleanups.push(() => callMethod(dispatcher, 'off', 'SWITCH_SCENE', marqueeSceneHookOwner, onSceneChange));
+  }
+
+  function dispatcherEventKeys(dispatcher: UnknownRecord): string[] {
+    return typeof dispatcher.event === 'function' ? ['event'] : [];
+  }
+
+  let dispatcherMarqueeGuardInstalled = false;
+
+  function tryInstallGameDispatcherMarqueeGuard(): void {
+    if (gameDispatcherMarqueeGuardWrapped) return;
+    const prototype = locator.classPrototype('GameEventDispatcher');
+    if (!prototype || typeof prototype.event !== 'function') return;
+    if (patcher.wrap(prototype, 'event', (original) => function (this: unknown, type: unknown, ...rest: unknown[]) {
+      if (isOn('block.noticeWindow') && typeof type === 'string' && (
+        /MARQUEE/i.test(type) || MARQUEE_EVENTS.includes(type)
+      )) {
+        syncMarquee();
+        return undefined;
+      }
+      return original.call(this, type, ...rest);
+    })) {
+      gameDispatcherMarqueeGuardWrapped = true;
+      dispatcherMarqueeGuardInstalled = true;
+    }
+  }
+
+  function tryInstallDispatcherMarqueeGuard(): void {
+    tryInstallGedPersistentMarqueeHook();
+    tryInstallGameDispatcherMarqueeGuard();
+    if (gedPersistentMarqueeHooked) return;
+    const dispatcher = locator.dispatcher();
+    if (!dispatcher) return;
+    for (const eventKey of dispatcherEventKeys(dispatcher)) {
+      if (patcher.wrap(dispatcher, eventKey, (original) => function (this: unknown, type: unknown, ...rest: unknown[]) {
+        if (isOn('block.noticeWindow') && typeof type === 'string' && (
+          /MARQUEE/i.test(type) || MARQUEE_EVENTS.includes(type)
+        )) {
+          syncMarquee();
+          return undefined;
+        }
+        return original.call(this, type, ...rest);
+      })) {
+        dispatcherMarqueeGuardInstalled = true;
+      }
+    }
+  }
+
+  function ensureMarqueeBlockInstalled(): Promise<void> {
+    if (!marqueeBlockInstallPromise) marqueeBlockInstallPromise = installMarqueeBlock();
+    return marqueeBlockInstallPromise;
+  }
+
+  async function installMarqueeBlock(): Promise<void> {
+    await poll(() => locator.dispatcher(), Infinity, 200);
+    tryInstallDispatcherMarqueeGuard();
+    installMarqueeSceneHooks();
+    tickMarqueeBlock();
+    await poll(() => findMarqueeManager(), 120, 250);
+    tickMarqueeBlock();
+    applyNoticeBlockState();
+    ensureNoticeManagerAttached();
+    const timer = setInterval(() => {
+      if (disposed) return;
+      const guardMissing = !dispatcherMarqueeGuardInstalled || !gedPersistentMarqueeHooked;
+      if (guardMissing) tryInstallDispatcherMarqueeGuard();
+      tickMarqueeBlock();
+      ensureNoticeManagerAttached();
+      if (isOn('block.noticeWindow') && (guardMissing || !marqueeFrameLoopBound)) {
+        syncMarquee();
+        ensureMarqueeFrameSweep();
+      }
+    }, 500);
+    cleanups.push(() => clearInterval(timer));
+  }
+
+  let laoXianBlockInstalled = false;
+
   function installLaoXianBlock(): void {
-    patcher.wrap(locator.classPrototype('TianShuWindow'), 'updateWinUI', (original) => function (this: UnknownRecord, ...args) {
-      if (asRecord(args[0])?.type == 6 && isOn('block.laoXianWindow')) return callMethod(this, 'Close');
-      return original.apply(this, args);
+    if (laoXianBlockInstalled) return;
+    void poll(() => locator.classPrototype('TianShuWindow'), Infinity, 500).then((prototype) => {
+      if (!prototype || laoXianBlockInstalled) return;
+      laoXianBlockInstalled = patcher.wrap(prototype, 'updateWinUI', (original) => function (this: UnknownRecord, ...args) {
+        const type = Number(asRecord(args[0])?.type);
+        if (type === 6 && isOn('block.laoXianWindow')) return callMethod(this, 'Close');
+        return original.apply(this, args);
+      });
     });
   }
 
   // ---------- 局内/场景特效（原版 K5，每次切换场景重新检查） ----------
+
+  let tableRewardPrototypeWrapped = false;
+
+  function wrapTableRewardPointPrototype(prototype: UnknownRecord | null): void {
+    if (!prototype || tableRewardPrototypeWrapped) return;
+    if (typeof prototype.showGameRewardPointEffect2 !== 'function') return;
+    tableRewardPrototypeWrapped = true;
+    for (const [method, kind] of [
+      ['showGameRewardPointEffect1', 'block.killEffect'],
+      ['showGameRewardPointEffect3', 'block.killEffect'],
+      ['showGameRewardPointEffect2', 'block.healEffect'],
+      ['showGameRewardPointEffect5', 'block.healEffect']
+    ] as const) {
+      patcher.wrap(prototype, method, (original) => function (this: unknown, ...args) {
+        if (!isOn(kind)) return original.apply(this, args);
+        return undefined;
+      });
+    }
+    for (const method of ['PlaySimpleShakeEffect', 'PlaySimpleShakeEffect2', 'PlayRuMoShakeEffect']) {
+      patcher.wrap(prototype, method, (original) => function (this: unknown, ...args) {
+        if (!isOn('block.shakeEffect') && !isOn('block.skillEffect')) return original.apply(this, args);
+        return undefined;
+      });
+    }
+  }
 
   function installSceneEffectPatches(): void {
     void (async () => {
@@ -421,26 +907,11 @@ export function installBlockEffectsController(
         return undefined;
       });
 
-      const rewardScene = await poll(() => (
-        typeof locator.gameScene()?.showGameRewardPointEffect2 === 'function' ? locator.gameScene() : null
-      ), 60, 100);
-      for (const [method, kind] of [
-        ['showGameRewardPointEffect1', 'block.killEffect'],
-        ['showGameRewardPointEffect3', 'block.killEffect'],
-        ['showGameRewardPointEffect2', 'block.healEffect'],
-        ['showGameRewardPointEffect5', 'block.healEffect']
-      ] as const) {
-        patcher.wrap(rewardScene, method, (original) => function (this: unknown, ...args) {
-          if (!isOn(kind)) return original.apply(this, args);
-          return undefined;
-        });
-      }
-      for (const method of ['PlaySimpleShakeEffect', 'PlaySimpleShakeEffect2']) {
-        patcher.wrap(rewardScene, method, (original) => function (this: unknown, ...args) {
-          if (!isOn('block.shakeEffect') && !isOn('block.skillEffect')) return original.apply(this, args);
-          return undefined;
-        });
-      }
+      wrapTableRewardPointPrototype(await poll(() => {
+        const scene = locator.gameScene();
+        if (!scene || typeof scene.showGameRewardPointEffect2 !== 'function') return null;
+        return asRecord(Object.getPrototypeOf(scene));
+      }, 60, 100));
 
       const seatPrototype = await poll(() => {
         const seat = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat);
@@ -515,13 +986,20 @@ export function installBlockEffectsController(
         return original.apply(this, args);
       });
       patcher.wrap(seatUiPrototype, 'OnShowAttackedEffect', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && isOn('block.shakeEffect')) return undefined;
+        if (locator.gameScene() && isOn('block.selectEffect')) return undefined;
         return original.apply(this, args);
       });
-      patcher.wrap(seatUiPrototype, 'ShowEquipTrailEffect', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && isOn('block.equipEffect')) return undefined;
-        return original.apply(this, args);
+      patcher.wrap(seatUiPrototype, 'BaojiHurtStart', (original) => function (this: unknown, ...args) {
+        const result = original.apply(this, args);
+        if (locator.gameScene() && isOn('block.shakeEffect')) stripBaojiSlots(asRecord(asRecord(args[0])?.[0]));
+        return result;
       });
+      for (const method of ['playEquipSkillAnimate', 'play3DEquipSkill', 'ShowEquipTrailEffect']) {
+        patcher.wrap(seatUiPrototype, method, (original) => function (this: unknown, ...args) {
+          if (locator.gameScene() && isOn('block.equipEffect')) return undefined;
+          return original.apply(this, args);
+        });
+      }
       patcher.wrap(seatUiPrototype, 'playXDJXSkillEffect', (original) => function (this: unknown, ...args) {
         if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
         return original.apply(this, args);
@@ -530,9 +1008,12 @@ export function installBlockEffectsController(
         if (locator.gameScene() && isOn('block.shakeEffect')) return undefined;
         return original.apply(this, args);
       });
-      patcher.wrap(seatUiPrototype, 'playCardSkillAnimate', (original) => function (this: unknown, card: unknown, ...rest) {
+      patcher.wrap(seatUiPrototype, 'playCardSkillAnimate', (original) => function (this: UnknownRecord, card: unknown, ...rest) {
         const kind = kindFromCard(asRecord(card) as never);
-        if (kindOn(kind)) return undefined;
+        if (kindOn(kind)) {
+          if (kind === 'shan') callMethod(this, 'SetWanJianFlag', false);
+          return undefined;
+        }
         return original.call(this, card, ...rest);
       });
       patcher.wrap(seatUiPrototype, 'playGeneralSpEffect', (original) => function (this: UnknownRecord, ...args) {
@@ -551,26 +1032,44 @@ export function installBlockEffectsController(
       });
 
       const effectCtrl = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.effectCtrl);
-      const playbackTargets = [effectPlayer, effectCtrl].filter((item, index, list) => item && list.indexOf(item) === index);
+      const playbackTargets = [effectPlayer, asRecord(effectPlayer?.effectCtrl), effectCtrl]
+        .filter((item, index, list) => item && list.indexOf(item) === index);
       for (const target of playbackTargets) {
-        patcher.wrap(target, 'ShowMulitEffectByData', (original) => function (this: unknown, data: unknown, ...rest) {
-          if (!locator.gameScene()) return original.call(this, data, ...rest);
-          const kind = classifyPlayback(asRecord(data)?.EffectPath, rest[1]);
-          if (!kindOn(kind)) return original.call(this, data, ...rest);
-          triggerHit(asRecord(rest[2]));
-          return null;
-        });
+        if (target) effectControllers.add(target);
+        for (const method of ['ShowEffectByData', 'ShowEffectByDataWithJson', 'ShowMulitEffectByData']) {
+          patcher.wrap(target, method, (original) => function (this: unknown, data: unknown, ...rest) {
+            if (!locator.gameScene()) return original.call(this, data, ...rest);
+            const multi = method === 'ShowMulitEffectByData';
+            const animation = rest[multi ? 1 : 0];
+            const hit = asRecord(rest[multi ? 2 : 1]);
+            const record = asRecord(data);
+            const kind = classifyPlayback(record?.EffectPath, animation ?? record?.AniName, () => '', record?.Sound);
+            if (!kindOn(kind)) return original.call(this, data, ...rest);
+            finishBlockedPlayback(record, hit, kind, method === 'ShowEffectByDataWithJson');
+            return null;
+          });
+        }
       }
       if (effectPlayer) {
-        patcher.wrap(effectPlayer, 'GetHighQualitySkillEffect', (original) => function (this: unknown, ...args) {
-          const created = original.apply(this, args);
-          const target = asRecord(created);
+        const wrapSkill = (target: UnknownRecord | null) => {
+          if (!target) return;
+          skillEffects.add(target);
           patcher.wrap(target, 'PlayTriggerEffect', (play) => function (this: unknown, ...playArgs) {
             if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
             return play.apply(this, playArgs);
           });
+        };
+        patcher.wrap(effectPlayer, 'GetHighQualitySkillEffect', (original) => function (this: unknown, ...args) {
+          const created = original.apply(this, args);
+          wrapSkill(asRecord(created));
           return created;
         });
+        const existing = effectPlayer.highQualitySkillDic;
+        if (existing && typeof (existing as { forEach?: unknown }).forEach === 'function') {
+          (existing as { forEach: (fn: (value: unknown, key: unknown) => void) => void }).forEach((value) => {
+            wrapSkill(asRecord(value));
+          });
+        }
       }
 
       installBaseEffectPatches();
@@ -579,13 +1078,38 @@ export function installBlockEffectsController(
   }
 
   /** 原版 y4：跳过南蛮/箭雨动画时仍需按原延迟触发受击。 */
-  function triggerHit(hit: UnknownRecord | null): void {
+  function triggerHit(hit: UnknownRecord | null, delay = Number(hit?.HitDelay) || 0): void {
     const trigger = hit?.HitTrigger;
     if (typeof trigger !== 'function') return;
-    const delay = Number(hit?.HitDelay) || 0;
     const once = globalObject.Laya?.timer?.once;
     if (delay > 0 && typeof once === 'function') once.call(globalObject.Laya?.timer, delay, null, trigger as () => void);
     else (trigger as () => void)();
+  }
+
+  function finishBlockedPlayback(
+    data: UnknownRecord | null,
+    hit: UnknownRecord | null,
+    kind: string,
+    useDataDelay: boolean
+  ): void {
+    const delay = Number((useDataDelay ? data?.HitDelay : hit?.HitDelay) || 0);
+    triggerHit(hit, delay);
+    if (kind !== 'skill' && typeof hit?.EndTrigger === 'function') hit.EndTrigger();
+  }
+
+  function stripBaojiSlots(effect: UnknownRecord | null): void {
+    const slots = effect?._boneSlotArray;
+    if (!Array.isArray(slots) || typeof effect?.replaceSlotSkinByIndex !== 'function') return;
+    for (const slot of slots) {
+      const record = asRecord(slot);
+      const name = String(record?.name ?? '');
+      if (/^1shuzi\/1shuzi_(?:00000|1[012])$/.test(name)) continue;
+      const displays = asRecord(record?.currSlotData)?.displayArr;
+      const count = Array.isArray(displays) ? displays.length : 0;
+      for (let index = 0; index < count; index += 1) {
+        callMethod(effect, 'replaceSlotSkinByIndex', name, index, -1);
+      }
+    }
   }
 
   function findEffectPlayer(): UnknownRecord | null {
@@ -594,7 +1118,7 @@ export function installBlockEffectsController(
     for (const listeners of Object.values(events)) {
       for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
         const caller = asRecord(asRecord(listener)?.caller);
-        if (typeof caller?.PlayNanManEffect === 'function' && typeof caller.PlayEffectSYS === 'function') {
+        if (typeof caller?.PlayNanManEffect === 'function' && typeof caller.GetHighQualitySkillEffect === 'function') {
           return caller;
         }
       }
@@ -603,38 +1127,13 @@ export function installBlockEffectsController(
   }
 
   function createReadyInteractPropWrapper(original: PatchableFunction): PatchableFunction {
-    return function (this: UnknownRecord, ...args: unknown[]) {
+    return function (this: unknown, ...args: unknown[]) {
       if (!isOn('block.interactEffect')) return original.apply(this, args);
-      const [goodsId, , , isEffect = false] = args;
-      const propManager = locator.managerFromList((manager) => (
-        typeof manager.GetPropByGoodsID === 'function'
-        && typeof manager.GetPropEffByGoodsId === 'function'
-        && typeof manager.GetPropByID === 'function'
-      ));
-      let prop = asRecord(callMethod(propManager, 'GetPropByGoodsID', goodsId));
-      if (isEffect) {
-        const effect = asRecord(callMethod(propManager, 'GetPropEffByGoodsId', goodsId));
-        if (effect?.WinEffect) {
-          prop = asRecord(callMethod(propManager, 'GetPropByID', Number(effect.WinEffect))) ?? prop;
-        }
-      }
-      if (!BLOCKED_INTERACT_ANIMATIONS.includes(String(prop?.aniname))) return original.apply(this, args);
-      const windowManager = locator.manager('WindowManager');
-      const constants = asRecord(windowManager?.constructor);
-      callMethod(
-        windowManager,
-        'event',
-        constants?.TABLEGAME_INTERACT_PROP_PLAY_DONE ?? windowManager?.TABLEGAME_INTERACT_PROP_PLAY_DONE
-      );
-      if (isEffect) {
-        callMethod(
-          windowManager,
-          'event',
-          constants?.TABLEGAME_INTERACT_PROP_PLAY_EFF_DONE ?? windowManager?.TABLEGAME_INTERACT_PROP_PLAY_EFF_DONE
-        );
-      }
-      this.PlayingInterProp = null;
-      this.PlayingPropNum = 0;
+      const dispatcher = locator.dispatcher();
+      later(() => {
+        callMethod(dispatcher, 'event', 'TABLEGAME_INTERACT_PROP_PLAY_DONE');
+        if (args[3]) callMethod(dispatcher, 'event', 'TABLEGAME_INTERACT_PROP_PLAY_EFF_DONE');
+      });
       return undefined;
     };
   }
@@ -700,6 +1199,7 @@ export function installBlockEffectsController(
         later(() => {
           if (sceneName === 'TableScene') installRecordViewTracker();
           installSceneEffectPatches();
+          refreshMarqueeBlock();
         });
       }
       return result;
@@ -716,22 +1216,93 @@ export function installBlockEffectsController(
   }
 
   /** 开关打开时清掉已经在播的选中、受击和武将动画，避免要等下一次才消失。 */
-  function sweepLiveEffects(): void {
+  function sweepLiveEffects(restoreSelect = false): void {
     const scene = locator.gameScene();
     const seats = asRecord(scene?.seatContainer)?.seatUIs ?? scene?.seatUIs;
-    if (!Array.isArray(seats)) return;
-    for (const item of seats) {
-      const seatUi = asRecord(item);
-      if (!seatUi) continue;
-      const seat = asRecord(seatUi.seat);
-      if (isOn('block.selectEffect')) seatUi.allowAttackEffect = null;
-      if (isOn('block.skillEffect') || skinBlocked(seat)) {
-        callMethod(seatUi, 'clearOutAvatarAni');
-        callMethod(seatUi, 'clearNewFullScreenEffect');
+    if (Array.isArray(seats)) {
+      for (const item of seats) {
+        const seatUi = asRecord(item);
+        if (!seatUi) continue;
+        const seat = asRecord(seatUi.seat);
+        const seatEffect = asRecord(seatUi.effectCtrl);
+        if (seatEffect) effectControllers.add(seatEffect);
+        if (isOn('block.selectEffect')) {
+          callMethod(seatUi.allowAttackEffect, 'destroy');
+          seatUi.allowAttackEffect = null;
+        } else if (restoreSelect && seat?.Selected) {
+          callMethod(seatUi, 'OnShowAttackedEffect');
+        }
+        if (isOn('block.skillEffect') || skinBlocked(seat)) {
+          callMethod(seatUi, 'clearOutAvatarAni');
+          callMethod(seatUi, 'clearSkinSkillEffect');
+        }
+        const playingType = Number(seatUi.playingNewSpType);
+        const skillTyped = [2, 4, 5].includes(playingType) && isOn('block.skillEffect');
+        if (skinBlocked(seat) || skillTyped) {
+          const playing = asRecord(seatUi.playingNewSpEffect);
+          if (playing) {
+            callMethod(seatUi, 'aniNewcallBack');
+            callMethod(playing, 'destroy');
+          }
+          callMethod(seatUi, 'clearNewFullScreenEffect');
+        }
+        if (isOn('block.shakeEffect') && seatUi.hurtShakeTween) {
+          callMethod(seatUi.hurtShakeTween, 'clear');
+          seatUi.hurtShakeTween = null;
+          callMethod(seatUi, 'setSeatPos', seatUi.seatX, seatUi.seatY, false);
+        }
       }
-      if (isOn('block.shakeEffect')) {
-        callMethod(seatUi.hurtShakeTween, 'clearAll');
-        seatUi.hurtShakeTween = null;
+    }
+    if (isOn('block.skillEffect')) {
+      const timer = asRecord(globalObject.Laya?.timer);
+      const clearAll = timer?.clearAll;
+      if (typeof clearAll === 'function') {
+        for (const skill of skillEffects) clearAll.call(timer, skill);
+      }
+    }
+    for (const player of effectControllers) {
+      const parent = asRecord(player.parent);
+      if (!parent || parent.destroyed) {
+        effectControllers.delete(player);
+        continue;
+      }
+      hideBlockedPlayingEffects(player);
+    }
+    if (scene && (isOn('block.shakeEffect') || isOn('block.skillEffect'))) {
+      const killEffect = asRecord(scene.killEffect);
+      const targets = killEffect?.shakeTargets;
+      if (targets && typeof (targets as { forEach?: unknown }).forEach === 'function') {
+        (targets as { forEach: (fn: (value: unknown, key: unknown) => void) => void }).forEach((_value, key) => {
+          callMethod(key, 'clearAll');
+        });
+      }
+      callMethod(scene, 'OnShakeEffectComplete');
+    }
+  }
+
+  function hideBlockedPlayingEffects(player: UnknownRecord | null): void {
+    if (!player) return;
+    for (const bag of [player.effectDic, player.jsonEffectDic]) {
+      if (!bag || typeof (bag as { forEach?: unknown }).forEach !== 'function') continue;
+      const matched: Array<[unknown, UnknownRecord[]]> = [];
+      (bag as { forEach: (fn: (value: unknown, key: unknown) => void) => void }).forEach((value, key) => {
+        const list = Array.isArray(value) ? value : [];
+        const blocked = list.some((item) => {
+          const record = asRecord(item);
+          const kind = classifyPlayback(asRecord(record?.EffectData)?.EffectPath, record?.effectName);
+          return kindOn(kind);
+        });
+        if (blocked) matched.push([key, list.map((item) => asRecord(item) ?? {})]);
+      });
+      for (const [key, list] of matched) {
+        const endings: Array<() => void> = [];
+        for (const item of list) {
+          const kind = classifyPlayback(asRecord(item.EffectData)?.EffectPath, item.effectName);
+          if (kind !== 'skill' && typeof item.endTrigger === 'function') endings.push(item.endTrigger as () => void);
+          item.endTrigger = null;
+        }
+        callMethod(player, 'HideEffect', key);
+        endings.forEach((ending) => ending());
       }
     }
   }
@@ -904,6 +1475,7 @@ export function installBlockEffectsController(
       killEffect: isOn('block.killEffect'),
       otherSkinState: isOn('block.otherSkinState'),
       factionSlogan: isOn('block.factionSlogan'),
+      noticeWindow: isOn('block.noticeWindow'),
       isOwnGeneral
     });
   }
@@ -914,7 +1486,9 @@ export function installBlockEffectsController(
       closeBySwitch('block.adWindow', 6, 500);
       hideLobbyAd(3);
     }),
-    configStore.subscribe('block.noticeWindow', () => syncMarquee()),
+    configStore.subscribe('block.noticeWindow', () => {
+      void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
+    }),
     configStore.subscribe('block.taskRedDot', ({ value }) => {
       if (value) clearAllRedDots();
     }),
@@ -930,33 +1504,54 @@ export function installBlockEffectsController(
       'block.selfSkinEffect',
       'block.otherSkinState',
       'block.killEffect'
-    ] as const).map((key) => configStore.subscribe(key, ({ value }) => {
-      if (value) sweepLiveEffects();
+    ] as const).map((key) => configStore.subscribe(key, () => {
+      sweepLiveEffects(true);
     }))
   );
 
   installResourceRequestFilter();
+  void ensureMarqueeBlockInstalled();
   // 工程入口早于游戏登录，管理器就绪后才安装其余补丁。
   void poll(() => locator.dispatcher() && locator.manager('WindowManager'), Infinity, 1000).then((ready) => {
     if (!ready) return;
-    installLaoXianBlock();
-    const installers = [
-      installWindowBlocks,
-      installLobbyAdBlock,
-      installMarqueeBlock,
-      installSceneSwitchHook,
-      installBossCityEntranceBlock,
-      installKillEffectBlock,
-      installRedDotBlock
-    ];
-    installers.forEach((install) => {
-      install().catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
+    void ensureMarqueeBlockInstalled().then(() => {
+      if (isOn('block.noticeWindow')) applyNoticeBlockState();
+      installLaoXianBlock();
+      const installers = [
+        installWindowBlocks,
+        installLobbyAdBlock,
+        installSceneSwitchHook,
+        installBossCityEntranceBlock,
+        installKillEffectBlock,
+        installRedDotBlock
+      ];
+      installers.forEach((install) => {
+        install().catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
+      });
+      installSceneEffectPatches();
+      if (isOn('block.noticeWindow')) applyNoticeBlockState();
     });
-    installSceneEffectPatches();
   });
+
+  const onConfigAccountOrNotice = (event: Event) => {
+    const detail = (event as CustomEvent<{ key?: string }>).detail;
+    if (detail?.key && detail.key !== 'block.noticeWindow' && !isOn('block.noticeWindow')) return;
+    if (isOn('block.noticeWindow')) {
+      void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
+    }
+  };
+  globalObject.addEventListener?.(CONFIG_CHANGE_EVENT, onConfigAccountOrNotice);
+  cleanups.push(() => globalObject.removeEventListener?.(CONFIG_CHANGE_EVENT, onConfigAccountOrNotice));
+
+  void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
+
+  function armNoticeBlock(): void {
+    void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
+  }
 
   return {
     filterMessage,
+    armNoticeBlock,
     clearRedDots() {
       const manager = taskRedDotManager();
       if (typeof manager?.setNodeState !== 'function') return { found: false, count: 0 };

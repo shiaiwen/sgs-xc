@@ -16,7 +16,11 @@ interface Window {
   xiaochaoStorage?: {
     saveCredentials?: (scope: 'official' | '4399', credentials: unknown[]) => unknown;
   };
-  __XIAOCHAO_ENGINEERING__?: Record<string, unknown>;
+  __XIAOCHAO_ENGINEERING__?: Record<string, unknown> & {
+    probeAutoTask?: () => unknown;
+  };
+  __XC_PROBE_AUTO_TASK__?: () => unknown;
+  __xcProbeAutoTask?: () => unknown;
   __XIAOCHAO_GAME_SCENE__?: unknown;
   Laya?: {
     ClassUtils?: { getInstance?: (className: string) => unknown };

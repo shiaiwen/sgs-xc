@@ -10,54 +10,54 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import {
-  installRogueMapController,
-  type RogueMapController
-} from './rogue-map-controller.ts';
+  installShanhetuMapController,
+  type ShanhetuMapController
+} from './shanhetu-map-controller.ts';
 import {
-  installRogueShopController,
-  type RogueShopController,
-  type RogueShopPreviewItem,
-  type RogueShopPreviewListener
-} from './rogue-shop-controller.ts';
+  installShanhetuShopController,
+  type ShanhetuShopController,
+  type ShanhetuShopPreviewItem,
+  type ShanhetuShopPreviewListener
+} from './shanhetu-shop-controller.ts';
 import {
-  installRogueStoryController,
-  type RogueStoryController
-} from './rogue-story-controller.ts';
+  installShanhetuStoryController,
+  type ShanhetuStoryController
+} from './shanhetu-story-controller.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface RogueController {
+export interface ShanhetuController {
   openShop(): boolean;
-  getShopPreview(): readonly RogueShopPreviewItem[];
-  subscribeShopPreview(listener: RogueShopPreviewListener): () => void;
+  getShopPreview(): readonly ShanhetuShopPreviewItem[];
+  subscribeShopPreview(listener: ShanhetuShopPreviewListener): () => void;
   filterMessage(payload: UnknownRecord, className: string): void;
   dispose(): void;
 }
 
-export interface RogueControllerOptions {
+export interface ShanhetuControllerOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
   documentObject?: Document;
-  cardConfigSource?: Pick<CardConfigSource, 'getRogueMapData'>;
+  cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData'>;
 }
 
 /** 山河图三项：地图透视、隐藏对白、打开集市（含集市透视）。 */
-export function installRogueController(
+export function installShanhetuController(
   configStore: XiaochaoConfigStore,
-  options: RogueControllerOptions = {}
-): RogueController {
+  options: ShanhetuControllerOptions = {}
+): ShanhetuController {
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
-  const map: RogueMapController = installRogueMapController(configStore, {
+  const map: ShanhetuMapController = installShanhetuMapController(configStore, {
     globalObject,
     locator,
     cardConfigSource: options.cardConfigSource
   });
-  const story: RogueStoryController = installRogueStoryController(configStore, {
+  const story: ShanhetuStoryController = installShanhetuStoryController(configStore, {
     globalObject,
     locator
   });
-  const shop: RogueShopController = installRogueShopController({
+  const shop: ShanhetuShopController = installShanhetuShopController({
     globalObject,
     locator,
     cardConfigSource: options.cardConfigSource

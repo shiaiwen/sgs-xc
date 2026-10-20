@@ -7,15 +7,15 @@ import {
   ROGUE_LINE_BREAK,
   splitRogueLines,
   type RogueCitySpot,
-  type RogueMapConfigData,
+  type ShanhetuMapConfigData,
   type RogueMapPanelLayout,
   type RogueMapRuntime,
   type RoguePanelLine
-} from './rogue-map-types.ts';
+} from './shanhetu-map-types.ts';
 import {
   formatGeneralName,
   formatGeneralStatsLine
-} from './rogue-map-general-stats.ts';
+} from './shanhetu-map-general-stats.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -26,7 +26,7 @@ function asRecord(value: unknown): UnknownRecord | null {
 }
 
 /** 把地图事件收成面板标题。 */
-export function resolveEventTitle(config: RogueMapConfigData, event: string | number): string {
+export function resolveEventTitle(config: ShanhetuMapConfigData, event: string | number): string {
   const adventure = config.Radventure[String(event)];
   if (adventure) return String(adventure);
   const fight = config.Rfight[String(event)];
@@ -40,7 +40,7 @@ export function resolveEventTitle(config: RogueMapConfigData, event: string | nu
  *    真战斗（Rfight 带武将名）禁止误拼，避免 10→101 撞号。
  */
 export function adventureChoiceIds(
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   event: string | number
 ): Array<string | number> {
   const key = String(event);
@@ -62,7 +62,7 @@ export function adventureChoiceIds(
 }
 
 /** Rfight 有可显示武将名才算真战斗；空壳/仅 generalgroup 撞号不算。 */
-export function isRealFightEvent(config: RogueMapConfigData, event: string | number): boolean {
+export function isRealFightEvent(config: ShanhetuMapConfigData, event: string | number): boolean {
   const fight = config.Rfight[String(event)];
   if (!fight) return false;
   const generals = Array.isArray(fight.generals) ? fight.generals : [];
@@ -73,7 +73,7 @@ export function isRealFightEvent(config: RogueMapConfigData, event: string | num
 }
 
 /** 营地类奇遇不画面板：选项 camp=true（含 event+1 / +01 编号）。 */
-export function shouldSkipCityEvent(config: RogueMapConfigData, event: string | number): boolean {
+export function shouldSkipCityEvent(config: ShanhetuMapConfigData, event: string | number): boolean {
   for (const choiceId of adventureChoiceIds(config, event)) {
     if (config.Rchoose[String(choiceId)]?.camp) return true;
   }
@@ -89,7 +89,7 @@ export function shouldSkipCityEvent(config: RogueMapConfigData, event: string | 
 
 /** @deprecated 保留给旧测试；新面板用 `buildEventLines`。 */
 export function buildEventBodyLines(
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   event: string | number,
   runtime: RogueMapRuntime = EMPTY_ROGUE_MAP_RUNTIME,
   cityId?: string | number
@@ -101,7 +101,7 @@ export function buildEventBodyLines(
  * 无真战斗时走奇遇选项正文；有 Radventure / 可拼选项也优先奇遇，
  * 避免 generalgroup 空壳抢走问号关正文。
  */
-export function isAdventureEvent(config: RogueMapConfigData, event: string | number): boolean {
+export function isAdventureEvent(config: ShanhetuMapConfigData, event: string | number): boolean {
   const key = String(event);
   if (config.Radventure[key]) return true;
   if (adventureChoiceIds(config, event).length > 0) return true;
@@ -113,7 +113,7 @@ export function isAdventureEvent(config: RogueMapConfigData, event: string | num
  * 奇遇（含地图问号关）优先于 Rfight，避免 generalgroup 空壳抢走正文。
  */
 export function buildEventLines(
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   event: string | number,
   runtime: RogueMapRuntime = EMPTY_ROGUE_MAP_RUNTIME,
   cityId?: string | number
@@ -169,7 +169,7 @@ export function buildEventLines(
 
 /** 按当前城池生成地图面板草稿。 */
 export function buildPanelDrafts(
-  config: RogueMapConfigData,
+  config: ShanhetuMapConfigData,
   cities: readonly RogueCitySpot[],
   runtime: RogueMapRuntime = EMPTY_ROGUE_MAP_RUNTIME
 ): Array<Pick<RogueMapPanelLayout, 'id' | 'title' | 'lines'>> {

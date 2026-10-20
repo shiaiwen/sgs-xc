@@ -136,16 +136,29 @@ export function installTiesuoRecastController(
     if (wrapped) patchedBarTarget = target;
   }
 
+  let pollIntervalMs = 500;
+  let timer = runtime.setInterval(sync, pollIntervalMs);
+
+  function setPollInterval(nextMs: number): void {
+    if (stopped || nextMs === pollIntervalMs) return;
+    pollIntervalMs = nextMs;
+    runtime.clearInterval(timer);
+    timer = runtime.setInterval(sync, pollIntervalMs);
+  }
+
   function sync(): void {
     if (stopped) return;
-    ensureCallbackPatch();
     const self = sceneSelf();
-    if (!self) return;
+    if (!self) {
+      setPollInterval(500);
+      return;
+    }
+    setPollInterval(100);
+    ensureCallbackPatch();
     ensureBarUpdatePatch(self);
     lightOkIfRecastReady(self);
   }
 
-  const timer = runtime.setInterval(sync, 100);
   sync();
   return () => {
     stopped = true;

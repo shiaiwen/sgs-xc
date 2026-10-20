@@ -2,12 +2,12 @@
 /** 山河图设置：地图透视、隐藏剧情，以及商店预览入口。 */
 import { onBeforeUnmount, reactive, ref } from "vue";
 import {
-  ROGUE_OPEN_SHOP_LABEL,
-  ROGUE_OPEN_SHOP_TOOLTIP,
-  ROGUE_SHOP_PREVIEW_LABEL,
-  ROGUE_SHOP_PREVIEW_TOOLTIP,
-  ROGUE_SWITCH_SETTINGS,
-} from "../../features/rogue/rogue-settings";
+  SHANHETU_OPEN_SHOP_LABEL,
+  SHANHETU_OPEN_SHOP_TOOLTIP,
+  SHANHETU_SHOP_PREVIEW_LABEL,
+  SHANHETU_SHOP_PREVIEW_TOOLTIP,
+  SHANHETU_SWITCH_SETTINGS,
+} from "../../features/shanhetu/shanhetu-settings";
 
 const props = defineProps({
   configStore: {
@@ -30,10 +30,10 @@ const props = defineProps({
 
 const values = reactive(
   Object.fromEntries(
-    ROGUE_SWITCH_SETTINGS.map(({ key }) => [key, props.configStore.get(key)]),
+    SHANHETU_SWITCH_SETTINGS.map(({ key }) => [key, props.configStore.get(key)]),
   ),
 );
-const unsubscribe = ROGUE_SWITCH_SETTINGS.map(({ key }) =>
+const unsubscribe = SHANHETU_SWITCH_SETTINGS.map(({ key }) =>
   props.configStore.subscribe(key, ({ value }) => {
     values[key] = value;
   }),
@@ -65,7 +65,7 @@ function handleOpenShop() {
 
 <template>
   <section
-    class="xiaochao-settings-section xiaochao-rogue-section"
+    class="xiaochao-settings-section xiaochao-shanhetu-section"
     aria-label="山河图"
   >
     <header class="xiaochao-settings-section__header">
@@ -75,9 +75,9 @@ function handleOpenShop() {
       >
     </header>
     <div class="xiaochao-settings-section__body">
-      <div class="xiaochao-settings-grid xiaochao-rogue-switch-grid">
+      <div class="xiaochao-settings-grid xiaochao-shanhetu-switch-grid">
         <div
-          v-for="setting in ROGUE_SWITCH_SETTINGS"
+          v-for="setting in SHANHETU_SWITCH_SETTINGS"
           :key="setting.key"
           class="xiaochao-block-switch"
           :data-tooltip="setting.tooltip"
@@ -101,19 +101,19 @@ function handleOpenShop() {
       </div>
       <div
         v-if="previewItems.length"
-        class="xiaochao-rogue-shop-preview"
-        :data-tooltip="ROGUE_SHOP_PREVIEW_TOOLTIP"
+        class="xiaochao-shanhetu-shop-preview"
+        :data-tooltip="SHANHETU_SHOP_PREVIEW_TOOLTIP"
         aria-label="集市透视"
       >
-        <div class="xiaochao-rogue-shop-preview__title">
-          {{ ROGUE_SHOP_PREVIEW_LABEL }}
+        <div class="xiaochao-shanhetu-shop-preview__title">
+          {{ SHANHETU_SHOP_PREVIEW_LABEL }}
         </div>
-        <div class="xiaochao-rogue-shop-preview__list" role="list">
+        <div class="xiaochao-shanhetu-shop-preview__list" role="list">
           <button
             v-for="item in previewItems"
             :key="item.id"
             type="button"
-            class="xiaochao-rogue-shop-preview__item"
+            class="xiaochao-shanhetu-shop-preview__item"
             :data-level="item.level >= 1 && item.level <= 4 ? item.level : 0"
             :title="item.title || item.label"
             role="listitem"
@@ -124,11 +124,11 @@ function handleOpenShop() {
       </div>
       <button
         type="button"
-        class="xiaochao-block-entry xiaochao-block-entry--center xiaochao-rogue-shop-btn"
-        :data-tooltip="ROGUE_OPEN_SHOP_TOOLTIP"
+        class="xiaochao-block-entry xiaochao-block-entry--center xiaochao-shanhetu-shop-btn"
+        :data-tooltip="SHANHETU_OPEN_SHOP_TOOLTIP"
         @click="handleOpenShop"
       >
-        <span>{{ ROGUE_OPEN_SHOP_LABEL }}</span>
+        <span>{{ SHANHETU_OPEN_SHOP_LABEL }}</span>
       </button>
     </div>
   </section>

@@ -16,4 +16,4 @@ alwaysApply: true
 
 禁止：
 - 任何 DOM/Vue 浮层形式的明牌（例如标题为"N号位明牌"的框、`SeatKnownCardsOverlay` 之类），不得重新挂载或新建。
-- 依赖 `src/legacy/xiaochao-legacy.js` 实现明牌。
+- 用旧版 DOM 浮层或独立注入脚本实现明牌。

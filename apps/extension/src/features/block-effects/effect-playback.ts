@@ -7,24 +7,34 @@ export type PlaybackKind = 'sha' | 'shan' | 'heal' | 'trick' | 'equip' | 'skill'
 const PRESERVE_ANIMATION = /^(?:tiesuo0[1-5](?:Back|[HLB])?|jiu(?:0[12]|2)?|FX_PaiJu_card_fengyao)$/;
 const PRESERVE_PATH = /^(?:EFF_jiu|EFF_hejiu)$/;
 const TRICK_ANIMATIONS = new Set([
+  'nanman',
+  'nanmanhit',
+  'wanjianqifa',
   'wanjianqifa2',
   'wanjianqifaScene',
   'wanjianqifaHandCard',
+  'wanjianqifaHit',
   'wanjianqifaDodge',
   'zjzb',
+  'yydl',
+  'chuqibuyi',
+  'hongyundangtou',
+  'younantongdang',
+  'quanjiu',
   'liangleichadao',
+  'wutianwujie',
   'lgzw',
-  'tiesuo',
-  'huogong',
-  'wuxie',
-  'nanmanhit',
-  'jiaoyin'
+  'ssyg',
+  'ljxs',
+  'xdqx',
+  'nswh'
 ]);
 
 export interface PlaybackCard {
   IsEquip?: boolean;
   IsJinNang?: boolean;
   IsSkill?: boolean;
+  IsGeneral?: boolean;
   ID?: unknown;
   SkillId?: unknown;
 }
@@ -35,7 +45,7 @@ export function kindFromCard(card: PlaybackCard | Record<string, unknown> | null
   const record = card as PlaybackCard;
   if (record.IsEquip) return 'equip';
   if (record.IsJinNang) return 'trick';
-  if (record.IsSkill) return 'skill';
+  if (record.IsSkill || record.IsGeneral) return 'skill';
   const id = Number(record.ID ?? record.SkillId);
   if (id === 1) return 'sha';
   if (id === 2) return 'shan';
@@ -50,18 +60,20 @@ export function kindFromCard(card: PlaybackCard | Record<string, unknown> | null
 export function classifyPlayback(
   effectPath: unknown,
   animationName: unknown,
-  skillKind: (skillId: number) => PlaybackKind | '' = () => ''
+  skillKind: (skillId: number) => PlaybackKind | '' = () => '',
+  sound: unknown = ''
 ): PlaybackKind | '' {
   const path = String(effectPath || '');
   const name = String(animationName || '');
-  if (PRESERVE_ANIMATION.test(name) || PRESERVE_PATH.test(path)) return '';
-  if (path.includes('EF_Basic_Sha')) return 'sha';
-  if (path.includes('EFF_shan') || path.includes('EF_Basic_Shan')) return 'shan';
-  if (path.includes('OtherEffect/FX_MatchGame_huixie_')) return 'heal';
-  if (path.startsWith('res/assets/animate/equip') || path.includes('/neweffect/equip/')) return 'equip';
-  if (path.includes('/neweffect/skill/') || path.includes('GeneralSkillEffect')) return 'skill';
+  if (PRESERVE_ANIMATION.test(name) || PRESERVE_PATH.test(path) || path === 'SkillEffect/FX_PaiJu_card_fengyao') return '';
+  if (path === 'Plot_tiesuolianhuan' && name !== '' && name !== 'play') return '';
+  if (path.includes('EF_Basic_Sha_') || path.startsWith('EF_Basic_Sha_')) return 'sha';
+  if (path === 'EFF_shan' || path.includes('EFF_shan')) return 'shan';
+  if (path === 'EFF_tao' || path.includes('EFF_tao') || path.includes('OtherEffect/FX_MatchGame_huixie_')) return 'heal';
+  if (path.startsWith('EF_Equip_') || path.startsWith('res/assets/animate/equip') || path.includes('/neweffect/equip/')) return 'equip';
+  if (path.startsWith('SkillEffect/') || path.includes('/neweffect/skill/') || path.includes('GeneralSkillEffect')) return 'skill';
   if (TRICK_ANIMATIONS.has(name)) return 'trick';
-  const skillId = Number(/^3d_(\d+)_/.exec(name)?.[1]);
+  const skillId = Number(/^3d_(\d+)_/.exec(String(sound || name))?.[1]);
   const fromSkill = Number.isFinite(skillId) ? skillKind(skillId) : '';
   if (fromSkill) return fromSkill;
   if (/^(?:EF_Plot_|Plot_)/.test(path) || /^(?:EF_NanManRuQin|EFF_NanManRuQing)/.test(path)) return 'trick';

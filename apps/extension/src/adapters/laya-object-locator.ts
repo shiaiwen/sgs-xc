@@ -51,7 +51,9 @@ const METHOD_SIGNATURES: Record<string, Record<string, string | readonly string[
   GameShopManager: { BuySingleItem: ['triggerTask', 'extraOperate', 'DealPassId'] },
   TaskManager: {
     RequestTaskAward: 'TaskRewardSelectWindow',
-    GetAllTaskDataByTaskID: 'GetNoGetTaskDataByTaskID'
+    GetAllTaskDataByTaskID: 'GetNoGetTaskDataByTaskID',
+    RequestAcceptTask: 'RequestAcceptTask',
+    reqTaskProgressByIds: 'reqTaskProgressByIds'
   }
 };
 
@@ -80,6 +82,8 @@ export interface LayaObjectLocator {
   findWindows(name: string): UnknownRecord[];
   findInLayer(layerName: string, name: string): UnknownRecord[];
   managerFromList(predicate: (manager: UnknownRecord) => boolean): UnknownRecord | null;
+  /** 在 ServerProxy / ActivityManager / 分发器监听者及 managerList 上查找管理器。 */
+  findManagerByPredicate(predicate: (manager: UnknownRecord) => boolean): UnknownRecord | null;
   obfuscatedMethodName(target: unknown, owner: string, method: string): string | null;
 }
 
@@ -88,21 +92,62 @@ export function createLayaObjectLocator(
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): LayaObjectLocator {
   const managers = new Map<string, UnknownRecord>();
+  let listenerScanDepth = 0;
 
   function dispatcher(): UnknownRecord | null {
     return locateGameEventDispatcher(globalObject);
   }
 
   function manager(name: string): UnknownRecord | null {
+    if (name === 'ServerProxy') {
+      const windowManager = managers.get('WindowManager') ?? findManagerByCaller('WindowManager');
+      if (windowManager) managers.set('WindowManager', windowManager);
+      return asRecord(windowManager?.proxy);
+    }
     const cached = managers.get(name);
     if (cached) return cached;
-    const found = name === 'ServerProxy'
-      ? asRecord(manager('WindowManager')?.proxy)
-      : name === 'GameEventDispatcher'
-        ? dispatcher()
-        : findManagerByCaller(name);
+    const found = name === 'GameEventDispatcher'
+      ? dispatcher()
+      : findManagerByCaller(name);
     if (found) managers.set(name, found);
     return found;
+  }
+
+  function listenersOf(source: UnknownRecord | null, eventName: string): unknown[] {
+    const bucket = asRecord(source?._events)?.[eventName];
+    if (!bucket) return [];
+    return Array.isArray(bucket) ? bucket : [bucket];
+  }
+
+  function callerFromListener(listener: unknown): UnknownRecord | null {
+    return asRecord(asRecord(listener)?.caller);
+  }
+
+  function findManagerByListenerScan(predicate: (caller: UnknownRecord) => boolean): UnknownRecord | null {
+    if (listenerScanDepth > 0) return managerFromList(predicate);
+    listenerScanDepth += 1;
+    try {
+      const fromList = managerFromList(predicate);
+      if (fromList) return fromList;
+      const sources = [manager('ServerProxy'), manager('ActivityManager'), dispatcher()];
+      let scannedKeys = 0;
+      const keyBudget = 120;
+      for (const source of sources) {
+        const events = asRecord(source?._events);
+        if (!events) continue;
+        for (const key of Object.keys(events)) {
+          if (scannedKeys >= keyBudget) break;
+          scannedKeys += 1;
+          for (const listener of listenersOf(source, key)) {
+            const caller = callerFromListener(listener);
+            if (caller && predicate(caller)) return caller;
+          }
+        }
+      }
+      return null;
+    } finally {
+      listenerScanDepth -= 1;
+    }
   }
 
   function findManagerByCaller(name: string): UnknownRecord | null {
@@ -110,23 +155,47 @@ export function createLayaObjectLocator(
     if (!lookup) return null;
     const [eventName, dispatcherName = 'ServerProxy', requiredKey] = lookup;
     const source = manager(dispatcherName);
-    const listeners = asRecord(source?._events)?.[eventName];
-    for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
-      const caller = asRecord(asRecord(listener)?.caller);
-      if (caller && (!requiredKey || requiredKey in caller)) return caller;
+    const eventNames = name === 'NewFuLiManager'
+      ? [eventName, 'SetOutGiftInfoResp']
+      : [eventName];
+    for (const key of eventNames) {
+      for (const listener of listenersOf(source, key)) {
+        const caller = callerFromListener(listener);
+        if (caller && (!requiredKey || requiredKey in caller)) return caller;
+      }
+    }
+    if (name === 'NewFuLiManager') {
+      return findManagerByListenerScan((caller) => typeof caller.SendSetOutRewardAllReq === 'function'
+        || caller.passDataDic !== undefined);
     }
     return null;
   }
 
-  function managerFromList(predicate: (manager: UnknownRecord) => boolean): UnknownRecord | null {
+  function managerListEntries(): UnknownRecord[] {
     const windowManager = manager('WindowManager');
-    const list = asRecord(windowManager?.constructor)?.managerList;
-    if (!Array.isArray(list)) return null;
-    for (const item of list) {
-      const record = asRecord(item);
-      if (record && predicate(record)) return record;
+    if (!windowManager) return [];
+    const ctor = asRecord(windowManager.constructor);
+    const candidates = [
+      ctor?.managerList,
+      windowManager.managerList,
+      asRecord(ctor?.prototype)?.managerList
+    ];
+    for (const list of candidates) {
+      if (!Array.isArray(list)) continue;
+      return list.map(asRecord).filter((item): item is UnknownRecord => item !== null);
+    }
+    return [];
+  }
+
+  function managerFromList(predicate: (manager: UnknownRecord) => boolean): UnknownRecord | null {
+    for (const record of managerListEntries()) {
+      if (predicate(record)) return record;
     }
     return null;
+  }
+
+  function findManagerByPredicate(predicate: (manager: UnknownRecord) => boolean): UnknownRecord | null {
+    return managerFromList(predicate) ?? findManagerByListenerScan(predicate);
   }
 
   function scene(): UnknownRecord | null {
@@ -268,6 +337,7 @@ export function createLayaObjectLocator(
     findWindows,
     findInLayer,
     managerFromList,
+    findManagerByPredicate,
     obfuscatedMethodName
   };
 }

@@ -56,7 +56,7 @@ export interface RogueMapRuntime {
   seedItem: unknown[];
 }
 
-export interface RogueMapConfigData {
+export interface ShanhetuMapConfigData {
   Rcity: Record<string, RogueCityMeta>;
   Rfight: Record<string, RogueFightMeta>;
   Radventure: Record<string, string>;

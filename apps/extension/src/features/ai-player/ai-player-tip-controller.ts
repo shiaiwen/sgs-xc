@@ -163,7 +163,8 @@ export function installAiPlayerTipController(
       gameEnded = true;
     }
   });
-  const timer = globalObject.setInterval(scan, 200);
+  let pollIntervalMs = 1000;
+  let timer = globalObject.setInterval(scan, pollIntervalMs);
   scan();
 
   return () => {
@@ -171,7 +172,15 @@ export function installAiPlayerTipController(
     globalObject.clearInterval(timer);
   };
 
+  function setPollInterval(nextMs: number): void {
+    if (nextMs === pollIntervalMs) return;
+    pollIntervalMs = nextMs;
+    globalObject.clearInterval(timer);
+    timer = globalObject.setInterval(scan, pollIntervalMs);
+  }
+
   function scan(): void {
+    setPollInterval(locateGameScene(globalObject) ? 200 : 1000);
     // 彼此独立扫描：座位 UI 尚未就绪或某一步访问异常时，也要继续挂资料页钩子。
     try { scanSeats(); } catch { /* 下一轮重试 */ }
     try { scanProfile(); } catch { /* 下一轮重试 */ }

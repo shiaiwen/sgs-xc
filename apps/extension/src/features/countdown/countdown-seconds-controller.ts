@@ -116,8 +116,8 @@ export function installCountdownSecondsController(
     enabled = Boolean(value);
     synchronize();
   });
-  // 避免高频遍历整个 Laya 显示树；250ms 仍足以跟上秒数变化和弹窗创建。
-  const timer = globalObject.setInterval(synchronize, 250);
+  // 避免高频遍历整个 Laya 显示树；约 400ms 仍足以跟上秒数变化和弹窗创建。
+  const timer = globalObject.setInterval(synchronize, 400);
   synchronize();
 
   return () => {

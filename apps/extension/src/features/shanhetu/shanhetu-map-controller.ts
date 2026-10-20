@@ -8,13 +8,13 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import { ROGUE_MAP_KEY } from './rogue-settings.ts';
+import { SHANHETU_MAP_KEY } from './shanhetu-settings.ts';
 import {
-  createRogueMapConfigSourceFromCardConfig,
-  type RogueMapConfigSource
-} from './rogue-map-config-source.ts';
+  createShanhetuMapConfigSourceFromCardConfig,
+  type ShanhetuMapConfigSource
+} from './shanhetu-map-config-source.ts';
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
-import { buildPanelDrafts } from './rogue-map-event-text.ts';
+import { buildPanelDrafts } from './shanhetu-map-event-text.ts';
 import {
   cityImageReady,
   fingerprintCities,
@@ -24,8 +24,8 @@ import {
   readRaidItem,
   readRaidObstacle,
   resolveCityGeometry
-} from './rogue-map-geometry.ts';
-import { estimatePanelHeight, layoutMapPanels } from './rogue-map-layout.ts';
+} from './shanhetu-map-geometry.ts';
+import { estimatePanelHeight, layoutMapPanels } from './shanhetu-map-layout.ts';
 import {
   ROGUE_MAP_STYLE,
   EMPTY_ROGUE_MAP_RUNTIME,
@@ -33,28 +33,28 @@ import {
   type RogueMapPanelLayout,
   type RogueMapRuntime,
   type RogueRect
-} from './rogue-map-types.ts';
+} from './shanhetu-map-types.ts';
 import {
   clearCityOverlays,
   createCityOverlayNodes,
   hasMountedCityOverlay,
   mountCityOverlays
-} from './rogue-map-view.ts';
+} from './shanhetu-map-view.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface RogueMapController {
+export interface ShanhetuMapController {
   /** 协议分发前：从山河同步包抽出 cities / difficulty。 */
   filterMessage(payload: UnknownRecord, className: string): void;
   dispose(): void;
 }
 
-export interface RogueMapOptions {
+export interface ShanhetuMapOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
-  configSource?: RogueMapConfigSource;
+  configSource?: ShanhetuMapConfigSource;
   /** 与卡牌配置同源；未显式传入 configSource 时使用。 */
-  cardConfigSource?: Pick<CardConfigSource, 'getRogueMapData'>;
+  cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData'>;
   /** 测试用：替换轮询定时器。 */
   intervalMs?: number;
 }
@@ -127,15 +127,15 @@ function extractRuntime(payload: UnknownRecord, previous: RogueMapRuntime): Rogu
  * 山河地图透视：在 `RogueSmallMapScene.cityView` 上绘制城池事件面板。
  * 数据来自卡牌包山河配置 + `decodeRogueLikeDataSync`，不依赖旧脚本 DOM/开关。
  */
-export function installRogueMapController(
+export function installShanhetuMapController(
   configStore: XiaochaoConfigStore,
-  options: RogueMapOptions = {}
-): RogueMapController {
+  options: ShanhetuMapOptions = {}
+): ShanhetuMapController {
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const configSource = options.configSource
     ?? (options.cardConfigSource
-      ? createRogueMapConfigSourceFromCardConfig(options.cardConfigSource)
+      ? createShanhetuMapConfigSourceFromCardConfig(options.cardConfigSource)
       : null);
   if (!configSource) {
     throw new Error('[xiaochao] 山河地图需要 cardConfigSource 或 configSource');
@@ -153,7 +153,7 @@ export function installRogueMapController(
   let lastCityView: UnknownRecord | null = null;
 
   function enabled(): boolean {
-    return configStore.get(ROGUE_MAP_KEY) === true;
+    return configStore.get(SHANHETU_MAP_KEY) === true;
   }
 
   function isNodeVisible(node: UnknownRecord | null): boolean {
@@ -366,7 +366,7 @@ export function installRogueMapController(
 
   function publishDebug(detail: Record<string, unknown>): void {
     try {
-      (globalObject as UnknownRecord).__XIAOCHAO_ROGUE_MAP_DEBUG__ = {
+      (globalObject as UnknownRecord).__XIAOCHAO_SHANHETU_MAP_DEBUG__ = {
         at: Date.now(),
         enabled: enabled(),
         cityCount: cities.length,
@@ -383,7 +383,7 @@ export function installRogueMapController(
     if (!disposed) redraw();
   }, intervalMs);
 
-  const unsubscribe = configStore.subscribe(ROGUE_MAP_KEY, ({ value }) => {
+  const unsubscribe = configStore.subscribe(SHANHETU_MAP_KEY, ({ value }) => {
     if (!value) clear();
     else redraw(true);
   });

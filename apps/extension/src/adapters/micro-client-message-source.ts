@@ -3,7 +3,7 @@
  * 同一条消息两边都会出现时只处理一次。
  */
 
-import { createLayaObjectLocator } from './laya-object-locator.ts';
+import { installProtocolEventHooks } from './server-proxy-protocol-hook.ts';
 import { findGameMessage, translateGameMessages } from './game-message-adapter.ts';
 import type { GameEvent, GameEventBus } from '../runtime/game-event-bus.ts';
 
@@ -37,6 +37,8 @@ type MicroClientMessageWindow = Window;
 export interface MicroClientMessageSourceOptions {
   /** 游戏处理协议前改写原始对象，例如屏蔽设置。 */
   mutateMessage?: (payload: Record<string, unknown>, className: string) => void;
+  /** 为 true 时不交给游戏原 handler，用于狗托等必须整包丢弃的协议。 */
+  shouldDropProtocolEvent?: (className: string, payload: Record<string, unknown>) => boolean;
 }
 
 /** 接入游戏协议：控制台日志与 ServerProxy 分发互为补充。 */
@@ -77,6 +79,15 @@ export function installMicroClientMessageSource(
     deliver(rawArguments, '', 'console');
   };
 
+  function mutateProtocolPayload(payload: UnknownRecord, className: string): void {
+    if (!options.mutateMessage || !className) return;
+    try {
+      options.mutateMessage(payload, className);
+    } catch (error) {
+      console.warn('[xiaochao] 协议改写失败', error);
+    }
+  }
+
   function deliver(
     rawArguments: unknown[],
     fallbackClassName = '',
@@ -91,19 +102,13 @@ export function installMicroClientMessageSource(
       diagnostics.lastClassName = className;
     }
     if (payload) {
+      if (!message && className && !readClassName(payload)) payload.ClassName = className;
+      mutateProtocolPayload(payload, className);
       if (recentPayloads.has(payload)) return;
       recentPayloads.add(payload);
       setTimeout(() => recentPayloads.delete(payload), 0);
-      if (!message && className && !readClassName(payload)) payload.ClassName = className;
       if (className === 'PubGsCMoveCard') {
         diagnostics.lastCardMovementInput = snapshotMovementPayload(payload, className);
-      }
-      if (options.mutateMessage && className) {
-        try {
-          options.mutateMessage(payload, className);
-        } catch (error) {
-          console.warn('[xiaochao] 协议改写失败', error);
-        }
       }
     }
     translateGameMessages(rawArguments).forEach((event) => {
@@ -186,58 +191,28 @@ export function installMicroClientMessageSource(
   }
 
   const consoleLogSource = installConsoleLogSource(listener);
-  const dispatcherSource = installServerProxySource(globalObject, deliver, diagnostics);
+  const protocolHook = installProtocolEventHooks(globalObject, {
+    mutate: (className, payload) => mutateProtocolPayload(payload, className),
+    shouldDrop: (className, payload) => options.shouldDropProtocolEvent?.(className, payload) ?? false,
+    onBeforeForward: (className, payload) => {
+      if (!isProtocolEvent(className, payload)) return;
+      diagnostics.serverProxy.calls += 1;
+      diagnostics.serverProxy.managerFound = true;
+      diagnostics.serverProxy.hooked = protocolHook.diagnostics.hookedTargets.length > 0;
+      diagnostics.serverProxy.protocolCalls += 1;
+      diagnostics.serverProxy.lastEventName = className;
+      diagnostics.protocolClassCounts[className] = (diagnostics.protocolClassCounts[className] ?? 0) + 1;
+      diagnostics.recentProtocolEvents.push(snapshotProtocolEvent(className, payload));
+      diagnostics.recentProtocolEvents = diagnostics.recentProtocolEvents.slice(-30);
+      deliver([payload], className, 'server-proxy');
+    }
+  });
+  (diagnostics as UnknownRecord).protocolHook = protocolHook.diagnostics;
 
   return () => {
     consoleLogSource.restore();
-    dispatcherSource.restore();
+    protocolHook.restore();
     diagnostics.state = 'disposed';
-  };
-}
-
-/** 浏览器客户端不把协议打到控制台，分发时的事件名就是协议类名。 */
-function installServerProxySource(
-  globalObject: MicroClientMessageWindow,
-  deliver: (rawArguments: unknown[], fallbackClassName?: string, source?: MessageSourceName) => void,
-  diagnostics: MessageSourceDiagnostics
-): { restore(): void } {
-  const locator = createLayaObjectLocator(globalObject as never);
-  let wrapped: ((this: unknown, type: unknown, data: unknown, ...rest: unknown[]) => unknown) | null = null;
-  let original: UnknownRecord['event'] | null = null;
-  let proxy: UnknownRecord | null = null;
-  const timer = setInterval(() => {
-    const found = asRecord(locator.manager('WindowManager')?.proxy);
-    if (!found) return;
-    diagnostics.serverProxy.managerFound = true;
-    if (typeof found.event !== 'function') {
-      diagnostics.serverProxy.hooked = false;
-      return;
-    }
-    if (found.event === wrapped) return;
-    proxy = found;
-    original = found.event;
-    wrapped = function (this: unknown, type: unknown, data: unknown, ...rest: unknown[]) {
-      const className = typeof type === 'string' ? type : '';
-      diagnostics.serverProxy.calls += 1;
-      diagnostics.serverProxy.lastEventName = className;
-      if (data && typeof data === 'object' && isProtocolEvent(className, data as UnknownRecord)) {
-        diagnostics.serverProxy.protocolCalls += 1;
-        const payload = data as UnknownRecord;
-        diagnostics.protocolClassCounts[className] = (diagnostics.protocolClassCounts[className] ?? 0) + 1;
-        diagnostics.recentProtocolEvents.push(snapshotProtocolEvent(className, payload));
-        diagnostics.recentProtocolEvents = diagnostics.recentProtocolEvents.slice(-30);
-        deliver([data], className, 'server-proxy');
-      }
-      return typeof original === 'function' ? original.call(this, type, data, ...rest) : undefined;
-    };
-    found.event = wrapped;
-    diagnostics.serverProxy.hooked = found.event === wrapped;
-  }, 1000);
-  return {
-    restore() {
-      clearInterval(timer);
-      if (proxy && wrapped && proxy.event === wrapped && original) proxy.event = original;
-    }
   };
 }
 

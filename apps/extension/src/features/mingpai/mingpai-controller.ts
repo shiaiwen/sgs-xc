@@ -42,7 +42,7 @@ import {
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { resolveSkillIds } from '../skill-assist/skill-visibility.ts';
 import { traceMingpai } from '../../runtime/mingpai-trace.ts';
-import { legacyIncomingHandLabel } from './rules/legacy-hand-label.ts';
+import { buildIncomingHandSourceLabel } from './rules/hand-source-label.ts';
 import { readSpellName } from './spell-name.ts';
 import { DRAW_PILE_OWNER, handReveal } from './rules/reveal-types.ts';
 
@@ -59,7 +59,7 @@ export interface MingpaiControllerOptions {
 
 /**
  * 明牌控制器：吸收原 known-hand-card-controller 全部协议路径，
- * 并维护分区投影（unknown / 手牌区 / 技能条）。运行时不依赖 legacy。
+ * 并维护分区投影（unknown / 手牌区 / 技能条）。
  */
 export function installMingpaiController(
   seatStateStore: SeatStateStore,
@@ -477,7 +477,7 @@ export function installMingpaiController(
 
   /** 顺手拿到的牌、火攻当场亮出的牌，都按技能短名打上标签。 */
   function rememberIncomingHandLabels(event: MoveCardEvent, cardIds: readonly number[]): void {
-    const sourceLabel = legacyIncomingHandLabel({
+    const sourceLabel = buildIncomingHandSourceLabel({
       spellId: event.spellId,
       moveType: event.moveType,
       fromZone: event.fromZone,
