@@ -8,7 +8,7 @@
 
 import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import type { TaskScope } from '../skin-background/skin-runtime.ts';
-import type { AutoTaskClaims } from './auto-task-claims.ts';
+import { beijingDate, type AutoTaskClaims } from './auto-task-claims.ts';
 import type { AutoTaskConfigData } from './auto-task-config-data.ts';
 import {
   TAVERN_TASK_IDS,
@@ -17,9 +17,11 @@ import {
   flattenGameCollection,
   isHuanLeDouItem,
   isTaskExcluded,
+  rewardLooksLikeGeneral,
   rewardsBlocked,
   rewardsContainDiJiaQuan,
   rewardsContainHuanLeDou,
+  shouldClaimDdztllReward,
   taskClaimKey,
   taskIdOf,
   taskRewards,
@@ -37,6 +39,7 @@ export interface AutoTaskOptions {
   skipSignTrialCard: boolean;
   skipDiJiaQuan: boolean;
   skipHuanLeDou: boolean;
+  skipFreeBless: boolean;
 }
 
 export interface AutoTaskRunnerDeps {
@@ -102,6 +105,9 @@ const ACCUMULATED_REWARD_METHODS = [
 export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   const { locator, windows, claims, tasks } = deps;
   const newJunDianRuns = new WeakMap<object, Promise<boolean>>();
+  const newPrivilegePending = new WeakMap<object, Map<number, string>>();
+  const newPrivilegeBound = new WeakSet<object>();
+  const freeBlessBound = new WeakSet<object>();
   let mailRunning = false;
   let generalBagTimerArmed = false;
   let goodsConfigLookup: ((id: unknown) => unknown) | null | undefined;
@@ -537,7 +543,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     claimWyqjTrialCard(activity, taskManager);
     claimInviteLogin(activity);
     claimLowBeanFree(manager('ActivityGameDataManager'));
-    if (activity.HasDDZTLLRewardRed && !blocked(activity.tllLastCanRewardInfo)) {
+    if (shouldClaimDdztllReward({
+      skipHuanLeDou: deps.options().skipHuanLeDou,
+      hasRewardRed: Boolean(activity.HasDDZTLLRewardRed),
+      rewardInfo: activity.tllLastCanRewardInfo
+    }, ruleContext())) {
       claims.throttled('activity:DDZTLL:0', () => call(activity, 'SendDDZTLLAwardReq', 0, false, true));
     }
     if (activity.HasJDRewardRed && has(activity, 'ReqDrawAllJDRwd') && !blocked(activity.JDShowRewardList)) {
@@ -748,6 +758,108 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     }
   }
 
+  function goodsType(itemId: number): { typeId: number; period: number } | null {
+    const goods = goodsConfig(itemId);
+    const base = asRecord(goods?.baseInfo) ?? goods;
+    if (!base) return null;
+    return { typeId: Number(base.TypeID ?? base.typeId), period: Number(base.period ?? base.Period) };
+  }
+
+  function bindNewPrivilege(cardManager: UnknownRecord): void {
+    if (newPrivilegeBound.has(cardManager) || !has(cardManager, 'on')) return;
+    newPrivilegeBound.add(cardManager);
+    const pending = new Map<number, string>();
+    newPrivilegePending.set(cardManager, pending);
+    const onData = () => {
+      if (active()) claimNewPrivilegeCards(cardManager);
+    };
+    const onActivate = () => {
+      if (!active()) return;
+      claims.throttled('newPrivilege:sync', () => call(cardManager, 'SendNewPrivilegeCardDataReq'));
+    };
+    const onReward = (id: unknown) => {
+      const cardId = Number(id);
+      const day = pending.get(cardId);
+      if (day && day === beijingDate(Date.now())) claims.markClaimedToday(`newPrivilege:daily:${cardId}`);
+      pending.delete(cardId);
+      onActivate();
+    };
+    call(cardManager, 'on', 'UPDATE_NEW_PRIVILEGE_CARD_DATA', cardManager, onData);
+    call(cardManager, 'on', 'UPDATE_NEW_PRIVILEGE_CARD_DAILY_REWARD', cardManager, onReward);
+    call(cardManager, 'on', 'UPDATE_NEW_PRIVILEGE_CARD_ACTIVATE', cardManager, onActivate);
+  }
+
+  function claimNewPrivilegeCards(cardManager: UnknownRecord | null): void {
+    if (!cardManager) return;
+    bindNewPrivilege(cardManager);
+    claims.throttled('newPrivilege:sync', () => call(cardManager, 'SendNewPrivilegeCardDataReq'));
+    const options = deps.options();
+    const pending = newPrivilegePending.get(cardManager);
+    for (const card of deps.configData()?.newPrivilegeCards ?? []) {
+      try {
+        if ((card.type !== 1 && card.type !== 2) || card.open !== 1) continue;
+        const claimKey = `newPrivilege:daily:${card.id}`;
+        if (claims.claimedToday(claimKey)) continue;
+        if (!call(cardManager, 'IsCardActive', card.id) || call(cardManager, 'IsClaimedToday', card.id)) continue;
+        if (!card.rewards.length) continue;
+        const rewardItems = card.rewards.map((reward) => ({ ItemID: reward.itemId, ItemNum: reward.itemNum }));
+        if (rewardsBlocked(rewardItems, { ...options, goodsName })) continue;
+        if (options.skipSignTrialCard && card.rewards.some((reward) => rewardLooksLikeGeneral(goodsType(reward.itemId)))) continue;
+        claims.throttled(`newPrivilege:${card.id}`, () => {
+          pending?.set(card.id, beijingDate(Date.now()));
+          const sent = call(cardManager, 'SendNewPrivilegeCardDailyRewardReq', card.id);
+          if (sent === false) pending?.delete(card.id);
+          return sent;
+        });
+      } catch (error) {
+        console.warn('[自动领取] 新周卡月卡领取失败:', card.id, error);
+      }
+    }
+  }
+
+  function blessNewManager(): UnknownRecord | null {
+    return manager('BlessNewManager')
+      ?? locator.findManagerByPredicate((item) => typeof item.sendQifuDrawReq === 'function'
+        && typeof item.CanFreeBless === 'function'
+        && item.infoDic != null);
+  }
+
+  function blessRoundIds(infoDic: unknown): number[] {
+    const record = asRecord(infoDic);
+    const maps = asRecord(record?.Maps) ?? asRecord(record?._maps);
+    if (!maps) return [];
+    return Object.keys(maps).map(Number).filter((id) => Number.isInteger(id) && id > 0);
+  }
+
+  function bindFreeBless(bless: UnknownRecord): void {
+    if (freeBlessBound.has(bless) || !has(bless, 'on')) return;
+    freeBlessBound.add(bless);
+    const refresh = () => {
+      if (active()) claimFreeBlessDraws(bless);
+    };
+    call(bless, 'on', 'BLESS_RECEIVE_CONFIG', bless, refresh);
+    call(bless, 'on', 'UPDATA_CUR_QIFU_UI', bless, refresh);
+  }
+
+  /** 只在游戏判定本次不扣祈福灯时发单抽。付费抽奖和买灯都不走这里。 */
+  function claimFreeBlessDraws(bless: UnknownRecord | null): void {
+    if (!bless || deps.options().skipFreeBless) return;
+    bindFreeBless(bless);
+    claims.throttled('qifu:free:sync', () => call(bless, 'SendClientSecretInfoReqs', 0));
+    for (const roundId of blessRoundIds(bless.infoDic)) {
+      try {
+        if (call(bless, 'IsInDrawTime', roundId) !== true) continue;
+        if (call(bless, 'CanFreeBless', roundId) !== true) continue;
+        claims.throttled(`qifu:free:${roundId}`, () => {
+          if (call(bless, 'CanFreeBless', roundId) !== true) return false;
+          return call(bless, 'sendQifuDrawReq', roundId, 1);
+        });
+      } catch (error) {
+        console.warn('[自动领取] 免费祈福失败:', roundId, error);
+      }
+    }
+  }
+
   function claimMonthCards(welfare: UnknownRecord): void {
     for (const type of MONTH_CARD_TYPES) {
       const card = asRecord(call(welfare, 'GetCardDataByType', type));
@@ -780,6 +892,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     await claimBlessingTree(welfare);
     if (!active()) return;
     claimMonthCards(welfare);
+    if (!active()) return;
+    claimNewPrivilegeCards(manager('NewPrivilegeCardManager'));
   }
 
   // ---------- 公会三敲 ----------
@@ -1105,6 +1219,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   return {
     runPass() {
       if (!active()) return;
+      claimNewPrivilegeCards(manager('NewPrivilegeCardManager'));
+      claimFreeBlessDraws(blessNewManager());
       runStep('武将福利', claimNewFuLiWelfare);
       runStep('任务', claimTasks);
       runStep('活动', claimActivities);

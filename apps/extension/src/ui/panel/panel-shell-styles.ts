@@ -728,8 +728,25 @@ const PANEL_SHELL_CSS_SOURCE = `
 .xiaochao-block-dialog {
   width: min(250px, calc(100vw - 32px));
 }
+.xiaochao-auto-task-dialog {
+  width: max-content;
+  min-width: 280px;
+  max-width: calc(100vw - 32px);
+}
+.xiaochao-auto-task-dialog .xiaochao-block-group__grid {
+  grid-template-columns: repeat(3, max-content);
+  grid-gap: 10px 14px;
+}
 .xiaochao-block-dialog .xiaochao-dialog__content {
   padding: 12px 10px 14px;
+}
+.xiaochao-auto-task-dialog .xiaochao-dialog__content {
+  box-sizing: border-box;
+  width: auto;
+  padding: 12px 22px 14px 8px;
+}
+.xiaochao-auto-task-dialog .xiaochao-block-check__box {
+  margin-left: 0;
 }
 .xiaochao-block-select-bar {
   display: flex;
@@ -754,6 +771,10 @@ const PANEL_SHELL_CSS_SOURCE = `
   border-color: rgba(242, 222, 156, .62);
   background: linear-gradient(90deg, rgba(215, 182, 107, .2), rgba(57, 47, 34, .78));
   color: #f2de9c;
+}
+.xiaochao-block-select-btn:disabled {
+  opacity: .45;
+  cursor: default;
 }
 .xiaochao-block-select-btn:active {
   border-color: rgba(242, 222, 156, .78);

@@ -95,10 +95,35 @@ export function rewardsContainHuanLeDou(rewards: unknown, context: RewardFilterC
   return someReward(rewards, context, (itemId, name) => name.includes('欢乐豆') || isHuanLeDouItem(itemId));
 }
 
+const GENERAL_GOODS_TYPES = new Set([0x95, 0xa1, 0xa2]);
+const TIMED_GENERAL_TYPE = 0x19;
+const TIMED_GENERAL_PERIOD_MAX = 0x12cc0300;
+
+/** 新周卡、新月卡每日奖励里的武将、体验武将。 */
+export function rewardLooksLikeGeneral(goods: { typeId: number; period: number } | null): boolean {
+  if (!goods || !Number.isFinite(goods.typeId)) return false;
+  if (GENERAL_GOODS_TYPES.has(goods.typeId)) return true;
+  return goods.typeId === TIMED_GENERAL_TYPE
+    && goods.period > 0
+    && goods.period < TIMED_GENERAL_PERIOD_MAX;
+}
+
 /** 奖励含用户选择跳过的抵价券 / 欢乐豆。 */
 export function rewardsBlocked(rewards: unknown, context: RewardFilterContext): boolean {
   return (context.skipDiJiaQuan && rewardsContainDiJiaQuan(rewards, context))
     || (context.skipHuanLeDou && rewardsContainHuanLeDou(rewards, context));
+}
+
+/**
+ * ActivityManager 的 DDZTLL 领奖（协议 SendDDZTLLAwardReq，奖励为欢乐豆）。
+ * 设置里不领欢乐豆时整段跳过，不依赖 tllLastCanRewardInfo 能否解析出豆。
+ */
+export function shouldClaimDdztllReward(
+  options: { skipHuanLeDou: boolean; hasRewardRed: boolean; rewardInfo: unknown },
+  context: RewardFilterContext
+): boolean {
+  if (options.skipHuanLeDou || !options.hasRewardRed) return false;
+  return !rewardsBlocked(options.rewardInfo, context);
 }
 
 /** 按数组 / datum / _objDatum / _maps 展开游戏容器。 */

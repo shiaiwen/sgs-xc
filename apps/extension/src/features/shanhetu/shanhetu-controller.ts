@@ -23,6 +23,9 @@ import {
   installShanhetuStoryController,
   type ShanhetuStoryController
 } from './shanhetu-story-controller.ts';
+import { installShanhetuZhanfaCount } from './shanhetu-zhanfa-controller.ts';
+import { installShanhetuChangeGeneral } from './shanhetu-change-general-controller.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -38,7 +41,9 @@ export interface ShanhetuControllerOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
   documentObject?: Document;
-  cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData'>;
+  cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData' | 'getGeneralName' | 'generalNamesReady'>;
+  gameEvents?: GameEventBus;
+  selfSeatId?: () => number | null;
 }
 
 /** 山河图三项：地图透视、隐藏对白、打开集市（含集市透视）。 */
@@ -62,6 +67,22 @@ export function installShanhetuController(
     locator,
     cardConfigSource: options.cardConfigSource
   });
+  const names = options.cardConfigSource;
+  const stopChangeGeneral = names
+    ? installShanhetuChangeGeneral({
+      globalObject,
+      locator,
+      names
+    })
+    : () => undefined;
+  const stopZhanfa = options.gameEvents
+    ? installShanhetuZhanfaCount({
+      globalObject,
+      locator,
+      gameEvents: options.gameEvents,
+      selfSeatId: options.selfSeatId ?? (() => null)
+    })
+    : () => undefined;
 
   return {
     openShop: () => shop.openShop(),
@@ -72,6 +93,8 @@ export function installShanhetuController(
       shop.filterMessage(payload, className);
     },
     dispose() {
+      stopZhanfa();
+      stopChangeGeneral();
       map.dispose();
       story.dispose();
       shop.dispose();

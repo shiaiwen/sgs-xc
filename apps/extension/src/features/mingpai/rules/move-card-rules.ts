@@ -108,7 +108,7 @@ function isUnspecifiedDelayedDraw(move: Readonly<MoveCardFields>, cardType: (car
     && move.cardIds.slice(0, 4).every((cardId) => cardId > 0 && cardType(cardId) === 8);
 }
 
-/** 移牌起点在牌堆时，把位置改成顶、底或未指定。 */
+/** 移牌起点在牌堆且没写从哪一头拿时，按技能改成顶或底，对不上就从牌堆顶拿。 */
 export function remapDrawPileFromPosition(
   move: Readonly<MoveCardFields>,
   options: { nationWar?: boolean; cardType?: (cardId: number) => number } = {}
@@ -118,7 +118,7 @@ export function remapDrawPileFromPosition(
   if (isUnspecifiedDelayedDraw(move, cardType)) return DRAW_PILE_POSITION.UNSPECIFIED;
   if (move.fromPosition !== DRAW_PILE_POSITION.UNSPECIFIED) return move.fromPosition;
   const context: DrawPileRuleContext = { nationWar: options.nationWar === true, cardType };
-  return DRAW_PILE_FROM_RULES.find((rule) => rule.match(move, context))?.position ?? move.fromPosition;
+  return DRAW_PILE_FROM_RULES.find((rule) => rule.match(move, context))?.position ?? DRAW_PILE_POSITION.TOP;
 }
 
 /** 整手交出手牌的技能（605 密诏）：暗牌移动时该座位已知牌全部随之离开。 */

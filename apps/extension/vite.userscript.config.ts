@@ -250,6 +250,7 @@ export default defineConfig({
         version: xiaochaoVersion,
         description: '三国杀OL辅助插件',
         author: 'many people',
+        icon: 'https://www.sanguosha.com/favicon.ico',
         match: [
           '*://game.4399iw2.com/yxsgs/*',
           '*://my.4399.com/yxsgs/*',
@@ -271,6 +272,7 @@ export default defineConfig({
         ],
         grant: 'none',
         'run-at': 'document-start',
+        homepageURL: 'https://xc.95chong.cn/',
         downloadURL: 'https://xc.95chong.cn/downloads/sgs-xc.user.js',
         updateURL: 'https://xc.95chong.cn/downloads/sgs-xc.user.js'
       },

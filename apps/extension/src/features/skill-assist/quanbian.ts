@@ -1,10 +1,10 @@
 /**
- * 权变花色序列：按本回合用牌累积花色与点数，供技能辅助面板展示。
+ * 技能辅助花色序列：把牌号收成花色点数记号，供面板展示。
  */
 
 import type { GameCardCatalog } from '../cards/game-card-catalog.ts';
 
-/** 权变花色序列：按本回合已用牌累积花色与点数。 */
+/** 把牌号收成花色加点数。 */
 export function cardIdToSuitToken(
   cardId: number,
   gameCardCatalog: GameCardCatalog
@@ -14,7 +14,7 @@ export function cardIdToSuitToken(
   return `${card.suitGlyph || ''}${card.rank || ''}`;
 }
 
-/** 往权变花色序列里追加一张牌的花色。 */
+/** 往花色序列末尾追加一枚记号。 */
 export function appendSuitToken(existing: readonly string[], token: string): string[] {
   const normalized = String(token || '').trim();
   if (!normalized) return [...existing];

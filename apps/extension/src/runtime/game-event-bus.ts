@@ -55,8 +55,10 @@ export type GameEvent =
     cardIds: number[];
     /** PubGsCUseCard vs PubGsCUseSpell；技能花色序列只认用牌。 */
     source: 'use-card' | 'use-spell';
-    /** 协议 UseType；权变等要求 === 1。 */
+    /** 协议 UseType。使用牌为 1。 */
     useType: number | null;
+    /** 协议 SpellID。杀为 1。缺省为 null。 */
+    spellId?: number | null;
     isSend: boolean;
     /** 协议 fromZone；1 为从牌堆直接使用。缺省为 null。 */
     fromZone?: number | null;
@@ -373,6 +375,9 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
       cardIds: Object.freeze(cardIds),
       source,
       useType,
+      spellId: event.spellId === null || event.spellId === undefined
+        ? null
+        : normalizeNonNegativeInteger(event.spellId),
       isSend: event.isSend === true,
       fromZone: event.fromZone === null || event.fromZone === undefined
         ? null

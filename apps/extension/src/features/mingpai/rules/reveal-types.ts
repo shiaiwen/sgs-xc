@@ -26,7 +26,7 @@ export interface CardReveal {
    * false：视为完整手牌（攻心类整段看牌）。
    */
   partial: boolean;
-  /** 部分技能看牌时同时投影进 unknown 区（供权变等面板使用）。 */
+  /** 部分技能看牌时同时投影进 unknown 区。 */
   packUnknown?: boolean;
 }
 

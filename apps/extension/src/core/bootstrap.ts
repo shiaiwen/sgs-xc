@@ -65,9 +65,9 @@ import { installAutoHgController } from '../features/auto-hg';
 import { installAutoBotController } from '../features/auto-bot';
 import { installUpdateNoticeController } from '../features/update-notice';
 import { installGiftCodeController } from '../features/gift-code';
+import { installDiscountRechargeController } from '../features/discount-recharge';
 import { installRuntimeSearchController } from '../features/runtime-search';
 import { installHandSortController } from '../features/cards/hand-sort-controller';
-import { installSelectionToolsController } from '../features/cards/selection-tools-controller';
 import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-controller';
 import { installClassicRoomFilterController } from '../features/room-filter/classic-room-filter-controller';
 
@@ -200,7 +200,6 @@ function startXiaochaoCore(
   lifecycle.register(installAiPlayerTipController(gameEvents, window));
   lifecycle.register(installChooseFigureController(window, gameEvents));
   lifecycle.register(installHandSortController(configStore));
-  lifecycle.register(installSelectionToolsController());
   lifecycle.register(installTiesuoRecastController());
   const blockEffects = installBlockEffectsController(configStore, { gameEvents });
   lifecycle.register(blockEffects.dispose);
@@ -238,6 +237,9 @@ function startXiaochaoCore(
   }
   lifecycle.register(autoTask.dispose);
   lifecycle.register(installGiftCodeController());
+  lifecycle.register(installDiscountRechargeController({
+    openExternal: (url) => platform.openExternal(url)
+  }));
   lifecycle.register(installRuntimeSearchController());
   const extraAssist = installExtraAssistController(configStore, {
     getExtraAssistData: () => cardConfigSource.getExtraAssistData(),
@@ -255,7 +257,11 @@ function startXiaochaoCore(
     platform: platform.platform
   });
   lifecycle.register(updateNotice.dispose);
-  const shanhetu = installShanhetuController(configStore, { cardConfigSource });
+  const shanhetu = installShanhetuController(configStore, {
+    cardConfigSource,
+    gameEvents,
+    selfSeatId: () => seatStateStore.getSnapshot().selfSeatId
+  });
   lifecycle.register(shanhetu.dispose);
   const messageFilters = [
     blockEffects.filterMessage,

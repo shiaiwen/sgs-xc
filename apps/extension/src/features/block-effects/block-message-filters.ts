@@ -141,7 +141,7 @@ function matchesDogTuoText(text: string): boolean {
   const normalized = normalizeChatText(text);
   if (!normalized) return false;
   if (/祈愿台|琳琅绘卷|翻翻乐|天载阁|元藏/.test(normalized)) return true;
-  if (/恭喜/.test(normalized) && /获得|抽奖/.test(normalized)) return true;
+  if (/恭喜/.test(normalized) && /(?:抽奖|祈愿台|琳琅绘卷|翻翻乐)/.test(normalized)) return true;
   return /抽奖\d+次/.test(normalized);
 }
 

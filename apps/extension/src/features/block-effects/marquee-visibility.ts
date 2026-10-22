@@ -262,13 +262,18 @@ export function collectDogTuoBannerNodes(
   return found;
 }
 
+/** 狗托横幅固定在屏幕最上方，结算等中间文案不能按「恭喜获得」误伤。 */
+function isTopBannerLayout(rect: { y: number; width: number; height: number }): boolean {
+  return rect.y <= 140 && rect.width >= 160 && rect.height >= 10 && rect.height <= 180;
+}
+
 export function isDogTuoBannerNode(node: UnknownRecord): boolean {
+  const rect = readGlobalRect(node);
+  if (!rect || !isTopBannerLayout(rect)) return false;
   const text = normalizeDogTuoText(collectSubtreeText(node, 14));
   if (text && matchesDogTuoBannerText(text)) return true;
-  const rect = readGlobalRect(node);
-  if (!rect || rect.y > 140 || rect.width < 160 || rect.height < 10 || rect.height > 180) return false;
   const partial = normalizeDogTuoText(collectSubtreeText(node, 6));
-  return /恭喜|绘卷|祈愿台|琳琅/.test(partial) && /抽奖|获得|活动中/.test(partial);
+  return /(?:祈愿台|琳琅绘卷|琳琅|翻翻乐)/.test(partial) && /抽奖|活动中/.test(partial);
 }
 
 /** 协议/UI 管理器未命中时，兜底隐藏 DOM 层狗托条。 */
@@ -337,8 +342,8 @@ function sweepDogTuoTextInDom(): void {
 }
 
 export function matchesDogTuoBannerText(text: string): boolean {
-  if (/祈愿台|琳琅绘卷|翻翻乐|天载阁/.test(text)) return true;
-  if (/恭喜/.test(text) && /获得|抽奖/.test(text)) return true;
+  if (/祈愿台|琳琅绘卷|翻翻乐|天载阁|元藏/.test(text)) return true;
+  if (/恭喜/.test(text) && /(?:抽奖|祈愿台|琳琅绘卷|翻翻乐)/.test(text)) return true;
   return /抽奖\d+次/.test(text);
 }
 

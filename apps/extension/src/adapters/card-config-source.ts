@@ -15,6 +15,7 @@ import {
 } from '../features/shanhetu/shanhetu-map-config-data.ts';
 import type { ExtraAssistConfigData } from '../features/extra-assist/extra-assist-config-data.ts';
 import { buildExtraAssistConfigData } from '../features/extra-assist/extra-assist-config-data.ts';
+import { buildGeneralNameDict } from '../features/shanhetu/shanhetu-change-general.ts';
 
 type UnknownRecord = Record<string, unknown>;
 export type CardConfigDictionary = Record<number, UnknownRecord>;
@@ -38,6 +39,10 @@ export interface CardConfigSource {
   getExtraAssistData(): ExtraAssistConfigData | null;
   /** 进阶辅助原始表，供控制器按需解析；配置未就绪时返回 null。 */
   getSpellExtendRaw(): unknown;
+  /** 武将编号对应的显示名；配置未就绪或没有该武将时返回 null。 */
+  getGeneralName(generalId: number): string | null;
+  /** 武将名表是否已经解析完。失败时也会变为 true，避免换将提示一直等。 */
+  generalNamesReady(): boolean;
   size(): number;
   dispose(): void;
 }
@@ -69,6 +74,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
   let shanhetuMapData: ShanhetuMapConfigData | null = null;
   let extraAssistData: ExtraAssistConfigData | null = null;
   let spellExtendRaw: unknown = null;
+  let generalNames: Map<number, string> | null = null;
   let disposed = false;
   let loading = false;
   let failures = 0;
@@ -103,6 +109,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
         shanhetuMapData = result.shanhetuMapData;
         extraAssistData = result.extraAssistData;
         spellExtendRaw = result.spellExtendRaw;
+        generalNames = result.generalNames;
         globalObject.__XIAOCHAO_OFFICIAL_CARD_DICTIONARY__ = result.cards;
         globalObject.clearInterval(timer);
       })
@@ -135,6 +142,12 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
     getSpellExtendRaw() {
       return spellExtendRaw;
     },
+    getGeneralName(generalId) {
+      return generalNames?.get(generalId) ?? null;
+    },
+    generalNamesReady() {
+      return generalNames !== null;
+    },
     size() {
       return dictionary ? Object.keys(dictionary).length : 0;
     },
@@ -155,9 +168,10 @@ async function loadCardDictionary(
   shanhetuMapData: ShanhetuMapConfigData | null;
   extraAssistData: ExtraAssistConfigData | null;
   spellExtendRaw: unknown;
+  generalNames: Map<number, string>;
 }> {
   const archive = await codecs.loadZip(await downloadArchive(resolveConfigUrl(globalObject)));
-  const [playCards, spells, autoTaskData, shanhetuRaw, spellExtendRaw] = await Promise.all([
+  const [playCards, spells, autoTaskData, shanhetuRaw, spellExtendRaw, characterRaw] = await Promise.all([
     readConfigFile(archive, codecs, 'sys_playcard.sgs'),
     readConfigFile(archive, codecs, 'cha_spell.sgs'),
     loadAutoTaskData(archive, codecs),
@@ -167,6 +181,10 @@ async function loadCardDictionary(
     }),
     readConfigFile(archive, codecs, 'cha_spellextend.sgs').catch((error) => {
       console.warn('[xiaochao] 进阶辅助配置读取失败: cha_spellextend.sgs', error);
+      return null;
+    }),
+    readConfigFile(archive, codecs, 'character.sgs').catch((error) => {
+      console.warn('[xiaochao] 武将名配置读取失败: character.sgs', error);
       return null;
     })
   ]);
@@ -197,7 +215,8 @@ async function loadCardDictionary(
     autoTaskData,
     shanhetuMapData,
     extraAssistData,
-    spellExtendRaw
+    spellExtendRaw,
+    generalNames: buildGeneralNameDict(characterRaw)
   };
 }
 

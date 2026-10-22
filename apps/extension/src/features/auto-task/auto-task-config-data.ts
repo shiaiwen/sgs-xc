@@ -16,6 +16,16 @@ export interface AutoTaskConfigData {
   seriesList: readonly number[];
   /** 物品 id → 名称：sys_gs_dbs_fs_goodsbaseinfo。 */
   goodsNames: ReadonlyMap<number, string>;
+  /** 新周卡、新月卡每日奖励：ff_dbs_pay_gift 的 new_card_content。 */
+  newPrivilegeCards: readonly NewPrivilegeCardConfig[];
+}
+
+export interface NewPrivilegeCardConfig {
+  id: number;
+  /** 1 周卡，2 月卡。 */
+  type: number;
+  open: number;
+  rewards: readonly { itemId: number; itemNum: number }[];
 }
 
 export const AUTO_TASK_CONFIG_FILES = [
@@ -24,7 +34,8 @@ export const AUTO_TASK_CONFIG_FILES = [
   'gn_new_fuli.sgs',
   'gn_newoldBack.sgs',
   'cha_dbs_general_series.sgs',
-  'sys_gs_dbs_fs_goodsbaseinfo.sgs'
+  'sys_gs_dbs_fs_goodsbaseinfo.sgs',
+  'ff_dbs_pay_gift.sgs'
 ] as const;
 
 export type AutoTaskConfigFileName = typeof AUTO_TASK_CONFIG_FILES[number];
@@ -135,7 +146,48 @@ export function buildAutoTaskConfigData(
 
   for (const id of newFuliTaskIds) taskIds.add(id);
 
-  return { taskIds, newFuliTaskIds, returnUnlockTaskIds, seriesList, goodsNames };
+  return {
+    taskIds,
+    newFuliTaskIds,
+    returnUnlockTaskIds,
+    seriesList,
+    goodsNames,
+    newPrivilegeCards: readNewPrivilegeCards(files['ff_dbs_pay_gift.sgs'])
+  };
+}
+
+function readNewPrivilegeCards(file: unknown): NewPrivilegeCardConfig[] {
+  const content = rootOf(file)?.new_card;
+  const list = asArray(asRecord(content)?.new_card_content ?? content);
+  const cards: NewPrivilegeCardConfig[] = [];
+  for (const entry of list) {
+    const record = asRecord(entry);
+    const id = Number(record?.ID ?? record?.id);
+    const type = Number(record?.type ?? record?.Type);
+    const open = Number(record?.open ?? record?.Open);
+    if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(type)) continue;
+    cards.push({
+      id,
+      type,
+      open: Number.isFinite(open) ? open : 0,
+      rewards: parsePrivilegeRewards(record?.reward_e ?? record?.rewardE)
+    });
+  }
+  return cards;
+}
+
+function parsePrivilegeRewards(value: unknown): { itemId: number; itemNum: number }[] {
+  if (typeof value !== 'string' && typeof value !== 'number') return [];
+  const rewards: { itemId: number; itemNum: number }[] = [];
+  for (const part of String(value).split(';')) {
+    if (!part) continue;
+    const [itemText, numText] = part.split(',');
+    const itemId = Number(itemText);
+    const itemNum = Number(numText);
+    if (!Number.isFinite(itemId)) continue;
+    rewards.push({ itemId, itemNum: Number.isFinite(itemNum) ? itemNum : 0 });
+  }
+  return rewards;
 }
 
 /** 配置根节点可能是 root 或 Root。 */

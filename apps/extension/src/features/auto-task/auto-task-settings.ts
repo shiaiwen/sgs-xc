@@ -24,6 +24,7 @@ export const AUTO_TASK_SKIP_SETTINGS: readonly AutoTaskSkipSetting[] = [
   { key: 'autoTask.skipTavern', label: '酒馆', tooltip: '自动领取酒馆碎片任务，并同步酒馆进度' },
   { key: 'autoTask.skipMail', label: '邮件', tooltip: '自动领取邮件附件' },
   { key: 'autoTask.skipDailyGeneralBag', label: '武将包', tooltip: '自动领取每日免费武将包' },
+  { key: 'autoTask.skipFreeBless', label: '免费祈福', tooltip: '免费祈福出现红点时自动祈一次，不消耗祈福灯' },
   {
     key: 'autoTask.skipSignTrialCard',
     label: '体验卡',

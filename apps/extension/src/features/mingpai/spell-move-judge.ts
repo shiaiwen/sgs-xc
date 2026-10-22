@@ -400,6 +400,10 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
   cardIds = adjusted.cardIds;
   fromPosition = adjusted.fromPosition;
   toPosition = adjusted.toPosition;
+  // 普通摸牌没写从哪一头拿时从牌堆顶拿。协议写明 0 的仍是牌堆底。技能已经改成底，或延时锦囊被标成未指定的，保持不动。
+  if (move.fromPosition === UNSPECIFIED && fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone !== ZONE_DRAW) {
+    fromPosition = TOP;
+  }
   if (cardIds.length < count) cardIds = cardIds.concat(Array(count - cardIds.length).fill(0));
   return { ignore: false, cardIds, fromPosition, toPosition, dropOtherTemporary: adjusted.dropOtherTemporary };
 }
@@ -613,6 +617,8 @@ export function takeHiddenZoneCards(
   if (position !== UNSPECIFIED && position !== TOP && position >= 0 && position + count <= cards.length) {
     return cards.slice(position, position + count);
   }
+  // 牌堆里大部分牌没看过。已看到的张数对上这次摸牌，不能把牌堆底的明牌整把写进手里。
+  if (move.fromZone === ZONE_DRAW) return [...move.cardIds];
   const clearsZone = count === zoneLength || zoneLength === 1;
   const allianceHand = move.spellId === 121 && move.moveType === MOVE_GAIN && move.fromZone === ZONE_HAND && move.toZone === ZONE_TEMP;
   if ((clearsZone || allianceHand) && cards.length > 0 && cards.length <= count) {

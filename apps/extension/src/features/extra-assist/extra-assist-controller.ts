@@ -55,7 +55,7 @@ export interface ExtraAssistControllerOptions {
 }
 
 /**
- * 安装进阶辅助：按配置开关挂载子模块，轮询刷新权变/座位提示。
+ * 安装进阶辅助：按配置开关挂载子模块，轮询刷新座位提示。
  * @returns dispose 清理补丁、定时器与 tip
  */
 export function installExtraAssistController(

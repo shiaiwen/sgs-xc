@@ -32,6 +32,7 @@ const unsubscribe = [
 ];
 
 const claimCount = computed(() => AUTO_TASK_SKIP_SETTINGS.filter(({ key }) => claimValues[key]).length);
+const allClaimsSelected = computed(() => claimCount.value === AUTO_TASK_SKIP_SETTINGS.length);
 const entryText = computed(() => {
   if (!enabled.value) return '关';
   return `${claimCount.value}/${AUTO_TASK_SKIP_SETTINGS.length}`;
@@ -45,6 +46,14 @@ function updateEnabled(event) {
 
 function updateClaim(key, event) {
   props.configStore.set(key, !event.currentTarget.checked);
+}
+
+function toggleClaims() {
+  const selectAll = !allClaimsSelected.value;
+  for (const { key } of AUTO_TASK_SKIP_SETTINGS) {
+    const claim = selectAll ? true : !claimValues[key];
+    props.configStore.set(key, !claim);
+  }
 }
 </script>
 
@@ -64,7 +73,7 @@ function updateClaim(key, event) {
     <BaseDialog
       :open="isOpen"
       title="自动领取"
-      dialog-class="xiaochao-block-dialog"
+      dialog-class="xiaochao-block-dialog xiaochao-auto-task-dialog"
       @close="isOpen = false"
     >
       <section class="xiaochao-block-group">
@@ -92,7 +101,17 @@ function updateClaim(key, event) {
         </div>
       </section>
       <section class="xiaochao-block-group">
-        <h4 class="xiaochao-block-group__title">领取项</h4>
+        <h4 class="xiaochao-block-group__title">
+          <span>领取项</span>
+          <button
+            type="button"
+            class="xiaochao-block-select-btn"
+            :disabled="!enabled"
+            @click="toggleClaims"
+          >
+            {{ allClaimsSelected ? '反选' : '全选' }}
+          </button>
+        </h4>
         <div class="xiaochao-block-group__grid">
           <label
             v-for="setting in AUTO_TASK_SKIP_SETTINGS"

@@ -64,7 +64,7 @@ export function seatHasSkill(
 
 /**
  * 解析模块最终 skillIds：静态 ID + spellDict 按名字查找（有则合并）。
- * spellDict 不可用时退回静态列表，保证权变等已知 ID 仍可用。
+ * spellDict 不可用时退回静态列表。
  */
 export function resolveSkillIds(
   definition: SkillAssistDefinition,

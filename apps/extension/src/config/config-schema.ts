@@ -62,6 +62,7 @@ export interface XiaochaoConfig {
   'autoTask.skipSignTrialCard': boolean;
   'autoTask.skipDiJiaQuan': boolean;
   'autoTask.skipHuanLeDou': boolean;
+  'autoTask.skipFreeBless': boolean;
   'shanhetu.mapEnabled': boolean;
   'shanhetu.hideStory': boolean;
   'assist.extraEnabled': boolean;
@@ -218,6 +219,7 @@ export const CONFIG_SCHEMA: {
   'autoTask.skipSignTrialCard': booleanDefinition(true, 'AUTO_SIGN_SKIP_SWITCH'),
   'autoTask.skipDiJiaQuan': booleanDefinition(true, 'AUTO_TASK_SKIP_DI_JIA_QUAN'),
   'autoTask.skipHuanLeDou': booleanDefinition(true, 'AUTO_TASK_SKIP_HUAN_LE_DOU'),
+  'autoTask.skipFreeBless': booleanDefinition(true),
   'shanhetu.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
   'shanhetu.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
   'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),

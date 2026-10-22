@@ -15,4 +15,14 @@ alwaysApply: true
 
 这个压缩包在仓库外面，只为核对参考实现时读取。
 
-对照行为时同时看更新日志：`https://log.xiaochao.org/`。日志比压缩包新时，以日志里多出来的版本说明为准，不要只按压缩包里的旧行为改。
+对照行为时同时看更新日志：`https://log.xiaochao.org/`（`updates.txt`）。截至维护时日志已到 **1.6.37**，本地 Downloads 里常见 zip 仍停在 **1.6.31**；日志比压缩包新时，以日志里多出来的版本说明为准，不要只按压缩包里的旧行为改。
+
+## 本地镜像
+
+在 `apps/extension` 下执行：
+
+`node tools/refresh-reference-reverse.js`
+
+会写入 `.dev-data/appbak/`：`xiaochao.js`、`xiaochao-pretty.js`、`updates.txt`、`REFERENCE_MANIFEST.json`。该目录不进 git。
+
+功能锚点行号见 `apps/extension/tools/reference-reverse-index.md`。

@@ -71,7 +71,7 @@ function handleOpenShop() {
     <header class="xiaochao-settings-section__header">
       <h4 class="xiaochao-settings-section__title">山河图辅助</h4>
       <span class="xiaochao-settings-section__summary"
-        >地图透视 · 对白 · 集市</span
+        >地图透视 · 对白 · 集市 · 换将</span
       >
     </header>
     <div class="xiaochao-settings-section__body">

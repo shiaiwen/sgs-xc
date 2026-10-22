@@ -14,14 +14,12 @@ export interface SkillAssistDefinition {
   triggerOnly?: boolean;
   /** 该技能面板展示的明牌分区；多数技能读 unknown 或自有 zone。 */
   shownCardZoneId?: string;
-  /** 是否展示花色序列（权变 / 渐营 / 乱击）。 */
+  /** 是否展示花色序列（渐营 / 乱击）。 */
   showSuitSequence?: boolean;
   /** 是否展示结果文案区（宴戏等）。 */
   showResult?: boolean;
 }
 
-/** 权变（7011）：首次使用某花色手牌时看牌堆顶；出牌阶段至多使用 X 张非装备手牌。 */
-export const QUANBIAN_SKILL_ID = 7011;
 /** 渐营（491）：本阶段使用的牌与上一张点数或花色相同时摸牌。 */
 export const JIANYING_SKILL_ID = 491;
 export const YANJIAO_SKILL_ID = 0x3b1;
@@ -40,14 +38,6 @@ export { YANXI_SKILL_IDS } from './yanxi.ts';
 export { MINGPAI_ZONE } from '../mingpai/mingpai-zones.ts';
 
 export const SKILL_ASSIST_DEFINITIONS: readonly SkillAssistDefinition[] = Object.freeze([
-  {
-    id: 'quanbian',
-    title: '权变',
-    skillIds: [QUANBIAN_SKILL_ID],
-    spellNames: ['权变'],
-    shownCardZoneId: 'unknown',
-    showSuitSequence: true
-  },
   {
     id: 'jianying',
     title: '渐营',

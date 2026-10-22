@@ -339,7 +339,10 @@ export function installBlockEffectsController(
           manualRecordView = false;
           break;
         }
-        callMethod(win, 'laterClose');
+        later(() => {
+          if (win.destroyed || disposed) return;
+          callMethod(win, 'laterClose');
+        }, 400);
         break;
       case 'GeneralOpenResultWindow':
       case 'SkinOpenResultWindowNew':
@@ -423,6 +426,7 @@ export function installBlockEffectsController(
   let marqueeGedHookTarget: UnknownRecord | null = null;
   let marqueeFrameLoopBound = false;
   let marqueeBlockInstallPromise: Promise<void> | null = null;
+  let syncMarqueeScheduled = false;
   let displayAddChildGuardWrapped = false;
   const wrappedMarqueeListenerRecords = new WeakSet<object>();
 
@@ -439,11 +443,27 @@ export function installBlockEffectsController(
     ];
   }
 
+  function isTableGameScene(): boolean {
+    return Boolean(locator.gameScene());
+  }
+
   function collectAllMarqueeUis(): UnknownRecord[] {
+    const inTable = isTableGameScene();
     const fromManager = marqueeManager ? collectMarqueeUis(marqueeManager) : [];
-    const fromTree = collectMarqueeUisFromDisplayTree(marqueeDisplayLayers());
-    const fromBannerScan = isOn('block.noticeWindow') ? collectDogTuoBannerNodes(globalObject) : [];
+    const fromTree = inTable ? [] : collectMarqueeUisFromDisplayTree(marqueeDisplayLayers());
+    const fromBannerScan = !inTable && isOn('block.noticeWindow')
+      ? collectDogTuoBannerNodes(globalObject)
+      : [];
     return Array.from(new Set([...fromManager, ...fromTree, ...fromBannerScan]));
+  }
+
+  function scheduleSyncMarquee(): void {
+    if (syncMarqueeScheduled) return;
+    syncMarqueeScheduled = true;
+    later(() => {
+      syncMarqueeScheduled = false;
+      syncMarquee();
+    }, 0);
   }
 
   function looksLikeMarqueeManager(caller: UnknownRecord): boolean {
@@ -453,11 +473,12 @@ export function installBlockEffectsController(
 
   function syncMarquee(): void {
     const blocked = isOn('block.noticeWindow');
-    if (blocked && marqueeManager && typeof marqueeManager.HideAllMarquee === 'function') {
+    const inTable = isTableGameScene();
+    if (blocked && !inTable && marqueeManager && typeof marqueeManager.HideAllMarquee === 'function') {
       callMethod(marqueeManager, 'HideAllMarquee');
     }
     marqueeBlocker.sync(collectAllMarqueeUis(), blocked);
-    if (blocked) sweepDogTuoTextOnStage(globalObject, true);
+    if (blocked && !inTable) sweepDogTuoTextOnStage(globalObject, true);
   }
 
   function listenersOnEvent(events: UnknownRecord | null, eventName: string): unknown[] {
@@ -520,7 +541,7 @@ export function installBlockEffectsController(
       ged = refreshGameEventDispatcher(globalObject) ?? ged;
     }
     if (!ged) return;
-    if (installPersistentMarqueeEventBlock(ged, () => isOn('block.noticeWindow'), () => syncMarquee())) {
+    if (installPersistentMarqueeEventBlock(ged, () => isOn('block.noticeWindow'), () => scheduleSyncMarquee())) {
       marqueeGedHookTarget = ged;
       gedPersistentMarqueeHooked = true;
       dispatcherMarqueeGuardInstalled = true;
@@ -615,10 +636,10 @@ export function installBlockEffectsController(
       if (!prototype || typeof prototype.addChild !== 'function') continue;
       if (patcher.wrap(prototype, 'addChild', (original) => function (this: unknown, child: unknown, ...rest: unknown[]) {
         const result = original.apply(this, [child, ...rest]);
-        if (!isOn('block.noticeWindow')) return result;
+        if (!isOn('block.noticeWindow') || isTableGameScene()) return result;
         const node = asRecord(child);
         if (node && isDogTuoBannerNode(node)) {
-          marqueeBlocker.sync(collectDogTuoBannerNodes(globalObject), true);
+          scheduleSyncMarquee();
         }
         return result;
       })) wrapped = true;
@@ -754,7 +775,7 @@ export function installBlockEffectsController(
       if (isOn('block.noticeWindow') && typeof type === 'string' && (
         /MARQUEE/i.test(type) || MARQUEE_EVENTS.includes(type)
       )) {
-        syncMarquee();
+        scheduleSyncMarquee();
         return undefined;
       }
       return original.call(this, type, ...rest);
@@ -775,7 +796,7 @@ export function installBlockEffectsController(
         if (isOn('block.noticeWindow') && typeof type === 'string' && (
           /MARQUEE/i.test(type) || MARQUEE_EVENTS.includes(type)
         )) {
-          syncMarquee();
+          scheduleSyncMarquee();
           return undefined;
         }
         return original.call(this, type, ...rest);

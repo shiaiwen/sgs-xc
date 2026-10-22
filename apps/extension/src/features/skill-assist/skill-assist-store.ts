@@ -1,5 +1,5 @@
 /**
- * 技能辅助状态仓：权变、宴戏、严教、资援等技能的面板数据与可见性。
+ * 技能辅助状态仓：宴戏、严教、资援等技能的面板数据与可见性。
  */
 
 import type { MingpaiEngine } from '../mingpai/mingpai-engine.ts';
@@ -118,14 +118,12 @@ const YICHENG_EXCHANGE_TYPE = 28;
 /** 吉占 SpellOptRep Type=31：Datas[1] 为亮出的卡号，Datas[3] 为其点数。 */
 const JIZHAN_REVEAL_TYPE = 31;
 const NO_CARD_LIST_HINT = '未收到本局牌表，无法统计牌堆';
-const EQUIP_CARD_TYPE = 3;
 
 const EMPTY_CARD_KNOWLEDGE: SkillAssistCardKnowledge = {
   isSelfSeat: () => false
 };
 
 const EMPTY_LABELS: Record<string, string> = {
-  quanbian: '权变牌',
   yanxi: '宴戏牌'
 };
 
@@ -157,8 +155,8 @@ export function createSkillAssistStore(
   /** 本局全部卡号（MsgGamePlayCardNtf）；吉占据此推算牌堆里可能的牌。 */
   let gameCardIds: readonly number[] = [];
   let lastScene: GameSceneSeatSource | null = null;
-  /** 本回合计数：权变的非装备牌张数与花色、乱击用过的花色。 */
-  const turnState = { quanbianCount: 0, quanbianSuits: [] as string[], luanjiSuits: [] as string[] };
+  /** 本回合乱击用过的花色。 */
+  const turnState = { luanjiSuits: [] as string[] };
   let snapshot = buildSnapshot();
   const listeners = new Set<(snapshot: Readonly<SkillAssistSnapshot>) => void>();
   let mingpaiRebuildTimer: ReturnType<typeof setTimeout> | null = null;
@@ -221,15 +219,12 @@ export function createSkillAssistStore(
   function resetPanelContent(runtime: PanelRuntime): void {
     clearRuntime(runtime);
     const zoneId = runtime.definition.shownCardZoneId;
-    // 权变读的是全局 unknown，隐藏面板时不拆掉其他技能还要用的明牌投影。
     if (zoneId && zoneId !== MINGPAI_ZONE.UNKNOWN) {
       mingpaiEngine.clearZone(zoneId);
     }
   }
 
   function resetTurnState(): void {
-    turnState.quanbianCount = 0;
-    turnState.quanbianSuits = [];
     turnState.luanjiSuits = [];
     const jianying = panels.get('jianying');
     if (jianying) jianying.suitTokens = [];
@@ -351,7 +346,6 @@ export function createSkillAssistStore(
       }
       if (event.type === 'cards-used') {
         handleJianyingCardsUsed(event, scene);
-        handleQuanbianCardsUsed(event, scene);
         publish(buildSnapshot());
         return;
       }
@@ -416,24 +410,6 @@ export function createSkillAssistStore(
         cardIdToSuitToken(cardId, gameCardCatalog)
       );
     }
-  }
-
-  /** 权变：当前回合角色从手牌使用的牌，统计非装备牌张数与出现过的花色。 */
-  function handleQuanbianCardsUsed(event: CardsUsedEvent, scene: GameSceneSeatSource | null): void {
-    const runtime = panels.get('quanbian');
-    if (!runtime?.visible) return;
-    if (event.source !== 'use-card' || event.useType !== 1 || event.isSend) return;
-    if (event.fromZone === DRAW_PILE_ZONE) return;
-    if (currentSeatId === null || event.seatId !== currentSeatId) return;
-    if (!seatHasSkill(scene, event.seatId, resolveSkillIds(runtime.definition, scene))) return;
-    for (const cardId of event.cardIds) {
-      const card = gameCardCatalog.resolve(cardId);
-      if (card.cardType !== EQUIP_CARD_TYPE) turnState.quanbianCount += 1;
-      if (card.suitGlyph && !turnState.quanbianSuits.includes(card.suitGlyph)) {
-        turnState.quanbianSuits.push(card.suitGlyph);
-      }
-    }
-    runtime.suitTokens = [`[${turnState.quanbianCount}]`, ...turnState.quanbianSuits];
   }
 
   /** 乱击（2143）：本回合发动乱击已用过的花色。 */

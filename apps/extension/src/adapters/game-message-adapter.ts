@@ -41,6 +41,8 @@ const CARD_ID_KEYS = ['CardID', 'CardId', 'cardID', 'cardId'] as const;
 const DRAW_PILE_ZONE = 1;
 const DRAW_PILE_TOP = 0xff00;
 const DRAW_PILE_BOTTOM = 0;
+/** 协议没写从哪一头拿。0 是牌堆底，不能拿来填这个空缺。 */
+const DRAW_PILE_UNSPECIFIED = 0xff02;
 
 /** 刚打出的牌。恃才会把它放上牌堆顶，寸目让随后那张摸牌从牌堆底拿。 */
 let playedCard: { seatId: number; cardId: number; placedOnTop: boolean } | null = null;
@@ -269,6 +271,7 @@ function translateSingleMessage(payload: UnknownRecord, className: string): Game
     cardIds,
     source: className === 'PubGsCUseSpell' ? 'use-spell' : 'use-card',
     useType: readNonNegativeInteger(payload, ['UseType', 'useType']),
+    spellId: usedSpellId,
     isSend: payload.isSend === true,
     fromZone: readNonNegativeInteger(payload, ['fromZone', 'FromZone'])
   };
@@ -291,7 +294,7 @@ function translateCardMovement(payload: UnknownRecord): GameEvent | null {
       fromZone
     ),
     fromZone,
-    fromPosition: readNonNegativeInteger(body, ['FromPosition', 'fromPosition', 'from_position']) ?? 0,
+    fromPosition: readPilePosition(body, ['FromPosition', 'fromPosition', 'from_position'], fromZone),
     fromZoneParam: readNonNegativeInteger(body, ['FromZoneParam', 'fromZoneParam', 'from_zone_param']) ?? 0,
     toId: normalizeZoneOwner(
       readNonNegativeInteger(body, ['ToID', 'ToId', 'toID', 'toId', 'to_id']) ?? 0,
@@ -306,6 +309,13 @@ function translateCardMovement(payload: UnknownRecord): GameEvent | null {
   };
   noteBottomDrawSeat(moved.srcSeatId ?? moved.toId, moved.spellId);
   return adjustBottomDraw(adjustPlayedCardPile(moved));
+}
+
+/** 牌堆移动没写位置时记成未指定，后面再判断顶还是底。别的区仍用 0。 */
+function readPilePosition(body: UnknownRecord, keys: readonly string[], zone: number): number {
+  const position = readNonNegativeInteger(body, keys);
+  if (position !== null) return position;
+  return zone === DRAW_PILE_ZONE ? DRAW_PILE_UNSPECIFIED : 0;
 }
 
 function noteBottomDrawSeat(seatId: number | null, spellId: number): void {
