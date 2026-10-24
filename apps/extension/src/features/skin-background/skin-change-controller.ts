@@ -114,6 +114,7 @@ export function installSkinChangeController(
   const seatKeys = new WeakMap<object, number>();
   const ownSkinButtons = new Set<UnknownRecord>();
   let openingSession: OtherSkinSession | null = null;
+  let suppressPickerPreview = false;
   let epoch = 0;
   let sessionToken = 0;
   let seatToken = 0;
@@ -167,7 +168,96 @@ export function installSkinChangeController(
     return false;
   }
 
+  function shownHp(seat: UnknownRecord): { hp: number; maxHp: number } | null {
+    const hp = Number(seat.Hp ?? seat.HP ?? seat.currentHp ?? seat.CurrentHp);
+    const maxHp = Number(seat.MaxHp ?? seat.maxHp ?? seat.MaxHP ?? seat.maxHP);
+    if (!Number.isFinite(hp)) return null;
+    return { hp, maxHp: Number.isFinite(maxHp) && maxHp > 0 ? maxHp : Math.max(hp, 1) };
+  }
+
+  /** 换肤会按皮肤默认体力重画血点，这里把座位上的真实体力画回去。 */
+  function repaintHp(seat: UnknownRecord, hp: number, maxHp: number): void {
+    const general = asRecord(seat.General) ?? asRecord(seat.general);
+    for (const target of [seat, general]) {
+      if (!target) continue;
+      callMethod(target, 'UpdateHp', hp, maxHp);
+      callMethod(target, 'SetHp', hp, maxHp);
+    }
+    try {
+      if ('Hp' in seat) seat.Hp = hp;
+    } catch {
+      // 体力属性只读时，上面的刷新方法已经画过。
+    }
+  }
+
+  function applySkin(seat: UnknownRecord, generalID: number, skinID: number, isDynamic: boolean, skinType: number): void {
+    const shown = shownHp(seat);
+    callMethod(seat, 'SetGeneralSkin', generalID, skinID, isDynamic, skinType, true);
+    if (shown) repaintHp(seat, shown.hp, shown.maxHp);
+  }
+
+  function formForHp(skinID: number, hp: number): number | null {
+    const manager = locator.manager('GeneralSkinManager');
+    const raw = callMethod(manager, 'GetSkinListBySkinID', skinID);
+    const items = Array.isArray(raw) ? raw : [raw];
+    for (const item of items) {
+      const skin = asRecord(item);
+      if (!skin || skin.IsManyStateDyskin !== true) continue;
+      let text = '';
+      try {
+        text = Object.keys(skin).filter((key) => /dec|desc|tip|info|condition|text|judge/i.test(key)).map((key) => {
+          const value = skin[key];
+          return typeof value === 'string' ? value : '';
+        }).join('\n');
+      } catch {
+        text = '';
+      }
+      const matched = text.match(/小于\s*(\d+)\s*血/);
+      const threshold = matched ? Number(matched[1]) : 0;
+      if (!(threshold > 0)) continue;
+      return hp < threshold ? 2 : 1;
+    }
+    return null;
+  }
+
+  function seatByIndex(seatId: number): UnknownRecord | null {
+    const scene = locator.gameScene();
+    const list = asRecord(scene?.seatContainer)?.seatUIs;
+    const uis = [scene?.SelfSeatUi, ...(Array.isArray(list) ? list : [])];
+    for (const ui of uis) {
+      const seat = asRecord(asRecord(ui)?.seat);
+      if (!seat || typeof seat.SetGeneralSkin !== 'function') continue;
+      const id = Number(seat.Index ?? seat.index ?? seat.SeatID ?? seat.seatID);
+      if (id === seatId) return seat;
+    }
+    return null;
+  }
+
+  function syncShownHp(seat: UnknownRecord, hp: number): void {
+    const maxHp = shownHp(seat)?.maxHp ?? Math.max(hp, 1);
+    for (const isZhu of [true, false]) {
+      const info = seatGeneral(seat, isZhu);
+      if (!info?.isDynamic) continue;
+      const form = formForHp(info.skinID, hp);
+      if (form === null || form === info.skinType) continue;
+      callMethod(seat, 'SetGeneralSkin', info.generalID, info.skinID, true, form, true);
+    }
+    repaintHp(seat, hp, maxHp);
+    tasks.later(() => repaintHp(seat, hp, maxHp), 80);
+  }
+
   function filterMessage(payload: UnknownRecord, className: string): void {
+    if (className === 'GsCUpdateHpNtf' && payload.isMaxHp !== true) {
+      const hp = Number(payload.HP ?? payload.Hp ?? payload.hp);
+      const seatId = Number(payload.SeatID ?? payload.SeatId ?? payload.seatID ?? payload.seatId);
+      if (Number.isFinite(hp) && Number.isFinite(seatId)) {
+        tasks.later(() => {
+          const seat = seatByIndex(seatId);
+          if (seat) syncShownHp(seat, hp);
+        }, 0);
+      }
+      return;
+    }
     if (className !== 'ClientGeneralSkinRep' || !localOn()) return;
     const list = payload.GeneralSkinList;
     if (!Array.isArray(list)) return;
@@ -189,7 +279,7 @@ export function installSkinChangeController(
     for (const isZhu of [true, false]) {
       const info = seatGeneral(seat, isZhu);
       if (!info || !seatHoldsGeneral(seat, info, generalID)) continue;
-      callMethod(seat, 'SetGeneralSkin', generalID, skinID, isDynamic, info.skinType, true);
+      applySkin(seat, generalID, skinID, isDynamic, info.skinType);
       return true;
     }
     return false;
@@ -331,6 +421,25 @@ export function installSkinChangeController(
     }
   }
 
+  function collectSkinListRecords(win: UnknownRecord | null): UnknownRecord[] {
+    if (!win) return [];
+    const view = asRecord(win.selectView);
+    const candidates: unknown[] = [
+      view?.itemList,
+      view?.ShowItemList,
+      asRecord(view?.list)?.cells,
+      win.itemList,
+      win.ShowItemList,
+      asRecord(win.list)?.cells
+    ];
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate) || candidate.length < 2) continue;
+      const records = candidate.map(asRecord).filter((item): item is UnknownRecord => item !== null);
+      if (records.length >= 2) return records;
+    }
+    return [];
+  }
+
   function findPreviewItem(view: UnknownRecord, skinID: number): { item: UnknownRecord; original: ItemOriginalState } | null {
     const guard = guardedViews.get(view);
     if (!guard || !Number.isFinite(skinID) || skinID < 0) return null;
@@ -338,7 +447,71 @@ export function installSkinChangeController(
       const original = itemStates.get(item);
       if (original && Number(original.skinID) === skinID) return { item, original };
     }
+    const windowName = owningWindowName(view);
+    if (!windowName) return null;
+    for (const item of collectSkinListRecords(skinWindow(windowName))) {
+      if (itemSkinId(item) !== skinID) continue;
+      if (!itemStates.has(item)) unlockItem(item);
+      const original = itemStates.get(item);
+      if (original) return { item, original };
+    }
     return null;
+  }
+
+  function applyPickerSkinFromView(view: UnknownRecord, skinID: number, isDynamic: boolean): boolean {
+    const seat = selfSeat();
+    if (!seat) return false;
+    const requestedGeneralID = Number(view.realGeneralID ?? view.defaultGeneralID ?? view.generalID);
+    if (!(requestedGeneralID > 0)) return false;
+    for (const isZhu of [true, false]) {
+      const info = seatGeneral(seat, isZhu);
+      if (!info) continue;
+      if (info.generalID !== requestedGeneralID && !seatHoldsGeneral(seat, info, requestedGeneralID)) continue;
+      applySkin(seat, requestedGeneralID, skinID, isDynamic, info.skinType);
+      return true;
+    }
+    return false;
+  }
+
+  let reunlockingPicker = false;
+  let reunlockQueued = false;
+
+  /** 列表重绘后只把当前格子重新解锁，不再整表刷新，避免死循环。 */
+  function reunlockVisibleSkins(windowName: string): void {
+    if (!localOn() || reunlockingPicker) return;
+    const records = collectSkinListRecords(skinWindow(windowName));
+    const view = asRecord(skinWindow(windowName)?.selectView);
+    if (!view || records.length < 2) return;
+    reunlockingPicker = true;
+    try {
+      if (!guardSelectView(view, records)) return;
+      previewItems.set(windowName, new Set(records));
+      records.forEach((item) => {
+        guardItemRender(item);
+        unlockItem(item);
+      });
+      syncPickerUsingState(view);
+    } finally {
+      reunlockingPicker = false;
+    }
+  }
+
+  function bindPickerListRefresh(view: UnknownRecord, windowName: string): void {
+    const panel = asRecord(view.pannel);
+    if (!panel || panel.__xcSkinListRefreshBound) return;
+    if (typeof panel.refresh !== 'function') return;
+    patcher.wrap(panel, 'refresh', (original) => function (this: unknown, ...args: unknown[]) {
+      const result = original.apply(this, args);
+      if (!reunlockingPicker && !reunlockQueued) {
+        reunlockQueued = true;
+        queueMicrotask(() => {
+          reunlockQueued = false;
+          reunlockVisibleSkins(windowName);
+        });
+      }
+      return result;
+    });
+    panel.__xcSkinListRefreshBound = true;
   }
 
   /** 确认选择时，未拥有的皮肤只在本地应用。 */
@@ -349,31 +522,29 @@ export function installSkinChangeController(
     if (guard.handled && guard.handled.skinID === skinID) return { handled: true, result: guard.handled.result };
     const preview = findPreviewItem(view, skinID);
     if (!preview || !localOn()) {
-      if (Number(view.closeSelectDynamicState) < 0) {
-        view.closeSelectDynamicState = 0;
-        return { handled: true, result: false };
-      }
+      if (Number(view.closeSelectDynamicState) < 0) view.closeSelectDynamicState = 0;
       return { handled: false };
     }
-    if (view.clickCheck !== true) return { handled: false };
+    if (view.clickCheck != true) return { handled: false };
     const generalID = Number(view.defaultGeneralID ?? view.realGeneralID ?? view.generalID);
     const isDynamic = isDynamicChoice(view, skinID, view.closeSelectDynamicState);
+    const owned = Boolean(preview.original.hasSkin);
     if (generalID > 0) saveSkin(generalID, skinID, isDynamic);
     let nativeResult: unknown = false;
-    if (preview.original.hasSkin) {
+    if (owned) {
       view.closeSelectDynamicState = preview.original.dynamicState ? 1 : 0;
       nativeResult = native.apply(view, args);
     } else {
-      view.closeSelectDynamicState = isDynamic ? 1 : 0;
+      view.closeSelectDynamicState = 0;
     }
     let applied = false;
     try {
-      applied = applyToSelfSeat(generalID, skinID, isDynamic);
+      applied = applyPickerSkinFromView(view, skinID, isDynamic);
     } catch (error) {
       console.warn('[皮肤解锁] 本地应用失败:', error);
       showToast('本地换肤失败，请重试', 'error');
     }
-    const result = applied || nativeResult;
+    const result = applied || nativeResult || (!owned && generalID > 0 && skinID >= 0);
     skinTrace('local-select', {
       generalID,
       skinID,
@@ -433,8 +604,8 @@ export function installSkinChangeController(
       return;
     }
     const items = await tasks.poll(() => {
-      const list = asRecord(skinWindow(windowName)?.selectView)?.itemList;
-      return Array.isArray(list) && list.length > 1 ? list : null;
+      const records = collectSkinListRecords(skinWindow(windowName));
+      return records.length >= 2 ? records : null;
     }, 300, 20);
     const traceView = asRecord(skinWindow(windowName)?.selectView);
     skinTrace('local-preview', {
@@ -456,16 +627,23 @@ export function installSkinChangeController(
     const view = asRecord(skinWindow(windowName)?.selectView);
     const records = items.map(asRecord).filter((item): item is UnknownRecord => item !== null);
     if (!view || !guardSelectView(view, records)) return;
+    bindPickerListRefresh(view, windowName);
     previewItems.set(windowName, new Set(records));
     records.forEach((item) => {
       guardItemRender(item);
       unlockItem(item);
     });
     syncPickerUsingState(view);
+    // 整表重绘会再次走进列表刷新。这里只重绘一次，避免皮肤很多的武将把界面刷死。
+    suppressPickerPreview = true;
     try {
       callMethod(view, 'updateContent');
     } catch {
       // 列表尚未就绪时忽略。
+    } finally {
+      queueMicrotask(() => {
+        suppressPickerPreview = false;
+      });
     }
   }
 
@@ -609,10 +787,7 @@ export function installSkinChangeController(
     tasks.later(() => {
       if (openingSession !== session) return;
       const view = asRecord((skinWindow('ChangeSkinWindow') ?? skinWindow('SelectSkinWindow'))?.selectView);
-      if (view) {
-        sessionByView.set(view, session);
-        view.clickCheck = false;
-      }
+      if (view) sessionByView.delete(view);
       endSession(session);
     }, OTHER_OPEN_TIMEOUT);
   }
@@ -631,7 +806,8 @@ export function installSkinChangeController(
     if (!session) return { handled: false, applied: false };
     sessionByView.delete(view);
     let applied = false;
-    if (view.clickCheck === true && sessionValid(session)) {
+    const shouldHandle = view.clickCheck === true && sessionValid(session);
+    if (shouldHandle) {
       const info = seatGeneral(session.seat, session.isZhu);
       const skinID = Number(view.closeSelectSkinId);
       if (info && Number.isFinite(skinID) && skinID >= 0) {
@@ -640,7 +816,7 @@ export function installSkinChangeController(
         const previous = overrides.get(key);
         overrides.set(key, { epoch, seat: session.seat, generalID: info.generalID, skinID, isDynamic, skinType: info.skinType });
         try {
-          callMethod(session.seat, 'SetGeneralSkin', info.generalID, skinID, isDynamic, info.skinType, true);
+          applySkin(session.seat, info.generalID, skinID, isDynamic, info.skinType);
           applied = true;
         } catch (error) {
           if (previous) overrides.set(key, previous);
@@ -651,25 +827,18 @@ export function installSkinChangeController(
       }
     }
     endSession(session);
-    return { handled: true, applied };
+    return { handled: shouldHandle, applied };
   }
 
   /** 以“自己”的身份再调用一次悬停处理，让游戏为他人武将也生成换肤按钮。 */
   function hoverAsSelf(manager: UnknownRecord, args: unknown[], isZhu: boolean, original: PatchableFunction): unknown {
     const seat = asRecord(manager.seat);
     if (!seat) return undefined;
+    if (isSpectating(manager)) return original.apply(manager, args);
     const selfDescriptor = Object.getOwnPropertyDescriptor(seat, 'IsSelf');
     const canChangeSkin = manager.canChangeSkin;
     const activated = manager.activated;
     const wasZhu = manager.isZhu;
-    let result: unknown;
-    try {
-      manager.canChangeSkin = false;
-      result = original.apply(manager, args);
-    } finally {
-      manager.canChangeSkin = canChangeSkin;
-    }
-    if (isSpectating(manager)) return result;
     let overridden = false;
     try {
       Object.defineProperty(seat, 'IsSelf', { value: true, configurable: true });
@@ -726,7 +895,9 @@ export function installSkinChangeController(
         ownSkinButtons.add(button);
       }
       if (button) {
+        // 换肤按钮可点，但不参与命中，避免盖住武将悬停区导致原生技能说明被误判为移出。
         button.mouseEnabled = true;
+        button.mouseThrough = true;
         button.__xcOtherSkinIsZhu = isZhu;
         if (seat.General2 && typeof this.getTipGeneral === 'function') {
           const half = Math.round(Number(this.width || 146) / 2);
@@ -907,8 +1078,10 @@ export function installSkinChangeController(
           sessionByView.set(this, session);
         }
       }
+      if (suppressPickerPreview) return result;
       const view = this;
       void tasks.poll(() => owningWindowName(view), 30, 100).then((windowName) => {
+        if (suppressPickerPreview) return;
         skinTrace('update-info', { generalID, windowName, session: Boolean(session) });
         if (windowName) void applyPreview(windowName);
       });

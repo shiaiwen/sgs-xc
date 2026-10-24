@@ -4,8 +4,9 @@
 
 import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
-import { AI_CLIENT_ID_MIN, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { AI_CLIENT_ID_MIN, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
 import { drawRealPlayerNameOnInit } from './real-player-name-init.ts';
+import { clampExtensionZOrder, EXTENSION_Z_BELOW_GAME_TIP } from '../../runtime/game-tip-layer.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -13,6 +14,7 @@ const PLAYER_INFO_PUSH_METHODS = ['SetPlayerInfo', 'UpdatePlayerInfo', 'RefreshP
 const PLAY_NAME_FALLBACK_KEY = '__xcPlayNameLabel';
 const PLAY_NAME_MOUNT_KEY = '__xcPlayNameMount';
 const PLAY_NAME_PUSHED_KEY = '__xcPlayNamePushed';
+const PLAY_NAME_NATIVE_DRAW_KEY = '__xcPlayNameNativeDraw';
 const PLAY_NAME_FALLBACK_NAME = 'xcSeatPlayName';
 const GUANJIE_NAME = /guanJie|GuanJie|官阶/i;
 
@@ -293,23 +295,42 @@ function revealRankPlayName(
   const raw = playerInfo?.ClientId ?? playerInfo?.clientId ?? clientId;
   const id = Number(raw);
   if (!Number.isFinite(id) || !(id < AI_CLIENT_ID_MIN)) return;
-  const name = resolveDisplayName(seatUi, seat, clientId, manager, globalObject, seatListIndex);
-  if (name) {
-    const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, name);
-    if (info) pushPlayerInfoToManagerOnce(manager, info, name);
+  const nick = resolveDisplayName(seatUi, seat, clientId, manager, globalObject, seatListIndex);
+  const displayText = nick || playerIdLabel(id, true);
+  if (displayText) {
+    const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, displayText);
+    if (info) pushPlayerInfoToManagerOnce(manager, info, displayText);
   }
   hookPlayNameInit(manager, globalObject);
+  ensureNativePlayNameDrawn(manager, displayText);
   callManagerMethod(manager, 'SetPlayNameVisible', true);
 }
 
-function hookPlayNameInit(manager: UnknownRecord, globalObject: GameRuntimeWindow = window): void {
-  if (!isRankOrDoudizhuScene(globalObject)) return;
+function ensureNativePlayNameDrawn(manager: UnknownRecord, displayText: string): void {
+  const nativeLabel = asRecord(manager.playerNameTxt) ?? asRecord(manager.PlayerNameTxt);
+  if (String(nativeLabel?.text ?? '').trim()) return;
+  if (manager[PLAY_NAME_NATIVE_DRAW_KEY] !== true) {
+    drawRealPlayerNameOnInit(manager);
+    manager[PLAY_NAME_NATIVE_DRAW_KEY] = true;
+  }
+  const label = asRecord(manager.playerNameTxt) ?? asRecord(manager.PlayerNameTxt);
+  const text = String(label?.text ?? '').trim();
+  if (!text && displayText && label && 'text' in label) {
+    try {
+      label.text = displayText;
+      label.visible = true;
+    } catch { /* 下轮再试 */ }
+  }
+}
+
+function hookPlayNameInit(manager: UnknownRecord, _globalObject: GameRuntimeWindow = window): void {
   const proto = asRecord(Object.getPrototypeOf(manager));
   if (!proto || proto[PLAY_NAME_INIT_KEY] === true || typeof proto.initUI !== 'function') return;
   const original = proto.initUI as (...args: unknown[]) => unknown;
   proto.initUI = function (this: UnknownRecord, ...args: unknown[]) {
     const result = original.apply(this, args);
-    drawRealPlayerNameOnInit(this);
+    // 模式标志进场景早期可能还没置上，等真正执行时再确认是排位斗地主才画名。
+    if (isRankOrDoudizhuScene(window as GameRuntimeWindow)) drawRealPlayerNameOnInit(this);
     return result;
   };
   proto[PLAY_NAME_INIT_KEY] = true;
@@ -708,7 +729,7 @@ function mountStrategyC(
   const y = -lh - 8;
   label.x = x;
   label.y = y;
-  label.zOrder = 9999;
+  label.zOrder = clampExtensionZOrder(EXTENSION_Z_BELOW_GAME_TIP);
   if (typeof label.pos === 'function') label.pos(x, y);
   return true;
 }
@@ -738,7 +759,7 @@ function findReferenceTextLeaf(manager: UnknownRecord): UnknownRecord | null {
 }
 
 function polishFallbackLabel(label: UnknownRecord, template: UnknownRecord | null): void {
-  label.zOrder = Math.max(Number(label.zOrder ?? 0), 9999);
+  label.zOrder = clampExtensionZOrder(Math.max(Number(label.zOrder ?? 0), EXTENSION_Z_BELOW_GAME_TIP));
   if (!label.font) label.font = template?.font ?? 'Microsoft YaHei';
   if (!label.color) label.color = '#FFFFFF';
   if (label.stroke == null) label.stroke = 2;

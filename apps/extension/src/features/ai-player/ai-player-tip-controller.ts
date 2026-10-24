@@ -5,8 +5,8 @@
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import { applySeatGeneralTip, clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
-import { isAiClientId, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
+import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
   beginPlayNameScanBatch,
@@ -223,21 +223,10 @@ export function installAiPlayerTipController(
       );
     }
 
-    const idTargets = seatUis.map((seatUi) => ({
+    clearSeatGeneralTips(seatUis.map((seatUi) => ({
       seat: seatUi.seat ?? seatUi,
       seatAvatar: asRecord(seatUi.seatAvatar)
-    }));
-    if (isRankOrDoudizhuScene(globalObject, scene)) {
-      applySeatGeneralTip({
-        key: 'player-id',
-        targets: idTargets,
-        enabled: true,
-        getText: (target) => playerIdLabel(readNestedClientId(target.seat), true),
-        globalObject
-      });
-    } else {
-      clearSeatGeneralTips(idTargets, 'player-id');
-    }
+    })), 'player-id');
 
     const seats = seatUis
       .map((seatUi) => ({ seatUi, seat: asRecord(seatUi.seat) }))

@@ -673,7 +673,9 @@ export function installBlockEffectsController(
         }
         const payload = asRecord(args[0]);
         const className = /decode/i.test(key) ? key : 'decodeSSCChatmsgNtf';
-        if (payload && shouldDropNoticeProtocol(className, payload)) return undefined;
+        if (payload && shouldDropNoticeProtocol(className, payload, Boolean(locator.gameScene()))) {
+          return undefined;
+        }
         return original.apply(this, args);
       });
       if (ok) wrappedAny = true;
@@ -1503,6 +1505,7 @@ export function installBlockEffectsController(
       otherSkinState: isOn('block.otherSkinState'),
       factionSlogan: isOn('block.factionSlogan'),
       noticeWindow: isOn('block.noticeWindow'),
+      inTableGame: Boolean(locator.gameScene()),
       isOwnGeneral
     });
   }

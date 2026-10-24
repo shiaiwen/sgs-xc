@@ -29,6 +29,17 @@ export function canMountLayaChild(child: unknown): boolean {
   return !carriesHtmlElementList(child);
 }
 
+/**
+ * 游戏自己往界面上挂节点时，平时都要放行。
+ * 技能说明固定前会再挂富文本，这些对象不一定有 _setParent。
+ * 只有正在离开场景时，才丢掉没有 _setParent 的对象，避免切换场景中断。
+ */
+export function shouldAcceptRuntimeAddChild(child: unknown, leavingScene: boolean): boolean {
+  if (!leavingScene || child == null) return true;
+  return typeof child === 'object'
+    && typeof (child as { _setParent?: unknown })._setParent === 'function';
+}
+
 export function mountLayaChild(parent: unknown, child: unknown): boolean {
   const host = parent as LayaLike | null;
   if (!host || typeof host.addChild !== 'function' || !canMountLayaChild(child)) return false;

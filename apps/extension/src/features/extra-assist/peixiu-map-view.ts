@@ -7,6 +7,7 @@
 import { PEIXIU_SUIT_META, PEIXIU_SUITS } from './peixiu-map-model.ts';
 import type { PeixiuRewardInfo } from './peixiu-map-model.ts';
 import { detachLayaNode, isLayaDisplayNode, mountLayaChild } from '../../runtime/laya-display-node.ts';
+import { clampExtensionZOrder, EXTENSION_Z_BELOW_GAME_TIP } from '../../runtime/game-tip-layer.ts';
 import {
   flattenRouteSegments,
   remainingSuitCounts,
@@ -405,7 +406,7 @@ function renderSlider(
     hitRoot.name = 'xcPeiXiuRouteSliderHitRoot';
     hitRoot.mouseEnabled = true;
     hitRoot.mouseThrough = true;
-    hitRoot.zOrder = 10001;
+    hitRoot.zOrder = clampExtensionZOrder(EXTENSION_Z_BELOW_GAME_TIP);
     hitRoot.__hits = [];
     for (let index = 0; index < 3; index += 1) {
       const hit = new Sprite();
@@ -478,7 +479,7 @@ function renderSequence(
     box.name = 'xcPeiXiuCardSequenceLabel';
     box.mouseEnabled = false;
     box.mouseThrough = true;
-    box.zOrder = 10000;
+    box.zOrder = clampExtensionZOrder(EXTENSION_Z_BELOW_GAME_TIP);
     box.__xcPeiXiuSequenceSegments = [];
     host.__xcPeiXiuCardSequenceLabel = box;
   }
@@ -659,7 +660,7 @@ function renderSkills(
       label.align = 'left';
       label.valign = 'top';
       label.wordWrap = false;
-      label.zOrder = 10001;
+      label.zOrder = clampExtensionZOrder(EXTENSION_Z_BELOW_GAME_TIP);
       label.on?.(globalObject.Laya?.Event?.ROLL_OVER || 'rollover', label, function (this: UnknownRecord) {
         const desc = String(this.__xcPeiXiuSkillDescription || '');
         if (desc) showSkillBubble(host, desc, this, globalObject);

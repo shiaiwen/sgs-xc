@@ -681,11 +681,16 @@ export function installSkinPaperController(
     }
   }
 
+  let preparingPaperWindow = false;
+
   async function prepareChangeSkinWindow(win: UnknownRecord): Promise<boolean> {
+    if (preparingPaperWindow) return false;
     if (!isOn()) {
       hideAllIcons(asRecord(win.selectView));
       return false;
     }
+    preparingPaperWindow = true;
+    try {
     const view = await tasks.poll(() => {
       const selectView = asRecord(win.selectView);
       const list = selectView?.itemList;
@@ -711,12 +716,15 @@ export function installSkinPaperController(
     if (panel && !panel.__xcPaperRefreshBound && typeof panel.refresh === 'function') {
       patcher.wrap(panel, 'refresh', (original) => function (this: unknown, ...args: unknown[]) {
         const result = original.apply(this, args);
-        queueMicrotask(() => void prepareChangeSkinWindow(win));
+        if (!preparingPaperWindow) queueMicrotask(() => void prepareChangeSkinWindow(win));
         return result;
       });
       panel.__xcPaperRefreshBound = true;
     }
     return true;
+    } finally {
+      preparingPaperWindow = false;
+    }
   }
 
   function refreshChangeSkinWindow(): void {

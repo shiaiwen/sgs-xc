@@ -29,6 +29,7 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
+import { installGeneralSkillTipAutoCloseGuard } from '../runtime/general-skill-tip-auto-close-guard';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
 import { createGameCardCatalog } from '../features/cards/game-card-catalog';
@@ -72,6 +73,7 @@ import { installRuntimeSearchController } from '../features/runtime-search';
 import { installHandSortController } from '../features/cards/hand-sort-controller';
 import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-controller';
 import { installClassicRoomFilterController } from '../features/room-filter/classic-room-filter-controller';
+import { installCampChatRightPanelController } from '../features/in-game-chat/camp-chat-right-panel';
 
 const panelStartupStatus: Record<string, unknown> = {};
 
@@ -84,6 +86,7 @@ interface XiaochaoCoreRuntime {
 /** Electron 和油猴共用的启动边界；平台差异只能通过 adapter 注入。 */
 export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const lifecycle = createLifecycle();
+  lifecycle.register(installGeneralSkillTipAutoCloseGuard(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
@@ -191,6 +194,7 @@ function startXiaochaoCore(
   lifecycle.register(installSeatDisplayVisibility(configStore));
   const classicRoomFilter = installClassicRoomFilterController(configStore);
   lifecycle.register(classicRoomFilter.dispose);
+  lifecycle.register(installCampChatRightPanelController(window).dispose);
   lifecycle.register(installSeatStateController(seatStateStore));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
   lifecycle.register(installNativeHudPostGameGuard(gameEvents, window));
@@ -286,7 +290,7 @@ function startXiaochaoCore(
     },
     shouldDropProtocolEvent: (className, payload) => (
       configStore.get('block.noticeWindow') === true
-      && shouldDropNoticeProtocol(className, payload)
+      && shouldDropNoticeProtocol(className, payload, Boolean(locateGameScene(window)))
     )
   }));
   lifecycle.register(installNativeRecentCardController(configStore, recentCardStore, gameEvents));

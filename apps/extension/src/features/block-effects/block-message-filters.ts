@@ -17,6 +17,7 @@ export interface BlockMessageFilterOptions {
   otherSkinState: boolean;
   factionSlogan: boolean;
   noticeWindow: boolean;
+  inTableGame: boolean;
   isOwnGeneral(generalId: number): boolean;
 }
 
@@ -34,7 +35,7 @@ export function applyBlockMessageFilters(
     suppressGameRewardPointPayload(payload);
     return;
   }
-  if (options.noticeWindow && isMarqueeBroadcastMessage(className, payload)) {
+  if (options.noticeWindow && isMarqueeBroadcastMessage(className, payload, options.inTableGame)) {
     suppressMarqueeBroadcastPayload(payload);
     return;
   }
@@ -93,22 +94,34 @@ function readClassName(payload: UnknownRecord): string {
 }
 
 /** 协议分发前是否应整包丢弃，避免游戏在改写后仍读缓存字段。 */
-export function shouldDropNoticeProtocol(className: string, payload: UnknownRecord): boolean {
-  return isMarqueeBroadcastMessage(className, payload);
+export function shouldDropNoticeProtocol(
+  className: string,
+  payload: UnknownRecord,
+  inTableGame = false
+): boolean {
+  return isMarqueeBroadcastMessage(className, payload, inTableGame);
 }
 
-function isMarqueeBroadcastMessage(className: string, payload: UnknownRecord): boolean {
+function isMarqueeBroadcastMessage(
+  className: string,
+  payload: UnknownRecord,
+  inTableGame = false
+): boolean {
   if (className === 'GsClientBroadcastChatGoods') return true;
   if (/marquee/i.test(className)) return true;
   if (/broadcastchatgoods|chatgoods/i.test(className)) return true;
-  if (/chatmsg/i.test(className) && isMarqueeChatPayload(payload)) return true;
+  if (/chatmsg/i.test(className) && isMarqueeChatPayload(payload, inTableGame)) return true;
   if (MARQUEE_BROADCAST_CLASS.test(className) && !/chatmsg/i.test(className)) return true;
   return false;
 }
 
-/** 聊天协议里系统跑马灯：狗托文案或系统频道字段。 */
-function isMarqueeChatPayload(payload: UnknownRecord): boolean {
+/**
+ * 聊天协议里系统跑马灯：狗托文案或系统频道字段。
+ * 牌局内右侧聊天也走 chatmsg，不能仅凭频道号整包丢掉。
+ */
+function isMarqueeChatPayload(payload: UnknownRecord, inTableGame = false): boolean {
   if (containsDogTuoText(payload)) return true;
+  if (inTableGame) return false;
   return readMarqueeChatChannel(payload) !== null;
 }
 
@@ -130,8 +143,8 @@ function readMarqueeChatChannel(payload: UnknownRecord): number | null {
   return null;
 }
 
-/** 网页端系统滚动公告常用频道，与牌局内聊天区分。 */
-const MARQUEE_CHAT_CHANNELS = new Set([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+/** 系统滚动公告频道。7 是对局聊天，13 是阵营聊天，这两档要留在牌局里。 */
+const MARQUEE_CHAT_CHANNELS = new Set([6, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20]);
 
 function containsDogTuoText(payload: UnknownRecord): boolean {
   return matchesDogTuoText(collectTextDeep(payload).join(' '));
