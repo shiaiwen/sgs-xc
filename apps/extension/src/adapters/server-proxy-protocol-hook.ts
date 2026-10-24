@@ -39,7 +39,9 @@ export function installProtocolEventHooks(
   }
 
   scan();
-  const timer = setInterval(scan, 300);
+  // ServerProxy / ActivityManager 通常在启动后已固定。降低常驻探测频率，避免在整局
+  // 游戏中反复遍历运行时对象；场景或管理器重建后最多延迟 1 秒重新挂钩。
+  const timer = setInterval(scan, 1000);
   return {
     restore() {
       clearInterval(timer);

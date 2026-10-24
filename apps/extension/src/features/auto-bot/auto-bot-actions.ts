@@ -2,7 +2,7 @@
  * 自动托管底层动作：按钮优先级、托管请求条件、决策状态刷新与回退。
  */
 
-export const DEAL_INTERVAL_MS = 400;
+export const DEAL_INTERVAL_MS = 10000;
 export const OFFICIAL_WAIT_MS = 1000;
 export const LOCAL_BEFORE_TRUSTEE_MS = 3000;
 export const TRUSTEE_COOLDOWN_MS = 3000;

@@ -15,6 +15,7 @@ import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { accountScopedStorageKey } from '../skin-background/skin-runtime.ts';
 import {
   AUTO_BOT_ENABLED_KEY,
+  AUTO_LOG_ENABLED_KEY,
   AUTO_BOT_TAVERN_TARGET_KEY,
   AUTO_HG_ENABLED_KEY,
   BAI_SHENG_ENABLED_KEY
@@ -144,22 +145,49 @@ export function installAutoBotController(
   let tavernProgress: TavernProgress | null = null;
   let session = restoreSession(globalObject);
   let play: AutoBotPlayContext = { decision: null, mode: 'off' };
+  let lastPlayTrace = '';
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const cleanups: Array<() => void> = [];
 
   persistEnabled(globalObject, enabled);
+
+  function trace(event: string, detail: Record<string, unknown> = {}): void {
+    if (configStore.get(AUTO_LOG_ENABLED_KEY) !== true) return;
+    console.info('[小抄][自动挂机]', event, detail);
+  }
+
+  function tracePlay(source: string, scene: string): void {
+    const detail = {
+      source,
+      scene,
+      mode: play.mode,
+      reason: play.reason ?? '',
+      fallbackLevel: play.decision?.fallbackLevel ?? 0,
+      decisionKey: play.decision?.key ?? ''
+    };
+    const fingerprint = JSON.stringify(detail);
+    if (fingerprint === lastPlayTrace) return;
+    lastPlayTrace = fingerprint;
+    trace('出牌决策', detail);
+  }
 
   cleanups.push(configStore.subscribe(AUTO_BOT_ENABLED_KEY, ({ value }) => {
     enabled = value === true;
     persistEnabled(globalObject, enabled);
     bumpRun();
     play = { decision: null, mode: 'off' };
+    lastPlayTrace = '';
+    trace(enabled ? '自动挂机已开启' : '自动挂机已关闭', { tavernTarget });
     if (!enabled) session = emptyRoomSession();
     persistSession(globalObject, session);
     if (enabled && !stopIfTavernDone()) scheduleTable(0);
   }));
   cleanups.push(configStore.subscribe(BAI_SHENG_ENABLED_KEY, ({ value }) => {
     baiSheng = value === true;
+  }));
+  cleanups.push(configStore.subscribe(AUTO_LOG_ENABLED_KEY, ({ value }) => {
+    lastPlayTrace = '';
+    if (value === true) trace('日志已开启', { enabled, tavernTarget });
   }));
   cleanups.push(configStore.subscribe(AUTO_BOT_TAVERN_TARGET_KEY, ({ value }) => {
     tavernTarget = value;
@@ -171,6 +199,7 @@ export function installAutoBotController(
     cleanups.push(options.gameEvents.subscribe((event) => {
       if (!enabled || disposed) return;
       if (event.type === 'game-ended') {
+        trace('对局结束，准备重新开始', { kind: session.kind });
         play = { decision: null, mode: 'off' };
         refreshTavern(true);
         if (stopIfTavernDone()) return;
@@ -183,6 +212,7 @@ export function installAutoBotController(
           selfSeatId,
           seats: readSeatAiFlags(globalObject)
         })) return;
+        trace('己方阵亡，5 秒后离开对局', { seatId: event.seatId });
         later(() => leaveGameAfterDeath(locator, globalObject), LEAVE_DELAY_MS);
       }
     }));
@@ -229,6 +259,7 @@ export function installAutoBotController(
     const progress = tavernProgress ?? readTavernProgress(locator, tavernTarget);
     tavernProgress = progress;
     if (!progress?.available || !progress.completed) return false;
+    trace('酒馆目标已完成，自动挂机将停止', { target: tavernTarget, current: progress.current });
     configStore.set(AUTO_BOT_ENABLED_KEY, false);
     return true;
   }
@@ -236,6 +267,7 @@ export function installAutoBotController(
   function scheduleTable(delay: number): void {
     later(() => {
       if (hgOwnsPlay()) return;
+      trace('执行桌面流程', { kind: session.kind, managedRoom: session.managedRoom });
       session = runAutoBotTable(locator, globalObject, session, {
         baiSheng,
         onBaiSheng: (scene, currentId) => tryBaiShengDianjiang(
@@ -286,8 +318,13 @@ export function installAutoBotController(
 
   function deal(): void {
     if (disposed || !enabled || hgOwnsPlay()) return;
+    const activeScene = asRecord(locator.gameScene()) ?? asRecord(locateGameScene(globalObject));
+    if (String(activeScene?.SceneName ?? activeScene?.sceneName ?? activeScene?.name ?? '') === 'RogueLikeGameScene') {
+      return;
+    }
     handlePlayWindows(locator, globalObject);
     play = runAutoBotDeal(locator, globalObject, play);
+    tracePlay('普通对局', String(activeScene?.SceneName ?? activeScene?.sceneName ?? activeScene?.name ?? ''));
     const scene = asRecord(locateGameScene(globalObject));
     const self = asRecord(scene?.SelfSeatUi);
     if (session.kind === 28 && self && typeof self.canHalfShow === 'function') {

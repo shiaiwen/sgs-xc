@@ -651,7 +651,8 @@ export function installHandSortController(
     if (active) syncAutoSort(active);
   };
 
-  const timer = runtime.setInterval(sync, 250);
+  // 手牌变动已由控件自身的回调处理；此处仅负责跨场景重新挂载，500ms 足够且能减轻局内扫描。
+  const timer = runtime.setInterval(sync, 500);
   const stopEnabled = store.subscribe('cards.handSortEnabled', sync);
   const stopLock = store.subscribe('cards.handSortLockedMode', sync);
   sync();

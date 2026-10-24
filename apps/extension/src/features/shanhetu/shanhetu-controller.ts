@@ -25,6 +25,7 @@ import {
 } from './shanhetu-story-controller.ts';
 import { installShanhetuZhanfaCount } from './shanhetu-zhanfa-controller.ts';
 import { installShanhetuChangeGeneral } from './shanhetu-change-general-controller.ts';
+import { installShanhetuAutoBattleController } from './shanhetu-auto-battle-controller.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -83,6 +84,7 @@ export function installShanhetuController(
       selfSeatId: options.selfSeatId ?? (() => null)
     })
     : () => undefined;
+  const stopAutoBattle = installShanhetuAutoBattleController(configStore, { globalObject, locator });
 
   return {
     openShop: () => shop.openShop(),
@@ -93,6 +95,7 @@ export function installShanhetuController(
       shop.filterMessage(payload, className);
     },
     dispose() {
+      stopAutoBattle();
       stopZhanfa();
       stopChangeGeneral();
       map.dispose();

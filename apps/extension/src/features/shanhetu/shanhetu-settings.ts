@@ -18,6 +18,12 @@ export const SHANHETU_MAP_KEY = 'shanhetu.mapEnabled' satisfies ShanhetuSwitchKe
 /** 隐藏对白开关，默认关。 */
 export const SHANHETU_HIDE_STORY_KEY = 'shanhetu.hideStory' satisfies ShanhetuSwitchKey;
 
+/** 山河图战斗内自动出牌，默认关。 */
+export const SHANHETU_AUTO_BATTLE_KEY = 'shanhetu.autoBattleEnabled' satisfies ShanhetuSwitchKey;
+
+/** 自动战斗的出牌顺序：普通锦囊优先于杀，默认关。 */
+export const SHANHETU_PRIORITIZE_TRICKS_KEY = 'shanhetu.prioritizeTricks' satisfies ShanhetuSwitchKey;
+
 export const SHANHETU_MAP_SETTING: ShanhetuSwitchSetting = {
   key: SHANHETU_MAP_KEY,
   label: '山河地图',
@@ -30,9 +36,23 @@ export const SHANHETU_HIDE_STORY_SETTING: ShanhetuSwitchSetting = {
   tooltip: '山河图场景对白不显示'
 };
 
+export const SHANHETU_AUTO_BATTLE_SETTING: ShanhetuSwitchSetting = {
+  key: SHANHETU_AUTO_BATTLE_KEY,
+  label: '战斗自动攻击',
+  tooltip: '仅在山河图战斗内每 10 秒出牌；只攻击能明确识别为敌方的座位'
+};
+
+export const SHANHETU_PRIORITIZE_TRICKS_SETTING: ShanhetuSwitchSetting = {
+  key: SHANHETU_PRIORITIZE_TRICKS_KEY,
+  label: '锦囊优先于杀',
+  tooltip: '自动战斗时优先出可用锦囊牌，再出杀'
+};
+
 export const SHANHETU_SWITCH_SETTINGS: readonly ShanhetuSwitchSetting[] = [
   SHANHETU_MAP_SETTING,
-  SHANHETU_HIDE_STORY_SETTING
+  SHANHETU_HIDE_STORY_SETTING,
+  SHANHETU_AUTO_BATTLE_SETTING,
+  SHANHETU_PRIORITIZE_TRICKS_SETTING
 ];
 
 /** 打开山河图集市窗口。 */

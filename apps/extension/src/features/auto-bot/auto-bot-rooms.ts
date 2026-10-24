@@ -186,11 +186,6 @@ function modeLabelOf(scene: UnknownRecord | null, locator?: LayaObjectLocator): 
   ].filter(Boolean).join(' ');
 }
 
-function officerLevel(locator: LayaObjectLocator): number {
-  const user = locator.manager('UserInfoManger');
-  return Number(user?.officerLevel ?? user?.OfficerLevel ?? 0) || 0;
-}
-
 function waitInfoOf(seat: UnknownRecord | null | undefined): UnknownRecord | null {
   return asRecord(seat?.WaitInfo) ?? asRecord(seat?.waitInfo);
 }
@@ -452,12 +447,12 @@ export function runAutoBotTable(
   if (next.managedRoom || drill) {
     if (Date.now() < robotChainUntil) return next;
     const rows = tableSeats(scene);
-    const kingLevel = officerLevel(locator) >= 23 ? 3 : 2;
+    const masterLevel = 3;
     const steps = rows
       .filter((item) => item.empty)
       .map((item) => ({
         seat: item.seat,
-        level: item.number >= rows.length / 2 ? kingLevel : 1
+        level: item.number > rows.length / 2 ? masterLevel : 1
       }))
       .sort((left, right) => right.level - left.level);
     if (steps.length) {

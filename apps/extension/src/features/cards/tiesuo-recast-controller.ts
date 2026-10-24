@@ -136,24 +136,14 @@ export function installTiesuoRecastController(
     if (wrapped) patchedBarTarget = target;
   }
 
-  let pollIntervalMs = 500;
-  let timer = runtime.setInterval(sync, pollIntervalMs);
-
-  function setPollInterval(nextMs: number): void {
-    if (stopped || nextMs === pollIntervalMs) return;
-    pollIntervalMs = nextMs;
-    runtime.clearInterval(timer);
-    timer = runtime.setInterval(sync, pollIntervalMs);
-  }
+  // ButtonBar.Update 已负责在游戏刷新按钮时即时兜底；轮询只用于跨场景重新挂钩。
+  // 过去有己方座位时每 100ms 扫描，会与 Laya 的渲染/交互更新争抢主线程。
+  const timer = runtime.setInterval(sync, 500);
 
   function sync(): void {
     if (stopped) return;
     const self = sceneSelf();
-    if (!self) {
-      setPollInterval(500);
-      return;
-    }
-    setPollInterval(100);
+    if (!self) return;
     ensureCallbackPatch();
     ensureBarUpdatePatch(self);
     lightOkIfRecastReady(self);

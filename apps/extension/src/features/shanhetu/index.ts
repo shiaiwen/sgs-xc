@@ -7,6 +7,7 @@ export {
   type ShanhetuController,
   type ShanhetuControllerOptions
 } from './shanhetu-controller.ts';
+export { installShanhetuAutoBattleController } from './shanhetu-auto-battle-controller.ts';
 export {
   installShanhetuMapController,
   type ShanhetuMapController,
@@ -38,6 +39,10 @@ export {
 export {
   SHANHETU_HIDE_STORY_KEY,
   SHANHETU_HIDE_STORY_SETTING,
+  SHANHETU_AUTO_BATTLE_KEY,
+  SHANHETU_AUTO_BATTLE_SETTING,
+  SHANHETU_PRIORITIZE_TRICKS_KEY,
+  SHANHETU_PRIORITIZE_TRICKS_SETTING,
   SHANHETU_MAP_KEY,
   SHANHETU_MAP_SETTING,
   SHANHETU_OPEN_SHOP_LABEL,

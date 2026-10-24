@@ -65,11 +65,14 @@ export interface XiaochaoConfig {
   'autoTask.skipFreeBless': boolean;
   'shanhetu.mapEnabled': boolean;
   'shanhetu.hideStory': boolean;
+  'shanhetu.autoBattleEnabled': boolean;
+  'shanhetu.prioritizeTricks': boolean;
   'assist.extraEnabled': boolean;
   'assist.sunquanEnabled': boolean;
   'assist.peixiuEnabled': boolean;
   'assist.xushaoEnabled': boolean;
   'assist.autoBotEnabled': boolean;
+  'assist.autoLogEnabled': boolean;
   'assist.autoHGEnabled': boolean;
   'assist.baiShengEnabled': boolean;
   'assist.autoBotTavernTarget': 'none' | 'dailyGame' | 'dailyWin' | 'weeklyWin';
@@ -222,11 +225,14 @@ export const CONFIG_SCHEMA: {
   'autoTask.skipFreeBless': booleanDefinition(true),
   'shanhetu.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
   'shanhetu.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
+  'shanhetu.autoBattleEnabled': booleanDefinition(false),
+  'shanhetu.prioritizeTricks': booleanDefinition(false),
   'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),
   'assist.sunquanEnabled': booleanDefinition(true),
   'assist.peixiuEnabled': booleanDefinition(true),
   'assist.xushaoEnabled': booleanDefinition(true),
   'assist.autoBotEnabled': booleanDefinition(false),
+  'assist.autoLogEnabled': booleanDefinition(false),
   'assist.autoHGEnabled': booleanDefinition(false),
   'assist.baiShengEnabled': booleanDefinition(false),
   'assist.autoBotTavernTarget': {

@@ -2,9 +2,6 @@
 /** 游戏辅助开关：进阶辅助、自动托管、自动换将、百胜、酒馆目标。 */
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import {
-  AUTO_BOT_ENABLED_KEY,
-  AUTO_HG_ENABLED_KEY,
-  BAI_SHENG_ENABLED_KEY,
   EXTRA_ASSIST_CHARACTER_SETTINGS,
   EXTRA_ASSIST_ENABLED_KEY,
   GAME_ASSIST_SWITCH_SETTINGS,
@@ -33,11 +30,6 @@ const unsubscribe = [
     })
   )),
 ];
-
-// 自动化入口已下线；同步关闭历史遗留的开启状态，避免功能隐藏后仍在后台运行。
-for (const key of [AUTO_BOT_ENABLED_KEY, AUTO_HG_ENABLED_KEY, BAI_SHENG_ENABLED_KEY]) {
-  if (props.configStore.get(key) === true) props.configStore.set(key, false);
-}
 
 onBeforeUnmount(() => unsubscribe.forEach((stop) => stop()));
 

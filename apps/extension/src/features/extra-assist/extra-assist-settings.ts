@@ -9,6 +9,7 @@ export const SUNQUAN_ASSIST_KEY = 'assist.sunquanEnabled' satisfies XiaochaoConf
 export const PEIXIU_ASSIST_KEY = 'assist.peixiuEnabled' satisfies XiaochaoConfigKey;
 export const XUSHAO_ASSIST_KEY = 'assist.xushaoEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_BOT_ENABLED_KEY = 'assist.autoBotEnabled' satisfies XiaochaoConfigKey;
+export const AUTO_LOG_ENABLED_KEY = 'assist.autoLogEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_HG_ENABLED_KEY = 'assist.autoHGEnabled' satisfies XiaochaoConfigKey;
 export const BAI_SHENG_ENABLED_KEY = 'assist.baiShengEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_BOT_TAVERN_TARGET_KEY = 'assist.autoBotTavernTarget' satisfies XiaochaoConfigKey;
@@ -30,7 +31,7 @@ export const EXTRA_ASSIST_CHARACTER_SETTINGS: readonly ExtraAssistCharacterSetti
 
 export const AUTO_BOT_TOOLTIP = [
   '自动选将、出牌、桌上准备；大厅可建密码房或国战房',
-  '优先跟官方小杀推荐，超时改本地规则，再不行点托管',
+  '反贼局走本地规则：优先攻击主公、救濒死反贼，禁用南蛮和万箭',
   '自己建的托管房才会补人机并开局；进别人的房只准备',
   '可设酒馆时长目标，完成后自动停止',
   '与盖主速刷同时开时，选将和出牌让给盖主',
@@ -50,6 +51,7 @@ export const AUTO_HG_TOOLTIP = [
 export interface GameAssistSwitchSetting {
   key: typeof EXTRA_ASSIST_ENABLED_KEY
     | typeof AUTO_BOT_ENABLED_KEY
+    | typeof AUTO_LOG_ENABLED_KEY
     | typeof AUTO_HG_ENABLED_KEY
     | typeof BAI_SHENG_ENABLED_KEY;
   label: string;
@@ -59,6 +61,16 @@ export interface GameAssistSwitchSetting {
 }
 
 export const GAME_ASSIST_SWITCH_SETTINGS: readonly GameAssistSwitchSetting[] = [
+  {
+    key: AUTO_BOT_ENABLED_KEY,
+    label: '自动挂机',
+    tooltip: AUTO_BOT_TOOLTIP
+  },
+  {
+    key: AUTO_LOG_ENABLED_KEY,
+    label: '自动功能日志',
+    tooltip: '在浏览器开发者工具的 Console 中记录自动挂机和山河图自动战斗的关键决策，便于排查与优化；默认关闭'
+  },
   {
     key: EXTRA_ASSIST_ENABLED_KEY,
     label: '辅助功能',
