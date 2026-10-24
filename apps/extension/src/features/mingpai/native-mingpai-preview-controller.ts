@@ -307,7 +307,7 @@ export function installNativeMingpaiPreviewController(
       { possible: true, items: tiles.filter((tile) => tile.possible) }
     ].filter((row) => row.items.length);
     const hintText = equipmentHintText(entry.seatId);
-    const signature = `${tiles.map((tile) => `${tile.cardId}:${tile.possible ? 1 : 0}`).join(',')}|${hintText}|${JSON.stringify([...tagsByCardId])}`;
+    const signature = `${tiles.map((tile) => `${tile.cardId}:${tile.possible ? 1 : 0}`).join(',')}|${hintText}`;
     if (entry.signature !== signature) {
       readChildren(entry.strip)
         .filter((child) => child !== entry.hit)
@@ -317,7 +317,8 @@ export function installNativeMingpaiPreviewController(
         const truncated = row.items.length > MAX_VISIBLE_TILES;
         const visible = truncated ? row.items.slice(0, MAX_VISIBLE_TILES - 1) : row.items;
         visible.forEach((item, index) => {
-          const tile = createTile(item.cardId, row.possible, tagsByCardId.get(item.cardId) ?? []);
+          // strip tiles: card face only; no source/tag label text (native labels use refreshNativeCardTags)
+          const tile = createTile(item.cardId, row.possible);
           if (!tile) return;
           call(tile, 'pos', (TILE_WIDTH + TILE_GAP) * index, y);
           tile.zOrder = index + 2;

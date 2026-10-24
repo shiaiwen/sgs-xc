@@ -44,8 +44,10 @@ const DRAW_PILE_BOTTOM = 0;
 /** 协议没写从哪一头拿。0 是牌堆底，不能拿来填这个空缺。 */
 const DRAW_PILE_UNSPECIFIED = 0xff02;
 
-/** 刚打出的牌。恃才会把它放上牌堆顶，寸目让随后那张摸牌从牌堆底拿。 */
+/** 刚打出的牌。恃才会把它放上牌堆顶，别的技能把用掉的牌放进牌堆时放在底下。 */
 let playedCard: { seatId: number; cardId: number; placedOnTop: boolean } | null = null;
+/** 这名角色刚发动的技能。用来区分用掉的牌是放顶还是放底。 */
+const playedSkillBySeat = new Map<number, number>();
 /** 本局已经发动过寸目的座位。之后从牌堆进手都按牌堆底算。 */
 const bottomDrawSeats = new Set<number>();
 const SPELL_DRAW_BOTTOM_INSTEAD = 816;
@@ -64,6 +66,7 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
   if (className === 'MsgHeartAliveRep') return [{ type: 'heart-alive' }];
   if (className === 'decodeMsgGameStart' || className === 'MsgGameStart') {
     playedCard = null;
+    playedSkillBySeat.clear();
     bottomDrawSeats.clear();
     return [{ type: 'game-started', freshGame: true }];
   }
@@ -263,6 +266,9 @@ function translateSingleMessage(payload: UnknownRecord, className: string): Game
   if (!cardIds.length) return null;
   const usedSpellId = readNonNegativeInteger(payload, ['SpellID', 'SpellId', 'spellID', 'spellId']) ?? 0;
   noteBottomDrawSeat(seatId, usedSpellId);
+  if (className === 'PubGsCUseSpell' && usedSpellId > 0 && seatId !== null) {
+    playedSkillBySeat.set(seatId, usedSpellId);
+  }
   const usedCardId = cardIds.find((cardId) => cardId > 0);
   if (usedCardId) playedCard = { seatId, cardId: usedCardId, placedOnTop: false };
   return {
@@ -333,17 +339,20 @@ function adjustBottomDraw(moved: Extract<GameEvent, { type: 'cards-moved' }>): E
 }
 
 /**
- * 恃才把刚用的那张牌放上牌堆顶。协议经常不写位置，缺省就变成牌堆底，顶上就看不到这张牌。
- * 放上去之后寸目摸的那一张从牌堆底拿，不能把刚放上顶的牌摸走。
+ * 刚用掉的一张牌放进牌堆时，位置经常不写，缺省会变成 0。
+ * 恃才是放到牌堆顶，随后寸目从底上摸。别的技能把用掉的牌放进牌堆，是放在牌堆底。
  */
 function adjustPlayedCardPile(moved: Extract<GameEvent, { type: 'cards-moved' }>): Extract<GameEvent, { type: 'cards-moved' }> {
   const pending = playedCard;
   const seatId = moved.srcSeatId ?? moved.fromId;
   const knownId = moved.cardIds.find((cardId) => cardId > 0) ?? 0;
-  const putOnTop = moved.toZone === DRAW_PILE_ZONE && moved.cardCount === 1 && (
-    SPELL_PUT_USED_ON_TOP.has(moved.spellId)
-    || (pending !== null && !pending.placedOnTop && seatId === pending.seatId && (knownId === 0 || knownId === pending.cardId))
-  );
+  const sameUsedCard = pending !== null
+    && !pending.placedOnTop
+    && seatId === pending.seatId
+    && (knownId === 0 || knownId === pending.cardId);
+  const toPile = moved.toZone === DRAW_PILE_ZONE && moved.cardCount === 1;
+  const skillSpellId = moved.spellId || (seatId !== null ? playedSkillBySeat.get(seatId) ?? 0 : 0);
+  const putOnTop = toPile && (SPELL_PUT_USED_ON_TOP.has(moved.spellId) || SPELL_PUT_USED_ON_TOP.has(skillSpellId) || (sameUsedCard && skillSpellId === 0));
   if (putOnTop) {
     if (pending) pending.placedOnTop = true;
     const pileSeat = pending?.seatId ?? moved.srcSeatId;
@@ -352,6 +361,16 @@ function adjustPlayedCardPile(moved: Extract<GameEvent, { type: 'cards-moved' }>
     return {
       ...moved,
       toPosition: DRAW_PILE_TOP,
+      cardIds: cardId > 0 ? moved.cardIds.map((id) => id > 0 ? id : cardId) : [...moved.cardIds]
+    };
+  }
+  if (toPile && sameUsedCard) {
+    const cardId = knownId > 0 ? knownId : pending.cardId;
+    playedCard = null;
+    if (seatId !== null) playedSkillBySeat.delete(seatId);
+    return {
+      ...moved,
+      toPosition: DRAW_PILE_BOTTOM,
       cardIds: cardId > 0 ? moved.cardIds.map((id) => id > 0 ? id : cardId) : [...moved.cardIds]
     };
   }

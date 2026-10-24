@@ -159,9 +159,10 @@ const SAME_ZONE_NOT_SHOW = [
   (m: Readonly<MoveCardFields>) => m.spellId === 3744 && m.moveType === 21
 ];
 
-/** 牌没有换区，只是在原地被展示。 */
+/** 牌没有换区，只是在原地被展示。牌堆换了顶底，是把牌挪到另一头。 */
 export function isSameZoneShow(move: Readonly<MoveCardFields>): boolean {
   if (move.fromZone !== move.toZone || move.fromId !== move.toId) return false;
+  if (move.toZone === DRAW_PILE_ZONE && move.fromPosition !== move.toPosition) return false;
   if (!move.cardIds.some((cardId) => cardId > 0)) return false;
   return !SAME_ZONE_NOT_SHOW.some((excluded) => excluded(move));
 }

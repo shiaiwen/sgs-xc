@@ -85,7 +85,7 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
   const listeners = new Set<(snapshot: Readonly<MingpaiEngineSnapshot>) => void>();
   /** 寸目：这个座位摸牌从牌堆底拿，不能抽走牌堆顶的明牌。 */
   const bottomDrawSeats = new Set<number>();
-  /** 刚有一张牌放到牌堆顶，紧接着的摸牌也从底上拿。 */
+  /** 恃才刚把一张牌放到牌堆顶，紧接着的摸牌从底上拿。 */
   let skipTopOnNextDraw = false;
   /** 还在这一局里：洗牌要把已不可信的牌打包成不可知组。 */
   let isGameStart = true;
@@ -211,7 +211,14 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
       const seat = seatFrom(movement) ?? (movement.toId >= 0 && movement.toId < 255 ? movement.toId : null);
       if (seat !== null) bottomDrawSeats.add(seat);
     }
-    if (movement.toZone === DRAW_PILE_ZONE && movement.toPosition === DRAW_PILE_TOP && movement.cardCount === 1) {
+    // 只有恃才把刚用的那一张放到顶上，下一张摸牌才改从底上拿。
+    // 巧织这类把其余牌放回顶上之后，普通摸牌仍从顶上拿，底下的红牌留在原地。
+    if (
+      (movement.spellId === 815 || movement.spellId === 14163)
+      && movement.toZone === DRAW_PILE_ZONE
+      && movement.toPosition === DRAW_PILE_TOP
+      && movement.cardCount === 1
+    ) {
       skipTopOnNextDraw = true;
     }
   }

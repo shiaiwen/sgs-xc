@@ -689,11 +689,15 @@ export class CardZone {
     if (count) this.count = count;
     const taken: CardSlot[] = [];
     const pending = [...ids];
+    const knownIds = ids.filter((cardId) => cardId > 0);
+    const pileDraw = Number(this.zone) === 1 && knownIds.length === (this.count as number);
     if (this.pos === DRAW_PILE_TOP) {
-      if (Number(this.zone) === 1) taken.push(...takeKnownBottom(this.cards, this.count as number, this.zoneID));
+      if (pileDraw) taken.push(...takeNamedPileCards(this.cards, ids, false, this.zoneID));
+      else if (Number(this.zone) === 1) taken.push(...takeKnownBottom(this.cards, this.count as number, this.zoneID));
       else taken.push(...this.cards.splice(-(this.count as number)));
     } else if (Number(this.zone) === 1 && this.pos === DRAW_PILE_BOTTOM) {
-      taken.push(...takeKnownTop(this.cards, this.count as number, this.zoneID));
+      if (pileDraw) taken.push(...takeNamedPileCards(this.cards, ids, true, this.zoneID));
+      else taken.push(...takeKnownTop(this.cards, this.count as number, this.zoneID));
     } else if (this.pos !== POSITION_UNSPECIFIED) {
       taken.push(...this.cards.splice(this.pos, this.count as number));
       if (Number(this.zone) === 1 && DRAW_PILE_ORDER_SPELL_IDS.includes(spellId as number)) taken.reverse();
@@ -837,6 +841,41 @@ function takeKnownBottom(cards: CardSlot[], count: number, zoneId: string): Card
   }
   while (taken.length < count) taken.push(new CardSlot(0, 0, zoneId));
   return taken.reverse();
+}
+
+/**
+ * 牌号已经写明时，先拿走对得上的那几张。
+ * 剩下的如果不是底上这些明牌，就从顶上补，不能把底牌改成这次摸到的牌。
+ */
+function takeNamedPileCards(
+  cards: CardSlot[],
+  ids: readonly number[],
+  fromTop: boolean,
+  zoneId: string
+): CardSlot[] {
+  const count = ids.length;
+  const taken: Array<CardSlot | undefined> = Array.from({ length: count });
+  ids.forEach((cardId, index) => {
+    if (!(cardId > 0)) return;
+    const at = cards.findIndex((slot) => slot.key === cardId);
+    if (at < 0) return;
+    taken[index] = cards.splice(at, 1)[0];
+  });
+  const missing = taken.filter((slot) => !slot).length;
+  if (missing > 0) {
+    const bottomKeys = new Set(
+      cards.filter((slot) => slot.pileEdge === 'bottom' && slot.key > 0).map((slot) => slot.key)
+    );
+    const wantsBottom = ids.some((cardId) => cardId > 0 && bottomKeys.has(cardId));
+    const rest = fromTop || (bottomKeys.size > 0 && !wantsBottom)
+      ? takeKnownTop(cards, missing, zoneId)
+      : takeKnownBottom(cards, missing, zoneId);
+    let cursor = 0;
+    for (let index = 0; index < count; index += 1) {
+      if (!taken[index]) taken[index] = rest[cursor++];
+    }
+  }
+  return taken.map((slot) => slot ?? new CardSlot(0, 0, zoneId));
 }
 
 function takeKnownTop(cards: CardSlot[], count: number, zoneId: string): CardSlot[] {

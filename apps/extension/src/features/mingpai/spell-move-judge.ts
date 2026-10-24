@@ -413,8 +413,19 @@ export function correctMoveCard(move: MoveJudgeInput, host: MoveJudgeHost): Move
   cardIds = adjusted.cardIds;
   fromPosition = adjusted.fromPosition;
   toPosition = adjusted.toPosition;
-  // 普通摸牌没写从哪一头拿时从牌堆顶拿。协议写明 0 的仍是牌堆底。技能已经改成底，或延时锦囊被标成未指定的，保持不动。
+  // 普通摸牌没写从哪一头拿时从牌堆顶拿。技能已经改成底，或延时锦囊被标成未指定的，保持不动。
   if (move.fromPosition === UNSPECIFIED && fromZone === ZONE_DRAW && fromPosition === UNSPECIFIED && toZone !== ZONE_DRAW) {
+    fromPosition = TOP;
+  }
+  // 摸牌协议里的 0 是缺省，本人是从牌堆顶摸的。按底摸会把底下的明牌换掉。
+  // 寸目等会先改成从底摸，技能号不是 0，这里不动。
+  if (
+    fromZone === ZONE_DRAW
+    && toZone === ZONE_HAND
+    && spellId === 0
+    && moveType === MOVE_DEAL
+    && fromPosition === BOTTOM
+  ) {
     fromPosition = TOP;
   }
   if (cardIds.length < count) cardIds = cardIds.concat(Array(count - cardIds.length).fill(0));

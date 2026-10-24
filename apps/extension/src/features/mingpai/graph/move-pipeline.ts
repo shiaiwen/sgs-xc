@@ -123,9 +123,10 @@ export function isWholeHandShow(move: GraphMoveMessage): boolean {
   return move.cardIds.length === move.cardCount;
 }
 
-/** 牌没换区也没换主人，只是原地展示。 */
+/** 牌没换区也没换主人，只是原地展示。牌堆换了顶底，是把牌挪到另一头。 */
 export function isSameZoneShow(move: GraphMoveMessage): boolean {
   if (move.fromZone !== move.toZone || move.fromId !== move.toId) return false;
+  if (move.toZone === PILE_ZONE && move.fromPosition !== move.toPosition) return false;
   if (!move.cardIds.some((cardId) => cardId > 0)) return false;
   if (move.spellId === 7011 && move.moveType === 19) return false;
   if (move.spellId === 3744 && move.moveType === 21) return false;

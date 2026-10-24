@@ -25,6 +25,8 @@ export function buildIncomingHandSourceLabel(input: IncomingHandLabelInput): str
   if (!input.spellId || input.moveType >= 255) return null;
   const name = readSpellName(input.spellId);
   if (!name) return null;
+  // 游戏自己会在牌上标这些技能，小抄不再画一遍。
+  if (name === '巧织' || name === '制衡') return null;
   // 火攻亮出来的牌常常还停在原来的位置，不进新手牌。移动类型 0 也会被别处丢掉，这里仍要标。
   if (input.toZone !== 5 || input.fromZone === 12) {
     return name === '火攻' ? '[火攻]' : null;
