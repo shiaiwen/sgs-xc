@@ -24,7 +24,14 @@ import { RESTART_DELAY_MS } from '../auto-hg/auto-hg-actions.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { DEAL_INTERVAL_MS } from './auto-bot-actions.ts';
 import { tryBaiShengDianjiang, readAchList, unfinishedBaiShengIds } from './auto-bot-baisheng.ts';
-import { leaveGameAfterDeath, readSeatAiFlags, readSelfSeatId, shouldLeaveAfterDeath } from './auto-bot-leave.ts';
+import {
+  leaveGameAfterDeath,
+  readIdentitySeatStates,
+  readSeatAiFlags,
+  readSelfSeatId,
+  shouldLeaveAfterDeath,
+  shouldLeaveWhenRebelTeamDead
+} from './auto-bot-leave.ts';
 import { emptyRoomSession, runAutoBotHall, runAutoBotTable, type AutoBotRoomSession } from './auto-bot-rooms.ts';
 import { runAutoBotDeal, type AutoBotPlayContext } from './auto-bot-play.ts';
 import {
@@ -146,6 +153,7 @@ export function installAutoBotController(
   let session = restoreSession(globalObject);
   let play: AutoBotPlayContext = { decision: null, mode: 'off' };
   let lastPlayTrace = '';
+  let rebelTeamLeavePending = false;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const cleanups: Array<() => void> = [];
 
@@ -154,6 +162,13 @@ export function installAutoBotController(
   function trace(event: string, detail: Record<string, unknown> = {}): void {
     if (configStore.get(AUTO_LOG_ENABLED_KEY) !== true) return;
     console.info('[小抄][自动挂机]', event, detail);
+    // DevTools 导出时对象经常被折叠为 “{…}”；同步打印纯 JSON，便于直接
+    // 粘贴到 bug.txt 对照每张手牌的 Activated/Selected 状态和目标座位。
+    try {
+      console.info('[小抄][自动挂机]', `${event}详情`, JSON.stringify(detail));
+    } catch {
+      // 日志绝不能影响挂机流程。
+    }
   }
 
   function tracePlay(source: string, scene: string): void {
@@ -163,7 +178,8 @@ export function installAutoBotController(
       mode: play.mode,
       reason: play.reason ?? '',
       fallbackLevel: play.decision?.fallbackLevel ?? 0,
-      decisionKey: play.decision?.key ?? ''
+      decisionKey: play.decision?.key ?? '',
+      diagnostic: play.diagnostic ?? {}
     };
     const fingerprint = JSON.stringify(detail);
     if (fingerprint === lastPlayTrace) return;
@@ -201,11 +217,22 @@ export function installAutoBotController(
       if (event.type === 'game-ended') {
         trace('对局结束，准备重新开始', { kind: session.kind });
         play = { decision: null, mode: 'off' };
+        rebelTeamLeavePending = false;
         refreshTavern(true);
         if (stopIfTavernDone()) return;
         scheduleTable(RESTART_DELAY_MS);
       }
       if (event.type === 'player-died') {
+        const identitySeats = readIdentitySeatStates(globalObject);
+        if (!rebelTeamLeavePending && shouldLeaveWhenRebelTeamDead(identitySeats)) {
+          rebelTeamLeavePending = true;
+          trace('四名反贼均已阵亡，立即返回下一场', { seats: identitySeats });
+          later(() => {
+            const clicked = leaveGameAfterDeath(locator, globalObject);
+            trace('反贼全灭返回', { clicked });
+          }, 600);
+          return;
+        }
         const selfSeatId = readSelfSeatId(locator, globalObject);
         if (!shouldLeaveAfterDeath({
           deadSeatId: event.seatId,
@@ -276,7 +303,8 @@ export function installAutoBotController(
           unfinishedBaiShengIds(readAchList(globalObject), locator),
           currentId
         ),
-        schedule: later
+        schedule: later,
+        onTrace: trace
       });
       persistSession(globalObject, session);
     }, delay);
@@ -310,7 +338,8 @@ export function installAutoBotController(
           unfinishedBaiShengIds(readAchList(globalObject), locator),
           currentId
         ),
-        schedule: later
+        schedule: later,
+        onTrace: trace
       });
       persistSession(globalObject, session);
     }
@@ -337,6 +366,7 @@ export function installAutoBotController(
       if (!enabled || disposed) return;
       if (className === 'MsgGameOver') {
         play = { decision: null, mode: 'off' };
+        rebelTeamLeavePending = false;
         refreshTavern(true);
         later(() => {
           if (stopIfTavernDone()) return;

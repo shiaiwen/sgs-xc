@@ -275,19 +275,31 @@ export function runKurouTick(
 export function confirmNamedPrompt(
   locator: LayaObjectLocator,
   title: string,
-  label: string
+  label: string,
+  selectCheckBox = false
 ): boolean {
   const layer = locator.layer('PromptLayer');
   const confirm = asRecord(layer?.confirmWin) ?? asRecord(locator.window('ConfirmWindow'));
   if (!confirm) return false;
   const data = asRecord(confirm.confirmData);
   if (data && String(data.title ?? '') && String(data.title) !== title) return false;
-  const buttons = (confirm.buttonArr as unknown[]) || [];
+  // 原客户端将选项放在 confirmData.buttonArr，窗口实例自身通常没有该字段。
+  const buttons = (data?.buttonArr as unknown[]) || (confirm.buttonArr as unknown[]) || [];
   const target = buttons.map(asRecord).find((item) => String(item?.label ?? '') === label);
   if (!target) return false;
+  const checkBox = asRecord(confirm.checkBox);
+  if (selectCheckBox && checkBox) {
+    checkBox.selected = true;
+    if (typeof confirm.checkBoxChange === 'function') {
+      try { (confirm.checkBoxChange as () => void).call(confirm); } catch { /* optional UI state */ }
+    }
+  }
   const callback = target.callBack;
   if (typeof callback === 'function') {
-    callback.apply(target.thisObject ?? confirm, (target.args as unknown[]) || []);
+    callback.apply(target.thisObject ?? confirm, (target.callBackParams as unknown[]) || (target.args as unknown[]) || []);
+    if (data?.clickClose && typeof confirm.RemoveFromParent === 'function') {
+      try { (confirm.RemoveFromParent as () => void).call(confirm); } catch { /* callback already completed */ }
+    }
     return true;
   }
   return clickLayaNode(target);

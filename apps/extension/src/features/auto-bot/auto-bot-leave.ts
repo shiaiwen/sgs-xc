@@ -37,11 +37,39 @@ export function readSeatAiFlags(globalObject: LayaRuntimeWindow): Array<{ ai?: u
   return seats.map((item) => asRecord(item) ?? {});
 }
 
+/** 读取身份局座位的身份与死亡状态；只对已明确为反贼的座位作判断。 */
+export function readIdentitySeatStates(globalObject: LayaRuntimeWindow): Array<{ figure: number; dead: boolean }> {
+  const scene = asRecord(locateGameScene(globalObject));
+  const seats = (asRecord(scene?.seatContainer)?.seatUis as unknown[]) || [];
+  return seats.map((value) => {
+    const ui = asRecord(value);
+    const seat = asRecord(ui?.seat) ?? asRecord(ui?.Seat) ?? ui;
+    const manager = asRecord(ui?.figureManager) ?? asRecord(ui?.FigureManager);
+    return {
+      figure: Number(manager?.Figure ?? manager?.figure ?? seat?.Figure ?? seat?.figure ?? 0),
+      dead: !!(seat?.isDead ?? seat?.IsDead)
+    };
+  });
+}
+
+/** 八人身份局的四名反贼全部阵亡，己方已不可能继续行动，可立即退回下一局。 */
+export function shouldLeaveWhenRebelTeamDead(
+  seats: Array<{ figure: number; dead: boolean }>
+): boolean {
+  const rebels = seats.filter((seat) => seat.figure === 3);
+  return rebels.length >= 4 && rebels.every((seat) => seat.dead);
+}
+
 /** 自己阵亡且其余全是 AI 时，点返回并确认退出。 */
 export function leaveGameAfterDeath(locator: LayaObjectLocator, globalObject: LayaRuntimeWindow): boolean {
   const scene = asRecord(locateGameScene(globalObject));
   const back = asRecord(asRecord(scene?.topMenu)?.backBtn);
   const clicked = clickLayaNode(back, globalObject);
-  confirmNamedPrompt(locator, '退出游戏', '确定');
+  // 返回确认框会在下一帧才挂到 PromptLayer；连续两帧确认避免同步读取为空。
+  const confirm = () => confirmNamedPrompt(locator, '退出游戏', '确定');
+  confirm();
+  const schedule = globalObject.setTimeout?.bind(globalObject) ?? setTimeout;
+  schedule(confirm, 100);
+  schedule(confirm, 300);
   return clicked;
 }

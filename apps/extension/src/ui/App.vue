@@ -44,6 +44,7 @@ import {
 } from './panel/panel-model';
 import type { TurnStatusStore } from '../features/turn-status/turn-status-store';
 import type { XiaochaoConfigStore } from '../config/config-store';
+import type { SeatStateStore } from '../features/seat-display/seat-state-store.ts';
 import type { RecentCardStore } from '../features/recent-cards/recent-card-store';
 import type { GameCardCatalog } from '../features/cards/game-card-catalog';
 import type { DeckRecordStore } from '../features/deck-record/deck-record-store';
@@ -70,6 +71,7 @@ const props = defineProps<{
   platform: 'electron' | 'userscript';
   layout: XiaochaoPanelLayout;
   configStore: XiaochaoConfigStore;
+  seatStateStore: SeatStateStore;
   recentCardStore: RecentCardStore;
   deckRecordStore: DeckRecordStore;
   gameCardCatalog: GameCardCatalog;
@@ -505,6 +507,7 @@ function handleResizeStart(event: PointerEvent): void {
       />
       <DeckRecordSection
         :config-store="configStore"
+        :seat-state-store="seatStateStore"
         :deck-record-store="deckRecordStore"
         :game-card-catalog="gameCardCatalog"
       />

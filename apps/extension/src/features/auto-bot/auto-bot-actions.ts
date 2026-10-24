@@ -2,10 +2,11 @@
  * 自动托管底层动作：按钮优先级、托管请求条件、决策状态刷新与回退。
  */
 
-export const DEAL_INTERVAL_MS = 10000;
-export const OFFICIAL_WAIT_MS = 1000;
-export const LOCAL_BEFORE_TRUSTEE_MS = 3000;
-export const TRUSTEE_COOLDOWN_MS = 3000;
+// 出牌窗口的有效时间很短；10 秒轮询会错过已经激活的牌和确认按钮。
+export const DEAL_INTERVAL_MS = 500;
+export const OFFICIAL_WAIT_MS = 300;
+export const LOCAL_BEFORE_TRUSTEE_MS = 1000;
+export const TRUSTEE_COOLDOWN_MS = 1500;
 export const SKIP_SELECT_SKILL_ID = 700;
 
 export type AutoBotMode = 'off' | 'ai' | 'local' | 'trustee';

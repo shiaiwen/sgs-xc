@@ -64,6 +64,8 @@ export function readSeatStateFromGameScene(
     const isSelf = rawSeatUI === gameScene?.SelfSeatUi
       || (readBoolean(seat, ['isSelf', 'IsSelf']) ?? false);
     const isControlled = isSelf || controlledSeatIds.includes(seatId);
+    const figureManager = asRecord(seatUI?.figureManager) ?? asRecord(seatUI?.FigureManager);
+    const identity = Number(figureManager?.Figure ?? figureManager?.figure ?? seat.Figure ?? seat.figure ?? 0) || 0;
     const seatCards = readArray(seat, CARD_LIST_KEYS);
     const shownHandCards = readShownHandEntries(seat, seatUI);
     const cardContainer = asRecord(seatUI?.cardContainer);
@@ -106,6 +108,7 @@ export function readSeatStateFromGameScene(
         ?? readPositiveInteger(seat, ORDER_KEYS)
         ?? index + 1,
       playerName: readString(seat, PLAYER_NAME_KEYS),
+      identity,
       // 旁观模式下数组首项也不是自己，不能用排列位置推断本家。
       isSelf,
       isAlive: !(readBoolean(seat, ['isDead', 'IsDead']) ?? false),

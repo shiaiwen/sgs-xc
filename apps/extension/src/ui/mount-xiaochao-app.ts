@@ -8,6 +8,7 @@ import XiaochaoApp from './App.vue';
 import type { XiaochaoPlatform } from '../adapters/platform';
 import { installPanelShellStyles } from './panel/panel-shell-styles';
 import type { XiaochaoConfigStore } from '../config/config-store';
+import type { SeatStateStore } from '../features/seat-display/seat-state-store.ts';
 import type { RecentCardStore } from '../features/recent-cards/recent-card-store';
 import type { GameCardCatalog } from '../features/cards/game-card-catalog';
 import type { DeckRecordStore } from '../features/deck-record/deck-record-store';
@@ -39,6 +40,7 @@ export function mountXiaochaoApp(
   platform: XiaochaoPlatform,
   layout: XiaochaoPanelLayout,
   configStore: XiaochaoConfigStore,
+  seatStateStore: SeatStateStore,
   recentCardStore: RecentCardStore,
   deckRecordStore: DeckRecordStore,
   gameCardCatalog: GameCardCatalog,
@@ -58,6 +60,7 @@ export function mountXiaochaoApp(
     platform,
     layout,
     configStore,
+    seatStateStore,
     recentCardStore,
     deckRecordStore,
     gameCardCatalog,

@@ -12,13 +12,11 @@ import {
   readSelfUserId
 } from '../auto-hg/auto-hg-runtime.ts';
 import {
-  AI_PROMPT_TITLE
-} from '../auto-hg/auto-hg-actions.ts';
-import {
   applyCreateTableDefaults,
   detectAutoBotKind,
   hallCreatePlan,
   aiPromptLabel,
+  AUTO_BOT_AI_LEVEL,
   ROGUE_1V1_SCENE,
   type AutoBotKind
 } from './auto-bot-mode.ts';
@@ -128,6 +126,39 @@ function nodeText(node: unknown, depth = 0): string {
   return children.map((child) => nodeText(child, depth + 1)).filter(Boolean).join('');
 }
 
+/** Laya Canvas 弹窗没有 DOM；压缩为可写进 bug.txt 的结构化快照。 */
+function aiPromptSnapshot(locator: LayaObjectLocator): Record<string, unknown> {
+  const layer = locator.layer('PromptLayer');
+  const nodes: Array<Record<string, unknown>> = [];
+  const visit = (value: unknown, depth: number) => {
+    const node = asRecord(value);
+    if (!node || depth > 4 || nodes.length >= 40 || node.visible === false) return;
+    const text = textOf(node.text ?? node.label);
+    const name = String(node.name ?? '');
+    if (name || text || Array.isArray(node.buttonArr)) {
+      nodes.push({
+        depth,
+        name,
+        text,
+        // Laya 画布坐标：用于人工核对弹窗中“高级”的可见位置。
+        // 自动操作仍应优先调用该节点本身的点击事件，不能依赖屏幕坐标。
+        x: typeof node.x === 'number' ? Math.round(node.x) : undefined,
+        y: typeof node.y === 'number' ? Math.round(node.y) : undefined,
+        width: typeof node.width === 'number' ? Math.round(node.width) : undefined,
+        height: typeof node.height === 'number' ? Math.round(node.height) : undefined,
+        title: String(asRecord(node.confirmData)?.title ?? node.title ?? ''),
+        buttons: Array.isArray(node.buttonArr)
+          ? node.buttonArr.map(asRecord).filter(Boolean).map((button) => String(button?.label ?? button?.text ?? button?.name ?? ''))
+          : undefined
+      });
+    }
+    const children = (node._childs || node._children) as unknown[] | undefined;
+    if (Array.isArray(children)) children.forEach((child) => visit(child, depth + 1));
+  };
+  visit(layer, 0);
+  return { hasPromptLayer: !!layer, nodes };
+}
+
 function listedRoomTexts(scene: UnknownRecord | null): string[] {
   const list = asRecord(scene?.roomListView);
   const rooms = (list?.roomUis || list?.itemUis || list?.roomList || list?.list) as unknown[] | undefined;
@@ -225,23 +256,7 @@ function sitEmptySeat(scene: UnknownRecord, globalObject: LayaRuntimeWindow): bo
   return clickLayaNode(target, globalObject);
 }
 
-const recentAiSeats = new WeakMap<object, number>();
 let robotChainUntil = 0;
-
-function addAiSeat(scene: UnknownRecord, seat: UnknownRecord, level = 1): boolean {
-  const list = asRecord(scene.seatListView);
-  if (!list || typeof list.addAiHandler !== 'function') return false;
-  const last = recentAiSeats.get(seat) ?? 0;
-  if (Date.now() - last < 800) return false;
-  recentAiSeats.set(seat, Date.now());
-  if (typeof list.showBtns === 'function') list.showBtns(seat);
-  try {
-    list.addAiHandler(level, seat);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function seatNumber(seat: UnknownRecord, listIndex: number): number {
   const value = Number(seat.seatId ?? seat.SeatId ?? seat.seatID ?? seat.index ?? seat.Index);
@@ -403,6 +418,7 @@ export function runAutoBotTable(
     baiSheng: boolean;
     onBaiSheng?: (scene: UnknownRecord, currentId: number) => number;
     schedule?: (callback: () => void, delay: number) => void;
+    onTrace?: (event: string, detail?: Record<string, unknown>) => void;
   }
 ): AutoBotRoomSession {
   const scene = locateTableScene(globalObject);
@@ -447,32 +463,37 @@ export function runAutoBotTable(
   if (next.managedRoom || drill) {
     if (Date.now() < robotChainUntil) return next;
     const rows = tableSeats(scene);
-    const masterLevel = 3;
-    const steps = rows
-      .filter((item) => item.empty)
-      .map((item) => ({
-        seat: item.seat,
-        level: item.number > rows.length / 2 ? masterLevel : 1
-      }))
-      .sort((left, right) => right.level - left.level);
-    if (steps.length) {
-      const gap = 200;
-      const schedule = options.schedule ?? ((callback: () => void) => callback());
-      steps.forEach((step, index) => {
-        schedule(() => {
-          addAiSeat(scene, step.seat, step.level);
-          confirmNamedPrompt(locator, AI_PROMPT_TITLE, aiPromptLabel(step.level));
-        }, index * gap);
+    const emptySeats = rows.filter((item) => item.empty);
+    if (emptySeats.length) {
+      // 此入口会由客户端按账号允许的最高非王者档位（高级）直接创建机器人，
+      // 实测不会出现可供脚本确认的提示框。只点一次并等待服务端回包，不能重试。
+      const opened = mousePress(scene.addAiBtn);
+      const label = aiPromptLabel(AUTO_BOT_AI_LEVEL);
+      options.onTrace?.('批量添加高级机器人', {
+        targetLevel: AUTO_BOT_AI_LEVEL,
+        label,
+        emptySeats: emptySeats.map((item) => item.number),
+        opened
       });
+      // 连续采样 Canvas 弹窗；用于找出“高级”选项真实的 Laya 节点路径。
+      const schedule = options.schedule ?? ((callback: () => void, delay: number) => setTimeout(callback, delay));
+      [80, 250, 500, 1000].forEach((delay) => schedule(() => {
+        options.onTrace?.('机器人难度弹窗探测', { delay, ...aiPromptSnapshot(locator) });
+      }, delay));
+      // 与参考解密版一致：批量添加后的确认框从 PromptLayer.confirmWin 的
+      // confirmData.buttonArr 取“高级”项并直接执行回调，不依赖 DOM/屏幕坐标。
       schedule(() => {
-        mousePress(scene.addAiBtn);
-        confirmNamedPrompt(locator, AI_PROMPT_TITLE, aiPromptLabel(1));
-      }, steps.length * gap);
-      robotChainUntil = Date.now() + (steps.length + 1) * gap + 400;
+        const confirmed = confirmNamedPrompt(locator, '系统提示', label, true);
+        options.onTrace?.('确认机器人难度', { label, confirmed, source: 'PromptLayer.confirmData.buttonArr' });
+      }, 500);
+      robotChainUntil = Date.now() + 8000;
       return next;
     }
   }
   if ((next.managedRoom || drill) && tableSeats(scene).some((item) => item.empty)) return next;
-  if (!locateGameScene(globalObject)) clickStart(scene, globalObject);
+  if (!locateGameScene(globalObject)) {
+    const started = clickStart(scene, globalObject);
+    options.onTrace?.('尝试开局', { started, kind, managedRoom: next.managedRoom });
+  }
   return next;
 }

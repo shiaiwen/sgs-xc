@@ -51,6 +51,9 @@ export function aiPromptLabel(level: number): string {
   return '小杀(普通)';
 }
 
+/** 当前演武房仅可选高级/王者；固定高级，绝不选择王者难度。 */
+export const AUTO_BOT_AI_LEVEL = 2;
+
 /** 建房窗口填上模式、时间和密码。 */
 export function applyCreateTableDefaults(windowInstance: {
   showMoreHandler?: () => void;

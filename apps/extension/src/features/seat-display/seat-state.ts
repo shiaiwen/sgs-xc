@@ -28,6 +28,8 @@ export interface GameSeatSnapshot {
   seatId: number;
   displayOrder: number;
   playerName: string;
+  /** 身份局客户端 Figure：1 主公、2 忠臣、3 反贼、4 内奸；未知时为 0。 */
+  identity?: number;
   isSelf: boolean;
   isAlive: boolean;
   anchor: GameSeatAnchorSnapshot | null;
@@ -136,6 +138,7 @@ export function normalizeSeatState(
       seatId,
       displayOrder: normalizeDisplayOrder(seat.displayOrder, seatsById.size + 1),
       playerName: typeof seat.playerName === 'string' ? seat.playerName : '',
+      identity: Math.max(0, Math.floor(Number(seat.identity) || 0)),
       // controlledSeatIds 在 2v2 中还包含队友；isSelf 只表示本机玩家本人。
       isSelf: seat.isSelf === true || seatId === selfSeatId,
       isAlive: seat.isAlive !== false,

@@ -86,6 +86,17 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
   let core: XiaochaoCoreRuntime | null = null;
+  let panelMountTimer: number | undefined;
+
+  const schedulePanelMount = () => {
+    if (!core || !document.body || panelMountTimer !== undefined) return;
+    // 游戏运行时刚出现时仍在加载大量 Laya 资源。把 Vue 面板留到下一小段空闲
+    // 时间，避免与首屏纹理、场景初始化争抢主线程；控制器和协议监听不延后。
+    panelMountTimer = window.setTimeout(() => {
+      panelMountTimer = undefined;
+      if (core && document.body) core.mountPanelShell();
+    }, 600);
+  };
 
   const probeRuntimeReady = () => getMissingGameRuntimeDependencies({ globalObject: window });
 
@@ -94,14 +105,17 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     const missing = probeRuntimeReady();
     panelStartupStatus.missing = missing;
     if (missing.length > 0) {
+      if (panelMountTimer !== undefined) {
+        window.clearTimeout(panelMountTimer);
+        panelMountTimer = undefined;
+      }
       core?.teardownPanel();
       panelStartupStatus.state = 'waiting';
       return;
     }
     if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
     core.syncRuntimeSession();
-    if (!document.body) return;
-    core.mountPanelShell();
+    schedulePanelMount();
     panelStartupStatus.state = 'ready';
   };
 
@@ -318,6 +332,7 @@ function startXiaochaoCore(
       platform.platform,
       layout,
       configStore,
+      seatStateStore,
       recentCardStore,
       deckRecordStore,
       gameCardCatalog,
