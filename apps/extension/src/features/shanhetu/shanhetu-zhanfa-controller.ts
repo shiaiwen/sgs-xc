@@ -7,11 +7,10 @@ import type { GameEvent, GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
   createZhanfaCounts,
   noteCardUsed,
-  noteDragonCountingStarted,
   noteDragonDraw,
-  notePhaseRoundStart,
   noteZhanfaGameEnded,
   noteZhanfaGameStarted,
+  noteZhanfaPhase0,
   zhanfaDisplayValue,
   type ZhanfaCounts
 } from './shanhetu-zhanfa-count.ts';
@@ -82,9 +81,8 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
     if (!items.length) return;
 
     let changed = false;
-    if (event.type === 'phase-changed') {
-      noteDragonCountingStarted(state);
-      if (event.phase === 0) changed = notePhaseRoundStart(state, event.seatId, selfSeatId);
+    if (event.type === 'phase-changed' && event.phase === 0) {
+      changed = noteZhanfaPhase0(state, event.seatId, selfSeatId);
     } else if (event.type === 'cards-moved') {
       changed = noteDragonDraw(state, {
         selfSeatId,

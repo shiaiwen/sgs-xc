@@ -4,6 +4,69 @@
  */
 const FIGURE_BY_SEAT_ORDER = [1, 2, 2, 4, 3, 3, 3, 3] as const;
 
+type UnknownRecord = Record<string, unknown>;
+
+/** 房间设置里与自选身份相关的文案。 */
+export const CHOOSE_IDENTITY_MODE_TEXT = /自选身份|身份自选|自选反贼|反贼自选|自选主忠|主忠自选/;
+
+const CHOOSE_FIGURE_KEY = /(?:choose|select).*(figure|identity|rebel|lord|loyal|zhong|fan|zhu|role)|(?:figure|identity|rebel|lord|loyal|zhong|fan|zhu|role).*(?:choose|select)/i;
+
+export function isIdentityDrillContext(input: { modeText: string; modeType?: number }): boolean {
+  return input.modeText.includes('演武')
+    || input.modeType === 74
+    || input.modeType === 84;
+}
+
+/** 游戏在房间或设置上直接标记了自选身份。 */
+export function isExplicitChooseFigure(setting: UnknownRecord | null): boolean {
+  if (!setting) return false;
+  for (const key of ['IsChooseFigure', 'isChooseFigure']) {
+    const raw = setting[key];
+    if (raw === true || raw === 1 || raw === '1') return true;
+  }
+  return false;
+}
+
+function settingDeclaresChooseIdentity(setting: UnknownRecord): boolean {
+  for (const value of Object.values(setting)) {
+    if (typeof value === 'string' && CHOOSE_IDENTITY_MODE_TEXT.test(value)) return true;
+  }
+  return Object.entries(setting).some(([key, value]) => {
+    if (!CHOOSE_FIGURE_KEY.test(key)) return false;
+    return typeof value === 'string' && CHOOSE_IDENTITY_MODE_TEXT.test(value.trim());
+  });
+}
+
+/** 当前房间设置是否属于自选身份类，不能单凭 SelType 大于 0 认定。 */
+export function isChooseFigureSetting(setting: UnknownRecord | null): boolean {
+  if (!setting) return false;
+  if (isExplicitChooseFigure(setting)) return true;
+  if (!settingDeclaresChooseIdentity(setting)) return false;
+  for (const key of ['SelType', 'selType', 'SelectType', 'selectType', 'SelfSelectType', 'selfSelectType']) {
+    const raw = setting[key];
+    const value = typeof raw === 'string' ? Number(raw) : raw;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return true;
+  }
+  return true;
+}
+
+export interface ChooseFigureModeInput {
+  modeText: string;
+  modeType?: number;
+  chooseFigure: boolean;
+  chooseFigureExplicit?: boolean;
+}
+
+/**
+ * 只有自选身份局才按座位顺序写身份。普通八人军争即使 SelType 误读也不能开。
+ */
+export function shouldRevealIdentityFigures(input: ChooseFigureModeInput): boolean {
+  if (!input.chooseFigure) return false;
+  if (input.chooseFigureExplicit) return true;
+  if (CHOOSE_IDENTITY_MODE_TEXT.test(input.modeText)) return true;
+  return isIdentityDrillContext(input);
+}
+
 /** 按房间座位序号取身份。越界时返回 0，调用方应跳过。 */
 export function figureForChooseIdentityOrder(order: number): number {
   return FIGURE_BY_SEAT_ORDER[order] ?? 0;

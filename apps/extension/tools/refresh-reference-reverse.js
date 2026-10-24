@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(__dirname, '..');
 const defaultZip =
   process.env.XIAOCHAO_REFERENCE_ZIP ||
-  'C:\\Users\\24745\\Downloads\\xiaochao-1.6.31-weiduan-1.1.74.zip';
+  path.join(extensionRoot, '.reference', 'xiaochao-1.6.47-weiduan-1.1.80.zip');
 const zipPath = path.resolve(process.argv[2] || defaultZip);
 const outDir = path.join(extensionRoot, '.dev-data', 'appbak');
 const updatesUrl = 'https://log.xiaochao.org/updates.txt';

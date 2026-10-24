@@ -1,12 +1,13 @@
 /**
- * 山河图战法次数，与参考脚本 BL.record / BL.enter 一致。
- * 神龙摆尾只累加发牌张数，三板斧累加打出的杀，多多益善按发牌次数加一，手到擒来累加出牌次数。
- * 后两项在回合开始阶段清零。
+ * 山河图战法次数，与参考脚本 Bs.record / Bs.enter 一致。
+ * 神龙摆尾在 isGameStart 或 isPassed 为真时，按发牌 moveType=1 的张数累加。
+ * 开局发到手的牌不计入。三板斧累加打出的杀，多多益善按发牌次数加一，手到擒来累加出牌次数。
+ * 后两项在自己回合开始阶段清零。
  */
 
 export const ZONE_DRAW = 1;
 export const ZONE_HAND = 5;
-/** 发牌、摸牌进手。 */
+/** 发牌进手。摸牌 moveType=13 不计入神龙摆尾。 */
 export const MOVE_DEAL = 1;
 export const MOVE_DRAW = 13;
 /** 杀。 */
@@ -24,12 +25,22 @@ export interface ZhanfaCounts {
   handy: number;
   plenty: number;
   playing: boolean;
-  /** 开局发牌阶段不计数，第一次阶段变化后才开始。 */
-  dragonArmed: boolean;
+  /** 参考 Bs.isGameStart：正式开局后为 true，开局发牌前为 false。 */
+  isGameStart: boolean;
+  /** 参考 Bs.isPassed：局后洗牌等阶段为 true，仍允许 record mo。 */
+  isPassed: boolean;
 }
 
 export function createZhanfaCounts(): ZhanfaCounts {
-  return { dragon: 0, axe: 0, handy: 0, plenty: 0, playing: false, dragonArmed: false };
+  return {
+    dragon: 0,
+    axe: 0,
+    handy: 0,
+    plenty: 0,
+    playing: false,
+    isGameStart: false,
+    isPassed: false
+  };
 }
 
 export function noteZhanfaGameStarted(state: ZhanfaCounts, freshGame: boolean): void {
@@ -38,15 +49,21 @@ export function noteZhanfaGameStarted(state: ZhanfaCounts, freshGame: boolean): 
     state.axe = 0;
     state.handy = 0;
     state.plenty = 0;
-    state.dragonArmed = false;
+    state.isGameStart = false;
+    state.isPassed = false;
+  } else {
+    state.isGameStart = true;
+    state.isPassed = false;
   }
   state.playing = true;
 }
 
-/** 阶段协议到达后才允许累加神龙摆尾，开局发到手的牌不计入。 */
-export function noteDragonCountingStarted(state: ZhanfaCounts): void {
-  if (!state.playing) return;
-  state.dragonArmed = true;
+/** 参考 Bs.start：进入可计数的对局阶段。 */
+export function noteZhanfaPlayStarted(state: ZhanfaCounts): boolean {
+  if (!state.playing || state.isGameStart) return false;
+  state.isGameStart = true;
+  state.isPassed = false;
+  return true;
 }
 
 export function noteZhanfaGameEnded(state: ZhanfaCounts): void {
@@ -55,15 +72,27 @@ export function noteZhanfaGameEnded(state: ZhanfaCounts): void {
   state.handy = 0;
   state.plenty = 0;
   state.playing = false;
-  state.dragonArmed = false;
+  state.isGameStart = false;
+  state.isPassed = false;
 }
 
-/** 回合开始阶段：自己行动时清手到擒来、多多益善计数。 */
+/** 回合开始阶段：参考 enter phase 0，自己行动时清手到擒来、多多益善。 */
 export function notePhaseRoundStart(state: ZhanfaCounts, seatId: number, selfSeatId: number | null): boolean {
   if (!state.playing || selfSeatId === null || seatId !== selfSeatId) return false;
   state.handy = 0;
   state.plenty = 0;
   return true;
+}
+
+/** 阶段 0：先 start 再清多多益善 / 手到擒来。 */
+export function noteZhanfaPhase0(state: ZhanfaCounts, seatId: number, selfSeatId: number | null): boolean {
+  let changed = noteZhanfaPlayStarted(state);
+  if (notePhaseRoundStart(state, seatId, selfSeatId)) changed = true;
+  return changed;
+}
+
+function canRecordDragonDraw(state: ZhanfaCounts): boolean {
+  return state.playing && (state.isGameStart || state.isPassed);
 }
 
 export function noteDragonDraw(
@@ -77,7 +106,7 @@ export function noteDragonDraw(
     cardCount: number;
   }
 ): boolean {
-  if (!state.playing || !state.dragonArmed || move.selfSeatId === null || move.toId !== move.selfSeatId) return false;
+  if (!canRecordDragonDraw(state) || move.selfSeatId === null || move.toId !== move.selfSeatId) return false;
   if (move.fromZone !== ZONE_DRAW || move.toZone !== ZONE_HAND) return false;
   if (move.moveType !== MOVE_DEAL) return false;
   if (move.cardCount <= 0) return false;
@@ -86,7 +115,7 @@ export function noteDragonDraw(
   return true;
 }
 
-/** use 为技能号；三板斧仅在 spellId 为杀时加一。 */
+/** 参考 record use：手到擒来任意出牌加一，三板斧在 spellId 为杀时加一。 */
 export function noteCardUsed(
   state: ZhanfaCounts,
   used: {

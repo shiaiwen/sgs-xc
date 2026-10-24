@@ -1,9 +1,0 @@
-在控制台粘贴下面整段，回车一次。最后一行会显示一长串文字，那就是要复制的内容。
-
-(function () {
-  var fn = window.__xcProbePlayName;
-  if (typeof fn !== 'function') {
-    return JSON.stringify({ error: '先刷新小抄并进录像' });
-  }
-  return JSON.stringify(fn(), null, 0);
-})();

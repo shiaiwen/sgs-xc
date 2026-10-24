@@ -9,8 +9,11 @@ import {
   figureByClientOrder,
   figureConflicts,
   figureForChooseIdentityOrder,
+  isChooseFigureSetting,
+  isExplicitChooseFigure,
   isIdentityFigure,
-  resolveSeatFigure
+  resolveSeatFigure,
+  shouldRevealIdentityFigures
 } from './choose-figure.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -143,7 +146,12 @@ export function installChooseFigureController(
       const setting = asRecord(room?.TableSetting) ?? asRecord(room?.tableSetting);
       const mode = readMode(globalObject, room, setting);
       const settingSnapshot = readIdentitySettingSnapshot(setting);
-      if (!shouldRevealIdentityFigures(mode)) {
+      if (!shouldRevealIdentityFigures({
+        modeText: mode.modeText,
+        modeType: mode.modeType,
+        chooseFigure: mode.chooseFigure,
+        chooseFigureExplicit: mode.chooseFigureExplicit
+      })) {
         const debugSnapshot = {
           event: 'poll', roomKey: readRoomKey(room), setting: settingSnapshot,
           modeText: mode.modeText, modeType: mode.modeType, chooseMode: mode.chooseFigure, modeEnabled: false
@@ -315,22 +323,6 @@ export function installChooseFigureController(
   }
 }
 
-/**
- * 只看房间的模式选择是不是「自选身份」这一类。
- * 不用房间名、模式名做判断：那些文字玩家可以随便改，拿它当依据是潜在 bug。
- */
-export function shouldRevealIdentityFigures(input: {
-  modeText: string;
-  modeType?: number;
-  chooseFigure: boolean;
-}): boolean {
-  if (input.chooseFigure) return true;
-  const drill = input.modeText.includes('演武')
-    || input.modeType === 74
-    || input.modeType === 84;
-  return drill && /自选身份|身份自选|自选反贼|反贼自选|自选主忠|主忠自选/.test(input.modeText);
-}
-
 function readSeatListLength(room: UnknownRecord | null): number {
   const seats = asRecord(room?.TabbleSeatInfos)
     ?? asRecord(room?.tabbleSeatInfos)
@@ -348,7 +340,7 @@ function readMode(
   globalObject: GameRuntimeWindow,
   room: UnknownRecord | null,
   setting: UnknownRecord | null
-): { modeText: string; modeType: number; chooseFigure: boolean } {
+): { modeText: string; modeType: number; chooseFigure: boolean; chooseFigureExplicit: boolean } {
   const scene = asRecord(locateGameScene(globalObject));
   const topMenu = asRecord(scene?.topMenu);
   const area = asRecord(topMenu?.areaServerLabel);
@@ -373,11 +365,12 @@ function readMode(
   }
   collectChinese(setting, parts);
   collectChinese(room, parts);
+  const chooseFigureExplicit = isExplicitChooseFigure(setting) || isExplicitChooseFigure(room);
   return {
     modeText: parts.filter((part): part is string => typeof part === 'string').join(' '),
     modeType,
-    // 旧版读的是房间上的 IsChooseFigure 字段，设置表里可能没有，两处都看。
-    chooseFigure: isChooseFigure(setting) || isChooseFigure(room)
+    chooseFigure: isChooseFigureSetting(setting) || isChooseFigureSetting(room),
+    chooseFigureExplicit
   };
 }
 
@@ -418,28 +411,6 @@ function readRoomKey(room: UnknownRecord | null): string {
     return String(value);
   }
   return '';
-}
-
-/** 自选身份开关：房间设置里的模式选择项，SelType 大于 0 就是自选身份类。 */
-export function isChooseFigure(setting: UnknownRecord | null): boolean {
-  if (!setting) return false;
-  for (const key of ['SelType', 'selType', 'SelectType', 'selectType', 'SelfSelectType', 'selfSelectType']) {
-    const raw = setting[key];
-    const value = typeof raw === 'string' ? Number(raw) : raw;
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return true;
-  }
-  const identityModeKey = /(?:choose|select).*(figure|identity|rebel|lord|loyal|zhong|fan|zhu|role)|(?:figure|identity|rebel|lord|loyal|zhong|fan|zhu|role).*(?:choose|select)/i;
-  return Object.entries(setting).some(([key, value]) => {
-    if (!identityModeKey.test(key)) return false;
-    if (value === true || value === 1 || value === '1') return true;
-    // 模式选择还可能直接存编号或选项名，这些都算开了。
-    if (typeof value === 'number') return value > 0;
-    if (typeof value === 'string') {
-      const text = value.trim();
-      return text !== '' && text !== '0' && !/^false$/i.test(text);
-    }
-    return false;
-  });
 }
 
 function readIdentitySettingSnapshot(setting: UnknownRecord | null): Record<string, unknown> {

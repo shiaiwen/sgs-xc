@@ -1,5 +1,5 @@
 ---
-description: 逆向对照小抄脚本时只看指定压缩包里的 1.6.31
+description: 逆向对照小抄脚本时只看仓库内指定压缩包里的 1.6.47
 alwaysApply: true
 ---
 
@@ -7,15 +7,13 @@ alwaysApply: true
 
 对照小抄脚本行为时，只读这个压缩包：
 
-`C:\Users\24745\Downloads\xiaochao-1.6.31-weiduan-1.1.74.zip`
+`D:\workspace\sgs-xc\apps\extension\.reference\xiaochao-1.6.47-weiduan-1.1.80.zip`
 
-包内是 `app.zip`，脚本路径是 `app/xiaochao.js`，版本 `1.6.31`。
+包内是 `app.zip`，脚本路径是 `app/xiaochao.js`，版本 `1.6.47`。
 
 不要用 `apps/extension/.reference/app-bak/xiaochao.js`。那份是 `1.5.71`。
 
-这个压缩包在仓库外面，只为核对参考实现时读取。
-
-对照行为时同时看更新日志：`https://log.xiaochao.org/`（`updates.txt`）。截至维护时日志已到 **1.6.37**，本地 Downloads 里常见 zip 仍停在 **1.6.31**；日志比压缩包新时，以日志里多出来的版本说明为准，不要只按压缩包里的旧行为改。
+对照行为时同时看更新日志：`https://log.xiaochao.org/`（`updates.txt`）。日志比压缩包新时，以日志里多出来的版本说明为准，不要只按压缩包里的旧行为改。
 
 ## 本地镜像
 

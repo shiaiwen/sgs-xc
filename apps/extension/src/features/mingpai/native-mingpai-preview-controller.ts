@@ -80,6 +80,84 @@ const POPUP_CARD_GAP = 8;
 const POPUP_MIN_OVERLAP_GAP = 5;
 const POPUP_TITLE_HEIGHT = 26;
 const HIDE_DELAY_MS = 120;
+
+interface PopupSectionLayout {
+  columns: number;
+  rows: number;
+  stepX: number;
+  stepY: number;
+  width: number;
+  height: number;
+  overlap: boolean;
+}
+
+/** 弹层牌区：先正常间距单行，再压间距，仍超出可用宽则换行网格。 */
+function layoutPopupSection(
+  count: number,
+  cardWidth: number,
+  cardHeight: number,
+  availableWidth: number
+): PopupSectionLayout {
+  const inner = Math.max(cardWidth, availableWidth - POPUP_PADDING * 2);
+  const gap = POPUP_CARD_GAP;
+  const safeCount = Math.max(1, count);
+
+  const fullRowInner = safeCount * cardWidth + Math.max(0, safeCount - 1) * gap;
+  if (safeCount <= 1 || fullRowInner <= inner) {
+    return {
+      columns: safeCount,
+      rows: 1,
+      stepX: safeCount <= 1 ? 0 : cardWidth + gap,
+      stepY: cardHeight + gap,
+      width: POPUP_PADDING * 2 + (safeCount <= 1 ? cardWidth : fullRowInner),
+      height: POPUP_TITLE_HEIGHT + cardHeight,
+      overlap: false
+    };
+  }
+
+  const overlapStep = Math.max(
+    POPUP_MIN_OVERLAP_GAP,
+    (inner - cardWidth) / Math.max(1, safeCount - 1)
+  );
+  const overlapInner = cardWidth + overlapStep * (safeCount - 1);
+  if (overlapInner <= inner + 0.5) {
+    return {
+      columns: safeCount,
+      rows: 1,
+      stepX: overlapStep,
+      stepY: cardHeight + gap,
+      width: POPUP_PADDING * 2 + overlapInner,
+      height: POPUP_TITLE_HEIGHT + cardHeight,
+      overlap: true
+    };
+  }
+
+  const columns = Math.max(1, Math.floor((inner + gap) / (cardWidth + gap)));
+  const rows = Math.ceil(safeCount / columns);
+  const gridInner = columns * cardWidth + Math.max(0, columns - 1) * gap;
+  return {
+    columns,
+    rows,
+    stepX: cardWidth + gap,
+    stepY: cardHeight + gap,
+    width: POPUP_PADDING * 2 + gridInner,
+    height: POPUP_TITLE_HEIGHT + rows * cardHeight + Math.max(0, rows - 1) * gap,
+    overlap: false
+  };
+}
+
+function popupCardPosition(
+  index: number,
+  layout: PopupSectionLayout,
+  sectionTop: number
+): { x: number; y: number } {
+  const col = layout.columns > 0 ? index % layout.columns : 0;
+  const row = layout.columns > 0 ? Math.floor(index / layout.columns) : 0;
+  return {
+    x: POPUP_PADDING + col * layout.stepX,
+    y: sectionTop + POPUP_TITLE_HEIGHT + row * layout.stepY
+  };
+}
 const POLL_INTERVAL_MS = 500;
 const POLL_INTERVAL_OUT_OF_GAME_MS = 2000;
 /** 同一次事件链可能同时触发座位状态、明牌引擎和游戏事件订阅；
@@ -114,6 +192,8 @@ export function installNativeMingpaiPreviewController(
   /** 收到 game-ended 后不再挂 Laya 层，直到下一局 game-started。 */
   let previewSuspended = false;
   let scene: UnknownRecord | null = null;
+  let parent: UnknownRecord | null = null;
+  let root: UnknownRecord | null = null;
   const strips = new Map<number, SeatStrip>();
   /** 从 HandShowCards 补进手牌区的牌。离开展示列表时只移走这些。 */
   const officialShownBySeat = new Map<number, Set<number>>();
@@ -177,44 +257,37 @@ export function installNativeMingpaiPreviewController(
     clearHideTimer();
     destroyPopup();
     [...strips.values()].forEach(destroyStrip);
-    scene = null;
+    if (root) destroyNode(root);
+    scene = parent = root = null;
     pinnedSeatId = null;
     officialShownBySeat.clear();
   }
 
-  function ensureScene(): UnknownRecord | null {
+  function ensureRoot(): UnknownRecord | null {
     const nextScene = asRecord(locateGameScene(window));
-    if (!nextScene || nextScene.destroyed) {
+    const roundInfo = asRecord(nextScene?.gameRoundInfo);
+    const nextParent = asRecord(roundInfo?._parent) ?? roundInfo ?? nextScene;
+    if (!nextScene || !nextParent || nextScene.destroyed || nextParent.destroyed) {
       destroyAll();
       return null;
     }
-    if (scene !== nextScene) destroyAll();
-    scene = nextScene;
-    return scene;
-  }
-
-  function readStage(): UnknownRecord | null {
-    return asRecord(asRecord((globalThis as UnknownRecord).Laya)?.stage);
-  }
-
-  function anchorOnStage(entry: SeatStrip): Rect | null {
-    if (!entry.anchor) return null;
-    const stage = readStage();
-    if (!stage) return null;
-    const topLeft = toRootPoint(entry.seatUi, stage, entry.anchor.x, entry.anchor.y);
-    const bottomRight = toRootPoint(
-      entry.seatUi,
-      stage,
-      entry.anchor.x + entry.anchor.width,
-      entry.anchor.y + entry.anchor.height
-    );
-    if (!topLeft || !bottomRight) return null;
-    return {
-      x: Math.min(topLeft.x, bottomRight.x),
-      y: Math.min(topLeft.y, bottomRight.y),
-      width: Math.abs(bottomRight.x - topLeft.x),
-      height: Math.abs(bottomRight.y - topLeft.y)
-    };
+    if (scene !== nextScene || parent !== nextParent || !root || root.destroyed || !(root.parent || root._parent)) {
+      destroyAll();
+      const created = createSprite('xcVueMingpaiPreviewRoot');
+      if (!created) return null;
+      created.mouseEnabled = true;
+      created.mouseThrough = true;
+      created.zOrder = clampExtensionZOrder(500);
+      call(created, 'pos', 0, 0);
+      call(nextParent, 'addChild', created);
+      call(nextParent, 'sortChildren');
+      scene = nextScene;
+      parent = nextParent;
+      root = created;
+    }
+    const viewport = readViewport(root);
+    call(root, 'size', Math.max(1, Number(parent?.width) || viewport.x + viewport.width), Math.max(1, Number(parent?.height) || viewport.y + viewport.height));
+    return root;
   }
 
   function attachStripTilePointerEvents(tile: UnknownRecord, entry: SeatStrip): void {
@@ -238,52 +311,11 @@ export function installNativeMingpaiPreviewController(
     });
   }
 
-  function ensureStripOnStage(strip: UnknownRecord): boolean {
-    const stage = readStage();
-    if (!stage) return false;
-    if (strip.parent === stage) return true;
-    try {
-      call(strip, 'removeSelf');
-      call(stage, 'addChild', strip);
-      return strip.parent === stage;
-    } catch {
-      return false;
-    }
-  }
-
-  function readStageViewport(): Rect {
-    const stage = readStage();
-    if (!stage) return { x: 0, y: 0, width: 1600, height: 900 };
-    return {
-      x: 0,
-      y: 0,
-      width: Math.max(1, Number(stage.width) || 1600),
-      height: Math.max(1, Number(stage.height) || 900)
-    };
-  }
-
-  function anchorRectOnStage(seatUi: UnknownRecord, anchor: Rect): Rect | null {
-    const stage = readStage();
-    if (!stage) return null;
-    const topLeft = toRootPoint(seatUi, stage, anchor.x, anchor.y);
-    const bottomRight = toRootPoint(
-      seatUi,
-      stage,
-      anchor.x + anchor.width,
-      anchor.y + anchor.height
-    );
-    if (!topLeft || !bottomRight) return null;
-    return {
-      x: Math.min(topLeft.x, bottomRight.x),
-      y: Math.min(topLeft.y, bottomRight.y),
-      width: Math.abs(bottomRight.x - topLeft.x),
-      height: Math.abs(bottomRight.y - topLeft.y)
-    };
-  }
-
   function createStrip(seatId: number, seatUi: UnknownRecord): SeatStrip | null {
+    if (!root) return null;
     const strip = createSprite(`xcVueMingpaiPreviewStrip-${seatId}`);
-    if (!strip || !ensureStripOnStage(strip)) return null;
+    if (!strip) return null;
+    call(root, 'addChild', strip);
     strip.mouseEnabled = true;
     strip.mouseThrough = true;
     strip.zOrder = clampExtensionZOrder(100 + seatId);
@@ -398,22 +430,20 @@ export function installNativeMingpaiPreviewController(
     entry.zone4Rows = zone4Rows;
     entry.tagsByCardId = tagsByCardId;
     entry.anchor = anchor;
-    if (!ensureStripOnStage(entry.strip)) return;
-    const stageAnchor = anchorRectOnStage(entry.seatUi, anchor);
-    if (!stageAnchor) return;
+    if (!root) return;
     const tileCount = Math.max(0, ...rows.map((row) => Math.min(row.items.length, MAX_VISIBLE_TILES)));
     const width = tileCount * TILE_WIDTH + Math.max(0, tileCount - 1) * TILE_GAP;
     const height = rows.length * TILE_HEIGHT + Math.max(0, rows.length - 1) * ROW_GAP;
-    const viewport = readStageViewport();
+    const viewport = readViewport(root);
     const scaledWidth = width * STRIP_SCALE;
     const scaledHeight = height * STRIP_SCALE;
     const x = clamp(
-      stageAnchor.x - STRIP_OFFSET_X,
+      anchor.x - STRIP_OFFSET_X,
       viewport.x + VIEWPORT_MARGIN,
       viewport.x + viewport.width - scaledWidth - VIEWPORT_MARGIN
     );
     const y = clamp(
-      stageAnchor.y + stageAnchor.height + STRIP_OFFSET_Y,
+      anchor.y + anchor.height + STRIP_OFFSET_Y,
       viewport.y + VIEWPORT_MARGIN,
       viewport.y + viewport.height - scaledHeight - VIEWPORT_MARGIN
     );
@@ -508,21 +538,23 @@ export function installNativeMingpaiPreviewController(
   }
 
   function showPopup(entry: SeatStrip): void {
-    const stage = readStage();
-    const stageAnchor = anchorOnStage(entry);
-    if (!stage || !stageAnchor
+    if (!root || !entry.anchor
       || (!entry.cardIds.length && !entry.possibleGroups.length && !entry.zone4Rows.length)) {
       destroyPopup();
       return;
     }
-    const viewport = readViewport(stage);
-    const direction = chooseDirection(stageAnchor, viewport);
+    const viewport = readViewport(root);
+    const direction = chooseDirection(entry.anchor, viewport);
     const maxWidth = direction === 'right'
-      ? viewport.x + viewport.width - VIEWPORT_MARGIN - stageAnchor.x - stageAnchor.width - POPUP_OFFSET
-      : stageAnchor.x - viewport.x - VIEWPORT_MARGIN - POPUP_OFFSET;
+      ? viewport.x + viewport.width - VIEWPORT_MARGIN - entry.anchor.x - entry.anchor.width - POPUP_OFFSET
+      : entry.anchor.x - viewport.x - VIEWPORT_MARGIN - POPUP_OFFSET;
     const cardWidth = Math.max(1, Math.round(OFFICIAL_CARD_BASE_WIDTH * POPUP_CARD_SCALE));
     const cardHeight = Math.max(1, Math.floor(OFFICIAL_CARD_BASE_HEIGHT * POPUP_CARD_SCALE));
-    const available = Math.max(cardWidth + POPUP_PADDING * 2, maxWidth || 1600);
+    const viewportSpan = Math.max(1, viewport.width - VIEWPORT_MARGIN * 2);
+    const availableWidth = Math.max(
+      cardWidth + POPUP_PADDING * 2,
+      Math.min(maxWidth, viewportSpan)
+    );
     const sections = [
       ...(entry.cardIds.length ? [{
         label: `确定牌（${entry.cardIds.length}）`,
@@ -538,16 +570,8 @@ export function installNativeMingpaiPreviewController(
       })),
       ...zone4PopupSections(entry.zone4Rows)
     ].filter((section) => section.cardIds.length).map((section) => {
-      const count = Math.max(1, section.cardIds.length);
-      const step = count > 1
-        ? Math.max(
-          POPUP_MIN_OVERLAP_GAP,
-          Math.min(cardWidth + POPUP_CARD_GAP, (available - POPUP_PADDING * 2 - cardWidth) / (count - 1))
-        )
-        : 0;
-      const width = Math.min(available, POPUP_PADDING * 2 + cardWidth + step * (count - 1));
-      const height = POPUP_TITLE_HEIGHT + cardHeight;
-      return { ...section, step, width, height };
+      const layout = layoutPopupSection(section.cardIds.length, cardWidth, cardHeight, availableWidth);
+      return { ...section, ...layout };
     });
     const width = Math.max(...sections.map((section) => section.width));
     const height = POPUP_PADDING * 2 + sections.reduce((sum, section) => sum + section.height, 0)
@@ -560,7 +584,10 @@ export function installNativeMingpaiPreviewController(
     const possibleSig = entry.possibleGroups
       .map((group) => `${group.key}:${possibleGroupPopupCardIds(group).join(',')}`)
       .join('|');
-    const signature = `${entry.seatId}:${entry.cardIds.join(',')}|${possibleSig}:${[...receivedMarks].join(',')}:${[...selectedMarks].join(',')}:${teamMarkable}:${popupZone4Sig}:${Math.round(width)}:${direction}`;
+    const layoutSig = sections.map((section) => (
+      `${section.columns}x${section.rows}:${section.overlap ? 1 : 0}:${Math.round(section.width)}`
+    )).join(';');
+    const signature = `${entry.seatId}:${entry.cardIds.join(',')}|${possibleSig}:${[...receivedMarks].join(',')}:${[...selectedMarks].join(',')}:${teamMarkable}:${popupZone4Sig}:${layoutSig}:${Math.round(width)}:${direction}`;
 
     if (!popup || popupSignature !== signature) {
       destroyPopup();
@@ -574,7 +601,7 @@ export function installNativeMingpaiPreviewController(
       const Event = readLayaEvent();
       call(created, 'on', Event?.ROLL_OVER ?? 'mouseover', created, clearHideTimer);
       call(created, 'on', Event?.ROLL_OUT ?? 'mouseout', created, scheduleHide);
-      call(stage, 'addChild', created);
+      call(root, 'addChild', created);
       let sectionTop = POPUP_PADDING;
       sections.forEach((section, sectionIndex) => {
         const top = sectionTop;
@@ -585,8 +612,7 @@ export function installNativeMingpaiPreviewController(
           call(created, 'addChild', title);
         }
         section.cardIds.forEach((cardId, index) => {
-          const x = POPUP_PADDING + index * section.step;
-          const y = top + POPUP_TITLE_HEIGHT;
+          const { x, y } = popupCardPosition(index, section, top);
           const cardIsPossible = section.possible
             || (section.possibleCardIds?.has(cardId) ?? false);
           const view = createOfficialCardView(
@@ -675,11 +701,11 @@ export function installNativeMingpaiPreviewController(
     }
     popupSeatId = entry.seatId;
     const rawX = direction === 'right'
-      ? stageAnchor.x + stageAnchor.width + POPUP_OFFSET
-      : stageAnchor.x - width - POPUP_OFFSET;
+      ? entry.anchor.x + entry.anchor.width + POPUP_OFFSET
+      : entry.anchor.x - width - POPUP_OFFSET;
     const x = clamp(rawX, viewport.x + VIEWPORT_MARGIN, viewport.x + viewport.width - width - VIEWPORT_MARGIN);
     const y = clamp(
-      stageAnchor.y + (stageAnchor.height - height) / 2,
+      entry.anchor.y + (entry.anchor.height - height) / 2,
       viewport.y + VIEWPORT_MARGIN,
       viewport.y + viewport.height - height - VIEWPORT_MARGIN
     );
@@ -710,9 +736,9 @@ export function installNativeMingpaiPreviewController(
       destroyAll();
       return;
     }
-    const currentScene = ensureScene();
-    if (!currentScene) return;
-    const seatUis = readSeatUis(currentScene);
+    const host = ensureRoot();
+    if (!host || !scene) return;
+    const seatUis = readSeatUis(scene);
     const engineSnapshot = mingpaiEngine?.getSnapshot();
     const now = Date.now();
     const refreshEquipmentTags = now - lastEquipmentTagRefreshAt >= 1000;
@@ -740,7 +766,7 @@ export function installNativeMingpaiPreviewController(
         if (existing?.nativeSprite) restoreNativeSprite(existing);
         continue;
       }
-      const anchor = seatUi ? readAnchorRect(seatUi, seatUi) : null;
+      const anchor = seatUi ? readAnchorRect(seatUi, host) : null;
       syncShownHandCards(seat.seatId, seatUi, engineSnapshot);
       // 明牌条只画引擎手牌区，不跟场景里的过期列表互相覆盖。
       const equipmentIds = new Set(
