@@ -268,7 +268,7 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   }
 
   scheduleCurrentAccount();
-  pollTimer = setInterval(scheduleCurrentAccount, ACCOUNT_POLL_MS);
+  pollTimer = setInterval(scheduleCurrentAccount, ACCOUNT_POLL_MS * 2);
 
   return () => {
     if (pollTimer != null) clearInterval(pollTimer);

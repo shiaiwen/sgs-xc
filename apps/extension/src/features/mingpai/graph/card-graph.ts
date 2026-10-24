@@ -337,7 +337,6 @@ export class CardSlot {
       return this;
     }
     if (Number(id) > 0) return this.identify(0, Number(id));
-    console.error(`identify error: ${Number(id) > 0 ? id : newId}>${this}`);
     return null;
   }
 }
@@ -661,7 +660,7 @@ export class CardZone {
             const spare = this.cards.find((slot) => !result.includes(slot));
             if (spare) {
               result[index] = spare.swap(matched)?.identify(cardId) as CardSlot;
-              console.error(`${this.zoneID}SWAP Card [${cardId}] Shown`);
+              void cardId;
             }
           }
         }
@@ -675,7 +674,7 @@ export class CardZone {
         }
         if (result[index] == null) {
           result[index] = new CardSlot(cardId, cardId, this.zoneID);
-          if (Number(this.zone) !== 12) console.error(`${this.zoneID} No Card [${cardId}] Shown`);
+          void cardId;
         }
       });
     }
@@ -720,16 +719,13 @@ export class CardZone {
           taken[index] = this.cards.splice(unknownIndex, 1)[0];
           if (matched && matched !== taken[index]) {
             taken[index] = taken[index].swap(matched);
-            console.error(`${this.zoneID}SWAP Card [${cardId}] Moved`);
           }
         } else {
           const spareIndex = this.cards.findIndex((slot) => !taken.includes(slot));
           if (matched && spareIndex >= 0) {
             taken[index] = this.cards.splice(spareIndex, 1)[0]?.swap(matched) as CardSlot;
-            console.error(`${this.zoneID}SWAP Card [${cardId}] Moved`);
           } else {
             taken[index] = new CardSlot(cardId, cardId, this.zoneID);
-            if (Number(this.zone) !== 12) console.error(`${this.zoneID} No Card [${cardId}] Moved`);
           }
         }
       });
@@ -765,7 +761,6 @@ export class CardZone {
       taken.push(...this.cards.splice(0, this.count as number));
     }
     while (taken.length !== this.count) {
-      console.error(`${this.zoneID} New Card Moved`);
       taken.push(new CardSlot(0, 0, this.zoneID));
     }
     if (ids.filter((cardId) => cardId > 0).length === this.count) {
@@ -776,7 +771,6 @@ export class CardZone {
         if (!identified && cardId > 0) {
           const matched = getSlotsByKey(cardId).find((entry) => entry !== slot);
           if (matched) {
-            console.error(`${this.zoneID}SWAP Card [${cardId}] Recovered`);
             slot.swap(matched)?.identify(cardId);
           }
         }

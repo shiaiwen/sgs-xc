@@ -3,6 +3,7 @@
  */
 
 import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
+import { canMountLayaChild, detachLayaNode, mountLayaChild } from '../../runtime/laya-display-node.ts';
 import { createMethodPatcher, type MethodPatcher } from '../../runtime/method-patch.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -33,7 +34,7 @@ export interface NanHuaAssistOptions {
     Laya?: {
       Event?: { CLICK?: string };
       Sprite?: new () => UnknownRecord;
-      HTMLDivElement?: new () => UnknownRecord;
+      Text?: new () => UnknownRecord;
     };
   };
 }
@@ -51,6 +52,11 @@ export function installNanHuaAssist(options: NanHuaAssistOptions): () => void {
   if (!prototype) return () => undefined;
 
   patcher.wrap(prototype, 'updateWinUI', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+    const staleTip = asRecord(this.html);
+    if (staleTip && !canMountLayaChild(staleTip)) {
+      try { detachLayaNode(staleTip); } catch { /* 已不在显示树上 */ }
+      delete this.html;
+    }
     const data = asRecord(args[0]);
     const type = Number(data?.type);
     const enabled = options.isEnabled();
@@ -239,26 +245,42 @@ function renderEffectHtml(
     hideEffectHtml(win);
     return;
   }
-  const html = ensureTipHtml(win, globalObject);
-  if (!html) return;
-  const style = asRecord(html.style) ?? (html.style = {});
-  Object.assign(style, {
-    width: TIP_WIDTH,
-    color: 'white',
-    fontSize: 15,
-    fontFamily: 'FZLBGBK',
-    stroke: 1,
-    strokeColor: '#000000'
-  });
-  html.innerHTML = built.html;
-  html.visible = true;
-  html.pos?.(TIP_X, built.offsetY);
+  const tip = ensureTipText(win, globalObject);
+  if (!tip) return;
+  const plain = nanHuaTipPlainText(built.html);
+  const lines = Math.max(1, plain.split('\n').filter((line) => line.length > 0).length);
+  tip.text = plain;
+  tip.color = '#ffffff';
+  tip.fontSize = 15;
+  tip.font = 'FZLBGBK';
+  tip.stroke = 1;
+  tip.strokeColor = '#000000';
+  tip.wordWrap = true;
+  tip.width = TIP_WIDTH;
+  tip.size?.(TIP_WIDTH, lines * 22);
+  tip.visible = true;
+  tip.pos?.(TIP_X, built.offsetY);
+}
+
+function nanHuaTipPlainText(html: string): string {
+  const withoutHidden = String(html || '').split(HIDDEN_MARK).map((part, index) => {
+    if (index === 0) return part;
+    const end = part.indexOf('</span>');
+    return end >= 0 ? part.slice(end + '</span>'.length) : part;
+  }).join('');
+  return withoutHidden
+    .replace(/<div style="height: 3px;"><\/div>/g, '')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
 }
 
 function clearSecondTianShu(win: UnknownRecord, data: UnknownRecord | null): void {
   const html = asRecord(win.html);
   if (html) {
-    callMethod(html, 'removeSelf');
+    try { detachLayaNode(html); } catch { /* 已不在显示树上 */ }
     delete win.html;
   }
   const ids = Array.isArray(data?.ids) ? data.ids as number[] : [];
@@ -270,26 +292,25 @@ function clearSecondTianShu(win: UnknownRecord, data: UnknownRecord | null): voi
   });
 }
 
-function ensureTipHtml(
+function ensureTipText(
   win: UnknownRecord,
   globalObject: NanHuaAssistOptions['globalObject']
 ): UnknownRecord | null {
   const existing = asRecord(win.html);
-  if (existing && existing.name === 'dxcTianshuTip') return existing;
+  if (existing && existing.name === 'dxcTianshuTip' && canMountLayaChild(existing)) return existing;
   if (existing) {
-    callMethod(existing, 'removeSelf');
+    try { detachLayaNode(existing); } catch { /* 已不在显示树上 */ }
     delete win.html;
   }
-  const HtmlDiv = globalObject?.Laya?.HTMLDivElement;
-  if (!HtmlDiv) return null;
-  const html = new HtmlDiv();
-  html.name = 'dxcTianshuTip';
-  html.mouseEnabled = false;
-  html.mouseThrough = true;
-  win.html = html;
-  const addChild = win.addChild;
-  if (typeof addChild === 'function') addChild.call(win, html);
-  return html;
+  const Text = globalObject?.Laya?.Text;
+  if (typeof Text !== 'function') return null;
+  const tip = new Text();
+  tip.name = 'dxcTianshuTip';
+  tip.mouseEnabled = false;
+  tip.mouseThrough = true;
+  if (!mountLayaChild(win, tip)) return null;
+  win.html = tip;
+  return tip;
 }
 
 function callMethod(target: UnknownRecord | null, name: string, ...args: unknown[]): unknown {

@@ -20,6 +20,7 @@ export function installSeatStateController(
 ): () => void {
   let stopped = false;
   let sceneMissingSince = 0;
+  let lastSceneSignature = '';
   const refresh = () => {
     if (stopped) return;
     const scene = locateGameScene(globalObject);
@@ -29,7 +30,16 @@ export function installSeatStateController(
     } else {
       sceneMissingSince = 0;
     }
-    store.replace(readSeatStateFromGameScene(scene));
+    const next = readSeatStateFromGameScene(scene);
+    // 场景未变化时跳过 replace，减少快照发布与下游重绘。
+    if (scene) {
+      const signature = seatStateSignature(next);
+      if (signature === lastSceneSignature) return;
+      lastSceneSignature = signature;
+    } else {
+      lastSceneSignature = '';
+    }
+    store.replace(next);
   };
   refresh();
   const intervalId = globalObject.setInterval(refresh, pollIntervalMs);
@@ -40,4 +50,14 @@ export function installSeatStateController(
     globalObject.clearInterval(intervalId);
     store.clear();
   };
+}
+
+function seatStateSignature(state: Partial<import('./seat-state.ts').SeatStateSnapshot>): string {
+  const seats = state.seats ?? [];
+  const parts = seats.map((seat) => {
+    const known = seat.knownCards.map((card) => card.cardId).join(',');
+    const equip = (seat.equipmentCards ?? []).map((card) => card.cardId).join(',');
+    return `${seat.seatId}:${seat.unknownCardCount ?? 0}:${known}:${equip}:${seat.isAlive ? 1 : 0}`;
+  });
+  return `${state.inGame ? 1 : 0}:${state.selfSeatId ?? ''}:${parts.join('|')}`;
 }

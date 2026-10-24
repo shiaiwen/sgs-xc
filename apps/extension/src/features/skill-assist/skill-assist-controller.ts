@@ -40,7 +40,7 @@ export function installSkillAssistController(
     }
   });
   refresh();
-  const intervalId = globalObject.setInterval(refresh, pollIntervalMs);
+  const intervalId = globalObject.setInterval(refresh, 1000);
   return () => {
     if (stopped) return;
     stopped = true;

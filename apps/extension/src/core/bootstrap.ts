@@ -28,6 +28,7 @@ import { installSeatStateController } from '../features/seat-display/seat-state-
 import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
+import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
 import { createGameCardCatalog } from '../features/cards/game-card-catalog';
@@ -47,6 +48,7 @@ import { installCardConfigSource } from '../adapters/card-config-source';
 import { installNativeRecentCardController } from '../features/recent-cards/native-recent-card-controller';
 import { createMingpaiEngine, installMingpaiController } from '../features/mingpai';
 import { installNativeMingpaiPreviewController } from '../features/mingpai/native-mingpai-preview-controller';
+import { mingpaiPerf } from '../features/mingpai/mingpai-perf.ts';
 import { createSkillAssistStore } from '../features/skill-assist/skill-assist-store';
 import { installSkillAssistController } from '../features/skill-assist/skill-assist-controller';
 import { registerSpellNameLookup } from '../features/skill-assist/skill-visibility';
@@ -150,7 +152,7 @@ function startXiaochaoCore(
       const card = gameCardCatalog.resolve(cardId);
       return card?.suit ? card.isRed : null;
     },
-    cardType: (cardId) => gameCardCatalog.resolve(cardId).cardType
+    cardType: (cardId) => gameCardCatalog.resolve(cardId).cardType,
   });
   // 明牌控制器先订阅游戏事件，牌局记录随后读取引擎更新后的弃牌区差异，
   // 以补齐浏览器端移牌协议里偶尔缺失的 CardIDs。
@@ -191,6 +193,7 @@ function startXiaochaoCore(
   lifecycle.register(classicRoomFilter.dispose);
   lifecycle.register(installSeatStateController(seatStateStore));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
+  lifecycle.register(installNativeHudPostGameGuard(gameEvents, window));
   // 微端里点进输入框时把系统键盘焦点交回 webview，否则中文输入法打不进去。
   lifecycle.register(installMicroClientFocusBridge(window));
   lifecycle.register(mingpaiRuntime.dispose);
@@ -286,12 +289,13 @@ function startXiaochaoCore(
       && shouldDropNoticeProtocol(className, payload)
     )
   }));
-  lifecycle.register(installNativeRecentCardController(configStore, recentCardStore));
+  lifecycle.register(installNativeRecentCardController(configStore, recentCardStore, gameEvents));
   lifecycle.register(installNativeDeckRecordController(
     configStore,
     deckRecordStore,
     deckRecordInteraction,
-    gameCardCatalog
+    gameCardCatalog,
+    gameEvents
   ));
   lifecycle.register(installSkillAssistController(
     skillAssistStore,
@@ -342,6 +346,7 @@ function startXiaochaoCore(
     platform,
     getMissingGameRuntimeDependencies,
     waitForGameRuntime,
+    mingpaiNativePerf: mingpaiPerf,
     getSeatState: () => seatStateStore.getSnapshot(),
     getRecentCardState: () => recentCardStore.getSnapshot(),
     getDeckRecordState: () => deckRecordStore.getSnapshot(),

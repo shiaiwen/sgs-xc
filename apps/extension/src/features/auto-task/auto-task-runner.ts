@@ -21,9 +21,13 @@ import {
   rewardsBlocked,
   rewardsContainDiJiaQuan,
   rewardsContainHuanLeDou,
+  shouldClaimAllJdRechargeRewards,
+  shouldClaimOfficerSalaryReward,
+  shouldSkipFreeShopGoodForHuanLeDou,
   shouldClaimDdztllReward,
   taskClaimKey,
   taskIdOf,
+  taskLikelyGrantsHuanLeDou,
   taskRewards,
   type TaskManagerAccess,
   type TaskRuleContext
@@ -59,10 +63,16 @@ export interface AutoTaskRunner {
   claimDailyGeneralBag(): void;
   /** 大厅场景切换后补领低欢乐豆。 */
   scheduleLowBeanFree(reason: string): void;
+  /** 新周卡、新月卡：不等待福利与砍树，并短时重试。 */
+  claimNewPrivilegeCards(): void;
 }
 
 const LOW_BEAN_THRESHOLD = 600;
 const LOW_BEAN_RETRY_DELAYS = [1200, 5000, 11000, 18000, 35000];
+/** 新特权卡拉数据与领取用更短节流，避免 15 秒才重试。 */
+const NEW_PRIVILEGE_SYNC_THROTTLE_MS = 3_000;
+const NEW_PRIVILEGE_CLAIM_THROTTLE_MS = 2_000;
+const NEW_PRIVILEGE_RETRY_DELAYS = [2_000, 5_000, 12_000];
 const MONTH_CARD_TYPES = [2, 3];
 const MONTH_CARD_SYNC_METHODS = [
   'SendClientPrivilegeCardInfoReq',
@@ -73,6 +83,7 @@ const MONTH_CARD_SYNC_METHODS = [
 ];
 const TREE_USING_KEY = 'kanshu:treeUsing';
 const TREE_ITEM_BASE = 12130001;
+/** 见 auto-task-rules EXCLUDED_AUTO_SHOP_GOODS_IDS；仅遍历可能存在的其它免费商品。 */
 const FREE_SHOP_GOODS = [13360001, 11578201];
 const DAILY_GENERAL_BAG = { id: 8100101, type: 3 };
 const MAIL_SKIP_TITLES = new Set(['道具过期提醒', '不良游戏行为警告']);
@@ -107,6 +118,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   const newJunDianRuns = new WeakMap<object, Promise<boolean>>();
   const newPrivilegePending = new WeakMap<object, Map<number, string>>();
   const newPrivilegeBound = new WeakSet<object>();
+  let newPrivilegeRetryScheduled = false;
   const freeBlessBound = new WeakSet<object>();
   let mailRunning = false;
   let generalBagTimerArmed = false;
@@ -176,6 +188,32 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     } catch {
       return null;
     }
+  }
+
+  function collectGoodsRewardEntries(goodsId: unknown): unknown[] {
+    const entries: unknown[] = [{ ItemID: goodsId }];
+    const goods = goodsConfig(goodsId);
+    if (!goods) return entries;
+    const base = asRecord(goods.baseInfo) ?? goods;
+    const selfName = String(base?.name || base?.Name || goods.name || goods.Name || '');
+    if (selfName) entries.push({ itemName: selfName });
+    for (const key of [
+      'containGoods', 'ContainGoods', 'goodsList', 'GoodsList',
+      'previewList', 'rewardItems', 'giftGoods', 'GiftGoods'
+    ]) {
+      const nested = goods[key];
+      if (nested) entries.push(nested);
+    }
+    return entries;
+  }
+
+  function shouldBuyFreeShopGood(goodsId: number): boolean {
+    const options = deps.options();
+    const context = ruleContext();
+    const entries = collectGoodsRewardEntries(goodsId);
+    const name = goodsName(goodsId);
+    if (shouldSkipFreeShopGoodForHuanLeDou(options.skipHuanLeDou, goodsId, name, entries, context)) return false;
+    return !rewardsBlocked(entries, context);
   }
 
   function goodsName(itemId: unknown): string {
@@ -289,7 +327,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       if (id === undefined || id === null) continue;
       const rewards = taskRewards(task);
       if (options.skipDiJiaQuan && rewardsContainDiJiaQuan(rewards, context)) continue;
-      if (options.skipHuanLeDou && rewardsContainHuanLeDou(rewards, context)) continue;
+      if (options.skipHuanLeDou && (rewardsContainHuanLeDou(rewards, context) || taskLikelyGrantsHuanLeDou(task, context))) continue;
       if (!claims.acquire(taskClaimKey(access, id, task))) continue;
       let result: unknown = false;
       try {
@@ -550,7 +588,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     }, ruleContext())) {
       claims.throttled('activity:DDZTLL:0', () => call(activity, 'SendDDZTLLAwardReq', 0, false, true));
     }
-    if (activity.HasJDRewardRed && has(activity, 'ReqDrawAllJDRwd') && !blocked(activity.JDShowRewardList)) {
+    if (
+      activity.HasJDRewardRed
+      && has(activity, 'ReqDrawAllJDRwd')
+      && shouldClaimAllJdRechargeRewards(deps.options().skipHuanLeDou, activity.JDShowRewardList, ruleContext())
+    ) {
       claims.throttled('activity:JD:all', () => call(activity, 'ReqDrawAllJDRwd'));
     }
     const calcCount = Math.min(Math.floor(Number(taskManager.jdTaskRewardNum ?? taskManager.JdTaskRewardNum ?? 0) / 3), 3);
@@ -771,11 +813,15 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     const pending = new Map<number, string>();
     newPrivilegePending.set(cardManager, pending);
     const onData = () => {
-      if (active()) claimNewPrivilegeCards(cardManager);
+      if (active()) claimNewPrivilegeCards(cardManager, { skipSync: true });
     };
     const onActivate = () => {
       if (!active()) return;
-      claims.throttled('newPrivilege:sync', () => call(cardManager, 'SendNewPrivilegeCardDataReq'));
+      claims.throttled(
+        'newPrivilege:sync',
+        () => call(cardManager, 'SendNewPrivilegeCardDataReq'),
+        NEW_PRIVILEGE_SYNC_THROTTLE_MS
+      );
     };
     const onReward = (id: unknown) => {
       const cardId = Number(id);
@@ -789,10 +835,42 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     call(cardManager, 'on', 'UPDATE_NEW_PRIVILEGE_CARD_ACTIVATE', cardManager, onActivate);
   }
 
-  function claimNewPrivilegeCards(cardManager: UnknownRecord | null): void {
+  function hasPendingNewPrivilegeClaim(): boolean {
+    for (const card of deps.configData()?.newPrivilegeCards ?? []) {
+      if ((card.type !== 1 && card.type !== 2) || card.open !== 1) continue;
+      if (!claims.claimedToday(`newPrivilege:daily:${card.id}`)) return true;
+    }
+    return false;
+  }
+
+  function scheduleNewPrivilegeRetries(): void {
+    if (!active() || newPrivilegeRetryScheduled || !hasPendingNewPrivilegeClaim()) return;
+    newPrivilegeRetryScheduled = true;
+    const lastDelay = NEW_PRIVILEGE_RETRY_DELAYS[NEW_PRIVILEGE_RETRY_DELAYS.length - 1] ?? 0;
+    NEW_PRIVILEGE_RETRY_DELAYS.forEach((wait) => {
+      tasks.later(() => {
+        if (!active()) return;
+        claimNewPrivilegeCards(manager('NewPrivilegeCardManager'));
+      }, wait);
+    });
+    tasks.later(() => {
+      newPrivilegeRetryScheduled = false;
+    }, lastDelay + 500);
+  }
+
+  function claimNewPrivilegeCards(
+    cardManager: UnknownRecord | null,
+    opts?: { skipSync?: boolean }
+  ): void {
     if (!cardManager) return;
     bindNewPrivilege(cardManager);
-    claims.throttled('newPrivilege:sync', () => call(cardManager, 'SendNewPrivilegeCardDataReq'));
+    if (!opts?.skipSync) {
+      claims.throttled(
+        'newPrivilege:sync',
+        () => call(cardManager, 'SendNewPrivilegeCardDataReq'),
+        NEW_PRIVILEGE_SYNC_THROTTLE_MS
+      );
+    }
     const options = deps.options();
     const pending = newPrivilegePending.get(cardManager);
     for (const card of deps.configData()?.newPrivilegeCards ?? []) {
@@ -810,11 +888,17 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
           const sent = call(cardManager, 'SendNewPrivilegeCardDailyRewardReq', card.id);
           if (sent === false) pending?.delete(card.id);
           return sent;
-        });
+        }, NEW_PRIVILEGE_CLAIM_THROTTLE_MS);
       } catch (error) {
         console.warn('[自动领取] 新周卡月卡领取失败:', card.id, error);
       }
     }
+  }
+
+  function runClaimNewPrivilegeCards(): void {
+    if (!active()) return;
+    claimNewPrivilegeCards(manager('NewPrivilegeCardManager'));
+    scheduleNewPrivilegeRetries();
   }
 
   function blessNewManager(): UnknownRecord | null {
@@ -892,8 +976,6 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     await claimBlessingTree(welfare);
     if (!active()) return;
     claimMonthCards(welfare);
-    if (!active()) return;
-    claimNewPrivilegeCards(manager('NewPrivilegeCardManager'));
   }
 
   // ---------- 公会三敲 ----------
@@ -1138,14 +1220,18 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       const shop = manager('GameShopManager');
       for (const goodsId of FREE_SHOP_GOODS) {
         const goods = goodsConfig(goodsId);
+        if (!shouldBuyFreeShopGood(goodsId)) continue;
         if (goods && has(shop, 'CheckGoodsLimit') && call(shop, 'CheckGoodsLimit', goods) === false) {
           claims.throttled(`shop:free:${goodsId}`, () => buyFreeShopGoods(goodsId));
         }
       }
       const officer = manager('OfficerManager');
-      if (call(officer, 'CanGetOfficerWeekReward')) claims.throttled('officer:week', () => call(officer, 'sendGetWeekReward'));
-      if (call(officer, 'CanGetOfficerDayReward') && !deps.options().skipHuanLeDou) {
-        claims.throttled('officer:day', () => call(officer, 'sendGetDayReward'));
+      const claimOfficerSalary = shouldClaimOfficerSalaryReward(deps.options().skipHuanLeDou);
+      if (claimOfficerSalary && invoke(officer, 'OfficerManager', 'CanGetOfficerWeekReward')) {
+        claims.throttled('officer:week', () => invoke(officer, 'OfficerManager', 'sendGetWeekReward'));
+      }
+      if (claimOfficerSalary && invoke(officer, 'OfficerManager', 'CanGetOfficerDayReward')) {
+        claims.throttled('officer:day', () => invoke(officer, 'OfficerManager', 'sendGetDayReward'));
       }
     } catch (error) {
       console.error('[自动领取] 签到失败:', error);
@@ -1219,7 +1305,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   return {
     runPass() {
       if (!active()) return;
-      claimNewPrivilegeCards(manager('NewPrivilegeCardManager'));
+      runClaimNewPrivilegeCards();
       claimFreeBlessDraws(blessNewManager());
       runStep('武将福利', claimNewFuLiWelfare);
       runStep('任务', claimTasks);
@@ -1243,6 +1329,13 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
           if (active()) claimLowBeanFree(manager('ActivityGameDataManager'));
         }, wait);
       });
+    },
+    claimNewPrivilegeCards() {
+      try {
+        runClaimNewPrivilegeCards();
+      } catch (error) {
+        console.warn('[自动领取] 新周卡月卡失败:', error);
+      }
     }
   };
 }

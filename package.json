@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "npm run dev -w apps/extension",
     "dev:userscript": "npm run dev:userscript -w apps/extension",
+    "dev:userscript:bundle": "npm run dev:userscript:bundle -w apps/extension",
     "build": "npm run build -w apps/extension",
     "test": "npm run test -w apps/extension --if-present",
     "pack": "npm run pack -w apps/extension",

@@ -241,7 +241,7 @@ export function syncSeatPlayName(
   const clientId = readSeatClientId(seat);
   const visible = playNameVisible(clientId);
   const earlyManager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager);
-  if (earlyManager) hookPlayNameInit(earlyManager);
+  if (earlyManager) hookPlayNameInit(earlyManager, globalObject);
   if (visible === null) return;
   if (isOwnSeat(seatUi, seat, globalObject)) return;
 
@@ -298,12 +298,12 @@ function revealRankPlayName(
     const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, name);
     if (info) pushPlayerInfoToManagerOnce(manager, info, name);
   }
-  hookPlayNameInit(manager);
+  hookPlayNameInit(manager, globalObject);
   callManagerMethod(manager, 'SetPlayNameVisible', true);
 }
 
-function hookPlayNameInit(manager: UnknownRecord): void {
-  if (!isRankOrDoudizhuScene(window as GameRuntimeWindow)) return;
+function hookPlayNameInit(manager: UnknownRecord, globalObject: GameRuntimeWindow = window): void {
+  if (!isRankOrDoudizhuScene(globalObject)) return;
   const proto = asRecord(Object.getPrototypeOf(manager));
   if (!proto || proto[PLAY_NAME_INIT_KEY] === true || typeof proto.initUI !== 'function') return;
   const original = proto.initUI as (...args: unknown[]) => unknown;

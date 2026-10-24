@@ -8,6 +8,10 @@
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import {
+  isNativeHudSuspended,
+  registerNativeHudPostGameTeardown
+} from '../../runtime/native-hud-post-game-guard.ts';
 
 type Node = Record<string, any>;
 type SortMode = 'CardType' | 'CardFlower' | 'CardNumber';
@@ -634,7 +638,18 @@ export function installHandSortController(
   let active: HandSortControl | null = null;
   let patchedProto: Node | null = null;
 
+  const releaseHandSort = () => {
+    if (active) {
+      destroyControl(active, laya());
+      active = null;
+    }
+  };
+
   const sync = () => {
+    if (isNativeHudSuspended()) {
+      releaseHandSort();
+      return;
+    }
     const scene = locateGameScene(runtime) as Node | null;
     const self = asRecord(scene?.SelfSeatUi) ?? asRecord(scene?.selfSeatUi);
     if (!store.get('cards.handSortEnabled') || !self) {
@@ -651,17 +666,18 @@ export function installHandSortController(
     if (active) syncAutoSort(active);
   };
 
-  const timer = runtime.setInterval(sync, 250);
+  const timer = runtime.setInterval(sync, 500);
   const stopEnabled = store.subscribe('cards.handSortEnabled', sync);
   const stopLock = store.subscribe('cards.handSortLockedMode', sync);
+  const unregisterPostGame = registerNativeHudPostGameTeardown(releaseHandSort);
   sync();
   return () => {
+    unregisterPostGame();
     runtime.clearInterval(timer);
     stopEnabled();
     stopLock();
     patcher.restoreAll();
     if (patchedProto) delete patchedProto[PATCHED_KEY];
-    if (active) destroyControl(active, laya());
-    active = null;
+    releaseHandSort();
   };
 }

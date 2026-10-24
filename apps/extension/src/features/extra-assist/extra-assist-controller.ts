@@ -77,6 +77,8 @@ export function installExtraAssistController(
 
   cleanups.push(configStore.subscribe(EXTRA_ASSIST_ENABLED_KEY, ({ value }) => {
     enabled = value === true;
+    if (enabled) startPolling();
+    else stopPolling();
     if (!characterOn(PEIXIU_ASSIST_KEY)) options.peixiuRouteStore?.clear();
     refreshQuanyu();
   }));
@@ -107,7 +109,8 @@ export function installExtraAssistController(
       return rewards.find((item) => item.name === name)?.rewardId ?? 0;
     },
     routeStore: options.peixiuRouteStore,
-    getTurnKey: () => peixiuTurnKey
+    getTurnKey: () => peixiuTurnKey,
+    gameEvents: options.gameEvents
   }));
 
   const zuifengUses = createZuifengUses();
@@ -188,12 +191,24 @@ export function installExtraAssistController(
     }));
   }
 
-  const pollTimer = globalObject.setInterval?.(() => {
-    tryInstallSeatHooks();
-    refreshQuanyu();
-    refreshZuifeng();
-  }, pollIntervalMs);
-  if (pollTimer != null) cleanups.push(() => globalObject.clearInterval?.(pollTimer));
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startPolling(): void {
+    if (pollTimer != null) return;
+    pollTimer = globalObject.setInterval?.(() => {
+      tryInstallSeatHooks();
+      refreshQuanyu();
+      refreshZuifeng();
+    }, pollIntervalMs) ?? null;
+  }
+
+  function stopPolling(): void {
+    if (pollTimer == null) return;
+    globalObject.clearInterval?.(pollTimer);
+    pollTimer = null;
+  }
+
+  startPolling();
   tryInstallSeatHooks();
   refreshQuanyu();
 
@@ -270,6 +285,7 @@ export function installExtraAssistController(
   return {
     dispose() {
       disposed = true;
+      stopPolling();
       for (const cleanup of cleanups.splice(0)) {
         try { cleanup(); } catch { /* ignore */ }
       }

@@ -105,7 +105,7 @@ export function installRuntimeSearchController(
   };
 
   installPatches();
-  const timer = globalObject.setInterval?.(installPatches, options.pollIntervalMs ?? 800);
+  const timer = globalObject.setInterval?.(installPatches, (options.pollIntervalMs ?? 800) * 2);
 
   return () => {
     disposed = true;

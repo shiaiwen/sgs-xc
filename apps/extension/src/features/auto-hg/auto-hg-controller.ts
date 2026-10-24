@@ -72,8 +72,35 @@ export function installAutoHgController(
     }));
   }
 
-  const pollTimer = globalObject.setInterval?.(() => tick(), pollIntervalMs);
-  if (pollTimer != null) cleanups.push(() => globalObject.clearInterval?.(pollTimer));
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let kurouTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startHgTimers(): void {
+    if (pollTimer == null) pollTimer = globalObject.setInterval?.(() => tick(), pollIntervalMs) ?? null;
+    if (kurouTimer == null) kurouTimer = globalObject.setInterval?.(() => {
+      if (disposed || !enabled) return;
+      runKurouTick(globalObject, kurouTick);
+      kurouTick += 1;
+    }, KUROU_INTERVAL_MS) ?? null;
+  }
+
+  function stopHgTimers(): void {
+    if (pollTimer != null) {
+      globalObject.clearInterval?.(pollTimer);
+      pollTimer = null;
+    }
+    if (kurouTimer != null) {
+      globalObject.clearInterval?.(kurouTimer);
+      kurouTimer = null;
+    }
+  }
+
+  cleanups.push(configStore.subscribe(AUTO_HG_ENABLED_KEY, ({ value }) => {
+    if (value === true) startHgTimers();
+    else stopHgTimers();
+  }));
+
+  if (enabled) startHgTimers();
   if (enabled) scheduleRestart(0);
 
   function currentRun(): number {
@@ -130,13 +157,6 @@ export function installAutoHgController(
     }
   }
 
-  const kurouTimer = globalObject.setInterval?.(() => {
-    if (disposed || !enabled) return;
-    runKurouTick(globalObject, kurouTick);
-    kurouTick += 1;
-  }, KUROU_INTERVAL_MS);
-  if (kurouTimer != null) cleanups.push(() => globalObject.clearInterval?.(kurouTimer));
-
   return {
     filterMessage(payload, className) {
       if (!enabled || disposed) return;
@@ -150,6 +170,7 @@ export function installAutoHgController(
       disposed = true;
       enabled = false;
       bumpRun();
+      stopHgTimers();
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
       for (const cleanup of cleanups.splice(0)) {

@@ -5,8 +5,8 @@
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
-import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { applySeatGeneralTip, clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
+import { isAiClientId, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
   beginPlayNameScanBatch,
@@ -180,7 +180,7 @@ export function installAiPlayerTipController(
   }
 
   function scan(): void {
-    setPollInterval(locateGameScene(globalObject) ? 200 : 1000);
+    setPollInterval(locateGameScene(globalObject) ? 500 : 2000);
     // 彼此独立扫描：座位 UI 尚未就绪或某一步访问异常时，也要继续挂资料页钩子。
     try { scanSeats(); } catch { /* 下一轮重试 */ }
     try { scanProfile(); } catch { /* 下一轮重试 */ }
@@ -223,10 +223,21 @@ export function installAiPlayerTipController(
       );
     }
 
-    clearSeatGeneralTips(seatUis.map((seatUi) => ({
+    const idTargets = seatUis.map((seatUi) => ({
       seat: seatUi.seat ?? seatUi,
       seatAvatar: asRecord(seatUi.seatAvatar)
-    })), 'player-id');
+    }));
+    if (isRankOrDoudizhuScene(globalObject, scene)) {
+      applySeatGeneralTip({
+        key: 'player-id',
+        targets: idTargets,
+        enabled: true,
+        getText: (target) => playerIdLabel(readNestedClientId(target.seat), true),
+        globalObject
+      });
+    } else {
+      clearSeatGeneralTips(idTargets, 'player-id');
+    }
 
     const seats = seatUis
       .map((seatUi) => ({ seatUi, seat: asRecord(seatUi.seat) }))

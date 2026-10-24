@@ -13,6 +13,11 @@ import {
 } from '../cards/official-card-renderer.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import type { RecentCardStore } from './recent-card-store.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import {
+  isNativeHudSuspended,
+  registerNativeHudPostGameTeardown
+} from '../../runtime/native-hud-post-game-guard.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -28,7 +33,8 @@ const ROUND_BUTTON_HEIGHT = 22;
  */
 export function installNativeRecentCardController(
   configStore: XiaochaoConfigStore,
-  recentCardStore: RecentCardStore
+  recentCardStore: RecentCardStore,
+  gameEvents?: GameEventBus
 ): () => void {
   let stopped = false;
   let scene: UnknownRecord | null = null;
@@ -59,6 +65,10 @@ export function installNativeRecentCardController(
 
   const sync = () => {
     if (stopped) return;
+    if (isNativeHudSuspended()) {
+      destroyOverlay();
+      return;
+    }
     const nextScene = asRecord(locateGameScene(window));
     const roundInfo = asRecord(nextScene?.gameRoundInfo);
     const nextParent = asRecord(roundInfo?._parent) ?? roundInfo ?? nextScene;
@@ -144,10 +154,18 @@ export function installNativeRecentCardController(
 
   const stopStore = recentCardStore.subscribe(sync);
   const stopConfig = configStore.subscribe('display.deckHudEnabled', sync);
-  const timer = window.setInterval(sync, 250);
+  const timer = window.setInterval(() => {
+    if (configStore.get('display.deckHudEnabled')) sync();
+  }, 500);
+  const unregisterPostGameTeardown = registerNativeHudPostGameTeardown(destroyOverlay);
+  const stopGameEvents = gameEvents?.subscribe((event) => {
+    if (event.type === 'game-ended') destroyOverlay();
+  });
   sync();
   return () => {
     stopped = true;
+    unregisterPostGameTeardown();
+    stopGameEvents?.();
     window.clearInterval(timer);
     stopStore();
     stopConfig();

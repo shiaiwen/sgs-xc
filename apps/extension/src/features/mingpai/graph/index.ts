@@ -93,14 +93,26 @@ export {
 export { createGraphMingpaiEngine } from './graph-engine.ts';
 
 export {
+  buildSeatPossibleGroupViews,
+  seatHasHandPossibleIntelligence,
   expandGroupCandidates,
   getSeatKnownCardIds,
   getSeatPossibleCardIds,
+  seatZone4PositiveCardIds,
   getSeatUncertainGroups,
   getUncertainGroups,
   getZone4Rows,
   groupHasUnknownCandidate,
   parseZone4Key,
+  possibleGroupPopupCardIds,
+  possibleGroupPopupLabel,
+  toPossibleGroupView,
+  zone4PossibleGroupViews,
+  zone4RowHasCards,
+  zone4StripEntries,
+  WOOD_OX_SPELL_ID,
+  ZONE4_FACE_HIDDEN_SPELL_IDS,
+  type PossibleGroupView,
   type UncertainGroup,
   type Zone4Row
 } from './mingpai-candidates.ts';

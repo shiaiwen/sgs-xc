@@ -30,6 +30,11 @@ import {
   type PeixiuOverlayHost
 } from './peixiu-map-view.ts';
 import type { PeixiuRouteStore } from './peixiu-route-store.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import {
+  isNativeHudSuspended,
+  registerNativeHudPostGameTeardown
+} from '../../runtime/native-hud-post-game-guard.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -45,6 +50,7 @@ export interface PeixiuAssistOptions {
   pollIntervalMs?: number;
   /** 回合切换时变化。回合结束清空已获得的城。 */
   getTurnKey?: () => string;
+  gameEvents?: GameEventBus;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -99,7 +105,7 @@ function isVisibleMap(node: PeixiuOverlayHost | null): node is PeixiuOverlayHost
   return node.visible !== false;
 }
 
-function walkForMap(root: unknown, seen = new Set<unknown>(), budget = 20000): PeixiuOverlayHost | null {
+function walkForMap(root: unknown, seen = new Set<unknown>(), budget = 400): PeixiuOverlayHost | null {
   if (!root || typeof root !== 'object' || seen.size >= budget) return null;
   const queue: unknown[] = [root];
   while (queue.length && seen.size < budget) {
@@ -164,7 +170,7 @@ function collectedCellsOf(host: PeixiuOverlayHost): number[] {
 export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
   const patcher = options.patcher ?? createMethodPatcher();
   const globalObject = options.globalObject ?? (typeof window !== 'undefined' ? window as LayaRuntimeWindow : {});
-  const pollIntervalMs = options.pollIntervalMs ?? 800;
+  let pollIntervalMs = options.pollIntervalMs ?? 800;
   const tracked = new Set<PeixiuOverlayHost>();
   // 旧实现会按 __xcPeiXiu* 属性清理自己的节点。绘制状态放到独立代理上，
   // 场景刷新时保留当前实现的路线层。
@@ -308,19 +314,37 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     }
   }
 
-  const pollTimer = globalObject.setInterval?.(() => {
-    tryAttach();
-  }, pollIntervalMs);
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startPolling(): void {
+    if (pollTimer != null) return;
+    pollTimer = globalObject.setInterval?.(() => {
+      tryAttach();
+    }, pollIntervalMs) ?? null;
+  }
+
+  function stopPolling(): void {
+    if (pollTimer == null) return;
+    globalObject.clearInterval?.(pollTimer);
+    pollTimer = null;
+  }
+
+  startPolling();
   tryAttach();
 
   function tryAttach(): void {
     if (disposed) return;
-    ensureNodeAttachmentPatch();
-    ensureClassPatches();
+    if (isNativeHudSuspended()) {
+      hideAll();
+      clearActive();
+      return;
+    }
     if (!options.isEnabled()) {
       hideAll();
       return;
     }
+    ensureNodeAttachmentPatch();
+    ensureClassPatches();
     const scene = locateGameScene(globalObject);
     const currentScene = options.locator.scene();
     const stage = asRecord((globalObject as UnknownRecord).Laya)?.stage;
@@ -334,6 +358,14 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
       hasScene: Boolean(currentScene),
       hasStage: Boolean(stage)
     });
+    // 当前没有激活的地图时恢复较快扫描，便于及时发现新地图。
+    if (pollIntervalMs !== 800) {
+      pollIntervalMs = 800;
+      if (pollTimer != null) {
+        stopPolling();
+        startPolling();
+      }
+    }
     if (active && isPeixiuMapHost(active) && isVisibleMap(active)) {
       options.routeStore?.clear();
     } else {
@@ -380,6 +412,12 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     }
     tracked.add(host);
     active = host;
+    // 地图已激活且 patch 已挂好时，降低轮询频率；主要靠原型/手牌变化回调刷新。
+    pollIntervalMs = 2000;
+    if (pollTimer != null) {
+      stopPolling();
+      startPolling();
+    }
     ensureHandChangePatches();
     report('map-active', {
       name: host.name,
@@ -598,8 +636,19 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     active = null;
   }
 
+  const teardownBattleOverlays = () => {
+    hideAll();
+    clearActive();
+  };
+  const unregisterHudTeardown = registerNativeHudPostGameTeardown(teardownBattleOverlays);
+  const stopGameEvents = options.gameEvents?.subscribe((event) => {
+    if (event.type === 'game-ended') teardownBattleOverlays();
+  });
+
   return () => {
     disposed = true;
+    unregisterHudTeardown();
+    stopGameEvents?.();
     if (handRefreshTimer != null) globalObject.clearTimeout?.(handRefreshTimer);
     handRefreshTimer = null;
     if (pollTimer != null) globalObject.clearInterval?.(pollTimer);

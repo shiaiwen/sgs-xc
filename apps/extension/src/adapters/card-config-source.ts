@@ -24,6 +24,8 @@ declare global {
   interface Window {
     /** 开发监控读取的卡牌字典；只读，业务代码应通过 CardConfigSource 访问。 */
     __XIAOCHAO_OFFICIAL_CARD_DICTIONARY__?: CardConfigDictionary;
+    /** cha_spell 技能号到显示名，供明牌等模块查技能名。 */
+    __XIAOCHAO_SPELL_NAMES_BY_ID__?: ReadonlyMap<number, string>;
   }
 }
 
@@ -111,6 +113,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
         spellExtendRaw = result.spellExtendRaw;
         generalNames = result.generalNames;
         globalObject.__XIAOCHAO_OFFICIAL_CARD_DICTIONARY__ = result.cards;
+        globalObject.__XIAOCHAO_SPELL_NAMES_BY_ID__ = result.spellNamesById;
         globalObject.clearInterval(timer);
       })
       .catch((error) => {
@@ -164,6 +167,7 @@ async function loadCardDictionary(
 ): Promise<{
   cards: CardConfigDictionary;
   spellIdsByName: Map<string, number[]>;
+  spellNamesById: Map<number, string>;
   autoTaskData: AutoTaskConfigData | null;
   shanhetuMapData: ShanhetuMapConfigData | null;
   extraAssistData: ExtraAssistConfigData | null;
@@ -212,6 +216,7 @@ async function loadCardDictionary(
   return {
     cards,
     spellIdsByName: buildSpellIdsByName(spells),
+    spellNamesById: buildSpellNamesById(spells),
     autoTaskData,
     shanhetuMapData,
     extraAssistData,
@@ -295,6 +300,19 @@ function buildShanhetuNameTables(playCards: unknown, spells: unknown): {
     });
   }
   return { spells: spellMap, cards: cardMap };
+}
+
+/** 技能号到显示名，来自 cha_spell.sgs。 */
+export function buildSpellNamesById(spells: unknown): Map<number, string> {
+  const result = new Map<number, string>();
+  for (const entry of asArray(asRecord(asRecord(spells)?.GameSpells)?.spell)) {
+    const record = asRecord(entry);
+    const spellId = Number(record?.a);
+    if (!Number.isInteger(spellId) || spellId <= 0 || typeof record?.c !== 'string') continue;
+    const name = record.c.trim();
+    if (name) result.set(spellId, name);
+  }
+  return result;
 }
 
 /** 按技能名建立编号索引，供运行时用名字反查技能。 */

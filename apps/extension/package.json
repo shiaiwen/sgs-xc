@@ -1,6 +1,6 @@
 {
   "name": "SGSOL",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "packageId": 1,
   "IsTest": false,
   "IsDebug": true,
@@ -60,6 +60,8 @@
     "dev": "npm run dev:electron",
     "dev:electron": "node tools/dev.js",
     "dev:userscript": "node tools/dev-userscript.js",
+    "dev:userscript:bundle": "node tools/dev-userscript-bundle.js",
+    "dev:userscript:simple": "node tools/dev-userscript-bundle.js",
     "dev:ui": "vite --config vite.ui.config.ts",
     "typecheck": "node -e \"console.log('TypeScript checking is temporarily disabled.')\"",
     "refresh:reference": "node tools/refresh-reference-reverse.js"

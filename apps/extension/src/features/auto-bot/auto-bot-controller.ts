@@ -188,10 +188,31 @@ export function installAutoBotController(
     }));
   }
 
-  const pollTimer = globalObject.setInterval?.(() => tick(), pollIntervalMs);
-  if (pollTimer != null) cleanups.push(() => globalObject.clearInterval?.(pollTimer));
-  const dealTimer = globalObject.setInterval?.(() => deal(), DEAL_INTERVAL_MS);
-  if (dealTimer != null) cleanups.push(() => globalObject.clearInterval?.(dealTimer));
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let dealTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startAutoBotTimers(): void {
+    if (pollTimer == null) pollTimer = globalObject.setInterval?.(() => tick(), pollIntervalMs) ?? null;
+    if (dealTimer == null) dealTimer = globalObject.setInterval?.(() => deal(), DEAL_INTERVAL_MS) ?? null;
+  }
+
+  function stopAutoBotTimers(): void {
+    if (pollTimer != null) {
+      globalObject.clearInterval?.(pollTimer);
+      pollTimer = null;
+    }
+    if (dealTimer != null) {
+      globalObject.clearInterval?.(dealTimer);
+      dealTimer = null;
+    }
+  }
+
+  cleanups.push(configStore.subscribe(AUTO_BOT_ENABLED_KEY, ({ value }) => {
+    if (value === true) startAutoBotTimers();
+    else stopAutoBotTimers();
+  }));
+
+  if (enabled) startAutoBotTimers();
   if (enabled && !stopIfTavernDone()) {
     refreshTavern(true);
     scheduleTable(0);
@@ -324,6 +345,7 @@ export function installAutoBotController(
       enabled = false;
       bumpRun();
       persistEnabled(globalObject, false);
+      stopAutoBotTimers();
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
       for (const cleanup of cleanups.splice(0)) {

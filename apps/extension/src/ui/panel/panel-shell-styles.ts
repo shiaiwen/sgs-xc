@@ -523,9 +523,13 @@ const PANEL_SHELL_CSS_SOURCE = `
 }
 .xiaochao-dialog__content {
   box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   max-height: calc(100vh - 110px);
   padding: 12px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .xiaochao-dialog__footer {
   display: flex;
@@ -726,24 +730,29 @@ const PANEL_SHELL_CSS_SOURCE = `
   box-shadow: 0 0 0 2px rgba(242, 222, 156, .2);
 }
 .xiaochao-block-dialog {
-  width: min(250px, calc(100vw - 32px));
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 .xiaochao-auto-task-dialog {
-  width: max-content;
-  min-width: 280px;
-  max-width: calc(100vw - 32px);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 .xiaochao-auto-task-dialog .xiaochao-block-group__grid {
-  grid-template-columns: repeat(3, max-content);
-  grid-gap: 10px 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-gap: 8px 10px;
 }
 .xiaochao-block-dialog .xiaochao-dialog__content {
   padding: 12px 10px 14px;
 }
 .xiaochao-auto-task-dialog .xiaochao-dialog__content {
   box-sizing: border-box;
-  width: auto;
-  padding: 12px 22px 14px 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 12px 10px 14px;
+  overflow-x: hidden;
 }
 .xiaochao-auto-task-dialog .xiaochao-block-check__box {
   margin-left: 0;
@@ -972,11 +981,16 @@ const PANEL_SHELL_CSS_SOURCE = `
   cursor: default;
 }
 .xiaochao-block-check__label {
+  flex: 1;
+  min-width: 0;
   margin-left: 6px;
   color: #f2de9c;
   font-size: 12.5px;
   line-height: 16px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+.xiaochao-auto-task-dialog .xiaochao-block-check__label {
+  white-space: normal;
 }
 /* 快捷工具：屏蔽/红点/皮肤/领取 两行两列紧凑入口 */
 #createIframe .xiaochao-quick-tools {

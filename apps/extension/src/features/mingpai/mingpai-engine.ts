@@ -79,7 +79,11 @@ export interface MingpaiEngine {
    * 不在快照里的手牌改成位置未知；牌堆顺序不在这里恢复。
    */
   reconcileVisibleHands(hands: readonly { seatId: number; cardIds: readonly number[] }[]): void;
+  /** 场景装备栏与牌位图装备区对齐：卸下的装备从图上摘掉，仍穿戴的登记到装备区。 */
+  reconcileVisibleEquipment(equipment: readonly { seatId: number; cardIds: readonly number[] }[]): void;
   observeKnownHandCard(cardId: number, seatId: number, tags?: readonly string[]): void;
+  /** 登记装备区等非手牌分区上的已知牌，便于顺手牵羊等移牌补号。 */
+  observeKnownZoneCard(cardId: number, seatId: number, zone: number): void;
   rememberPersistentCardTag(cardId: number, tag: string, originalOwnerSeatId?: number | null): void;
   forgetPersistentCardTag(cardId: number, tag: string): void;
   /** 持久标签里还带着这个字的牌，包括没出现在当前牌位里的。 */
@@ -129,6 +133,7 @@ export interface MingpaiEngine {
 }
 
 export const HAND_ZONE = 5;
+export const EQUIP_ZONE = 6;
 export const DRAW_PILE_ZONE = 1;
 export const DISCARD_ZONE = 2;
 /** 3=处理区、8=判定展示区、10=技能临时区。 */

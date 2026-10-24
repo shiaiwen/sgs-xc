@@ -1,15 +1,15 @@
 /**
- * 把神龙摆尾、三板斧、手到擒来、多多益善的次数写到自己座位的战法条上。
+ * 把神龙摆尾、三板斧、手到擒来、多多益善的次数写到战法条 Value 上。
  */
 
-import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
+import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import type { GameEvent, GameEventBus } from '../../runtime/game-event-bus.ts';
-import { isShanHeTuMode } from './shanhetu-shop-controller.ts';
 import {
   createZhanfaCounts,
-  noteAxeSha,
+  noteCardUsed,
+  noteDragonCountingStarted,
   noteDragonDraw,
-  noteTurnSeat,
+  notePhaseRoundStart,
   noteZhanfaGameEnded,
   noteZhanfaGameStarted,
   zhanfaDisplayValue,
@@ -19,7 +19,6 @@ import {
 type UnknownRecord = Record<string, unknown>;
 
 export interface ShanhetuZhanfaCountOptions {
-  globalObject: LayaRuntimeWindow;
   locator: LayaObjectLocator;
   gameEvents: GameEventBus;
   selfSeatId: () => number | null;
@@ -35,26 +34,38 @@ function readPlotId(item: UnknownRecord): number | null {
   return Number.isInteger(plotId) ? plotId : null;
 }
 
-function readZhanfaItems(locator: LayaObjectLocator): UnknownRecord[] {
-  const scene = locator.gameScene() ?? locator.scene();
-  const self = asRecord(scene?.SelfSeatUi) ?? asRecord(scene?.selfSeatUi);
-  const items = self?.zhanFaItems ?? self?.ZhanFaItems;
-  if (!Array.isArray(items)) return [];
-  return items.map(asRecord).filter((item): item is UnknownRecord => item !== null);
+/** 参考脚本从 gamescene.zhanFaItems 取条；没有时再读 SelfSeatUi。 */
+export function readZhanfaItems(locator: LayaObjectLocator): UnknownRecord[] {
+  const scene = asRecord(locator.gameScene() ?? locator.scene());
+  if (!scene) return [];
+  const fromScene = scene.zhanFaItems ?? scene.ZhanFaItems;
+  if (Array.isArray(fromScene) && fromScene.length) {
+    return fromScene.map(asRecord).filter((item): item is UnknownRecord => item !== null);
+  }
+  const self = asRecord(scene.SelfSeatUi) ?? asRecord(scene.selfSeatUi);
+  const fromSeat = self?.zhanFaItems ?? self?.ZhanFaItems;
+  if (!Array.isArray(fromSeat)) return [];
+  return fromSeat.map(asRecord).filter((item): item is UnknownRecord => item !== null);
 }
 
-function paint(items: readonly UnknownRecord[], state: ZhanfaCounts): void {
+export function paintZhanfaItems(items: readonly UnknownRecord[], state: ZhanfaCounts): void {
   for (const item of items) {
     const plotId = readPlotId(item);
     if (plotId === null) continue;
     const value = zhanfaDisplayValue(plotId, state);
     if (value === null) continue;
     item.Value = value;
+    if (Object.prototype.hasOwnProperty.call(item, 'n')) item.n = value;
   }
 }
 
 export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions): () => void {
   const state = createZhanfaCounts();
+
+  const refresh = (): void => {
+    const items = readZhanfaItems(options.locator);
+    if (items.length) paintZhanfaItems(items, state);
+  };
 
   const onEvent = (event: GameEvent): void => {
     if (event.type === 'game-ended') {
@@ -63,20 +74,18 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
     }
     if (event.type === 'game-started') {
       noteZhanfaGameStarted(state, event.freshGame === true);
+      refresh();
       return;
     }
     const selfSeatId = options.selfSeatId();
-    if (event.type === 'turn-started' && event.seatIdKnown !== false) {
-      if (noteTurnSeat(state, event.seatId, selfSeatId) && isShanHeTuMode(options.locator, options.globalObject)) {
-        paint(readZhanfaItems(options.locator), state);
-      }
-      return;
-    }
-    if (!isShanHeTuMode(options.locator, options.globalObject)) return;
     const items = readZhanfaItems(options.locator);
     if (!items.length) return;
+
     let changed = false;
-    if (event.type === 'cards-moved') {
+    if (event.type === 'phase-changed') {
+      noteDragonCountingStarted(state);
+      if (event.phase === 0) changed = notePhaseRoundStart(state, event.seatId, selfSeatId);
+    } else if (event.type === 'cards-moved') {
       changed = noteDragonDraw(state, {
         selfSeatId,
         toId: event.toId,
@@ -86,16 +95,15 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
         cardCount: event.cardCount
       });
     } else if (event.type === 'cards-used') {
-      changed = noteAxeSha(state, {
+      changed = noteCardUsed(state, {
         selfSeatId,
         seatId: event.seatId,
-        source: event.source,
         useType: event.useType,
         spellId: event.spellId ?? null,
         isSend: event.isSend
       });
     }
-    if (changed) paint(items, state);
+    if (changed) paintZhanfaItems(items, state);
   };
 
   return options.gameEvents.subscribe(onEvent);

@@ -4,5 +4,13 @@
  */
 import { createUserscriptPlatform } from '../adapters/userscript-platform';
 import { bootstrapXiaochao } from '../core/bootstrap';
+import { installUserscriptDevAutoReload } from '../runtime/userscript-dev-auto-reload.ts';
+
+declare const __XIAOCHAO_DEV_BUILD_POLL_URL__: string;
+
+const devBuildPollUrl = typeof __XIAOCHAO_DEV_BUILD_POLL_URL__ === 'string'
+  ? __XIAOCHAO_DEV_BUILD_POLL_URL__
+  : '';
+installUserscriptDevAutoReload(devBuildPollUrl);
 
 bootstrapXiaochao(createUserscriptPlatform());

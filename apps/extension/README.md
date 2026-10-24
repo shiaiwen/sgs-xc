@@ -10,6 +10,15 @@ npm run dev              # 启动本地微端开发环境
 npm run dev:userscript   # 启动浏览器脚本开发服务器
 ```
 
+### 浏览器脚本（油猴）开发
+
+```powershell
+npm run dev:userscript
+```
+
+启动后浏览器会打开安装地址，Tampermonkey 确认安装即可；改代码保存后游戏页热更新。关掉线上「三国杀小抄」，只留开发版。
+
+
 主要目录：
 
 | 目录 | 用途 |

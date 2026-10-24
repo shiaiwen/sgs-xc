@@ -30,10 +30,10 @@ export interface AutoTaskClaims {
   onceToday(key: string, action: () => unknown): boolean;
   claimedToday(key: string): boolean;
   markClaimedToday(key: string): void;
-  /** 节流：15 秒内同键只执行一次。 */
-  throttled(key: string, action: () => unknown): boolean;
+  /** 节流：默认 15 秒内同键只执行一次，可传入更短的毫秒数。 */
+  throttled(key: string, action: () => unknown, throttleMs?: number): boolean;
   /** 仅占用节流窗口，不执行动作。 */
-  acquire(key: string): boolean;
+  acquire(key: string, throttleMs?: number): boolean;
 }
 
 /** 记录领取尝试，避免同一任务短时间重复请求。 */
@@ -76,9 +76,10 @@ export function createAutoTaskClaims(
     }
   }
 
-  function acquire(key: string): boolean {
+  function acquire(key: string, throttleMs = CLAIM_THROTTLE_MS): boolean {
     const time = now();
-    if (time - (lastAttempt.get(key) ?? -Infinity) < CLAIM_THROTTLE_MS) return false;
+    const windowMs = Number.isFinite(throttleMs) && throttleMs > 0 ? throttleMs : CLAIM_THROTTLE_MS;
+    if (time - (lastAttempt.get(key) ?? -Infinity) < windowMs) return false;
     lastAttempt.set(key, time);
     return true;
   }
@@ -103,8 +104,8 @@ export function createAutoTaskClaims(
       markClaimedToday(key);
       return true;
     },
-    throttled(key, action) {
-      if (!key || !acquire(key)) return false;
+    throttled(key, action, throttleMs) {
+      if (!key || !acquire(key, throttleMs)) return false;
       return run(key, action, '领取') !== false;
     }
   };

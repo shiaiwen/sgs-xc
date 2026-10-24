@@ -8,6 +8,22 @@ declare module '*.vue' {
   export default component;
 }
 
+interface MingpaiPerfSnapshot {
+  enginePublishCalls: number;
+  enginePublishMs: number;
+  engineLastPublishMs: number;
+  engineSlowPublishMs: number;
+  seatPublishCalls: number;
+  seatPublishMs: number;
+  seatLastPublishMs: number;
+  seatSlowPublishMs: number;
+  nativeSyncCalls: number;
+  nativeSyncMs: number;
+  nativeLastSyncMs: number;
+  nativeSlowSyncMs: number;
+  reset(): void;
+}
+
 interface Window {
   electron?: {
     openExternal?: (url: string) => Promise<unknown>;
@@ -18,6 +34,7 @@ interface Window {
   };
   __XIAOCHAO_ENGINEERING__?: Record<string, unknown> & {
     probeAutoTask?: () => unknown;
+    mingpaiNativePerf?: MingpaiPerfSnapshot;
   };
   __XC_PROBE_AUTO_TASK__?: () => unknown;
   __xcProbeAutoTask?: () => unknown;

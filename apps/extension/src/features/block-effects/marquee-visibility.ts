@@ -154,7 +154,13 @@ export function collectMarqueeUis(manager: UnknownRecord): UnknownRecord[] {
   return uniqueLiveNodes(candidates);
 }
 
-const MARQUEE_NODE_NAME = /marquee|systemnotice|noticebar|broadcast|chatmsg|chatsys|scrolltip|runtext|跑马|广播|绘卷/i;
+/** 仅匹配跑马灯/公告节点名；勿含 chatmsg/chatsys，否则会误伤 ChatSysNewsManager 与对局聊天输入。 */
+const MARQUEE_NODE_NAME = /marquee|systemnotice|noticebar|broadcast|scrolltip|runtext|跑马|广播|绘卷/i;
+
+/** 供测试与收集逻辑共用：节点名/类名是否像跑马灯（不含普通聊天）。 */
+export function isMarqueeDisplayNodeName(nameOrCtor: string): boolean {
+  return MARQUEE_NODE_NAME.test(nameOrCtor);
+}
 
 /**
  * 管理器未挂上或 UI 不在列表里时，从顶部 UI 层兜底查找跑马灯节点。
@@ -268,12 +274,25 @@ function isTopBannerLayout(rect: { y: number; width: number; height: number }): 
 }
 
 export function isDogTuoBannerNode(node: UnknownRecord): boolean {
+  if (looksLikeChatOrInputNode(node)) return false;
   const rect = readGlobalRect(node);
   if (!rect || !isTopBannerLayout(rect)) return false;
   const text = normalizeDogTuoText(collectSubtreeText(node, 14));
   if (text && matchesDogTuoBannerText(text)) return true;
   const partial = normalizeDogTuoText(collectSubtreeText(node, 6));
   return /(?:祈愿台|琳琅绘卷|琳琅|翻翻乐)/.test(partial) && /抽奖|活动中/.test(partial);
+}
+
+/** 聊天面板、输入框及其容器不能当狗托横幅藏掉。 */
+function looksLikeChatOrInputNode(node: UnknownRecord): boolean {
+  const ctor = String(asRecord(Object.getPrototypeOf(node)?.constructor)?.name ?? '');
+  const name = String(node.name ?? '');
+  if (/input|textarea|editable|chatpanel|chatview|chatbox|chatbar|chatui|chatedit|聊天/i.test(name)) return true;
+  if (/Input|TextInput|TextArea|ChatPanel|ChatView|ChatBox|ChatBar|ChatUI|ChatEdit/i.test(ctor)) return true;
+  // ChatSys* 管理器/面板（跑马灯类名含 Marquee 的除外）
+  if (/chatsys/i.test(name) && !/marquee/i.test(name)) return true;
+  if (/ChatSys/i.test(ctor) && !/Marquee/i.test(ctor)) return true;
+  return false;
 }
 
 /** 协议/UI 管理器未命中时，兜底隐藏 DOM 层狗托条。 */
@@ -305,13 +324,13 @@ function collectSubtreeText(root: UnknownRecord, maxDepth: number): string {
   return parts.join('');
 }
 
-/** 尽量找到整条横幅容器，避免只藏单个字节点。 */
+/** 尽量找到整条横幅容器，避免只藏单个字节点；不爬到聊天/输入容器。 */
 function findBannerRoot(node: UnknownRecord): UnknownRecord {
   let current: UnknownRecord = node;
   let candidate: UnknownRecord = node;
   for (let depth = 0; depth < 10; depth += 1) {
     const parent = asRecord(current.parent);
-    if (!parent) break;
+    if (!parent || looksLikeChatOrInputNode(parent)) break;
     const merged = normalizeDogTuoText(collectSubtreeText(parent, 14));
     if (merged && matchesDogTuoBannerText(merged)) {
       candidate = parent;
@@ -333,8 +352,24 @@ function sweepDogTuoTextInDom(): void {
   for (const root of roots) {
     const nodes = root.querySelectorAll('div, span, p, label');
     for (const element of nodes) {
-      const text = normalizeDogTuoText(element.textContent ?? '');
+      if (!(element instanceof HTMLElement)) continue;
+      // 含输入控件或自身是可编辑节点时不能藏，否则排位/斗地主等对局打不了字。
+      if (element.closest('input, textarea, [contenteditable="true"]')) continue;
+      if (element.querySelector('input, textarea, [contenteditable="true"]')) continue;
+      if (element.isContentEditable) continue;
+      const rect = element.getBoundingClientRect();
+      // 过大的容器多半是页面壳，textContent 聚合了狗托文案也不该整块隐藏。
+      if (rect.width >= window.innerWidth * 0.8 && rect.height >= 120) continue;
+      const ownText = normalizeDogTuoText(
+        Array.from(element.childNodes)
+          .filter((child) => child.nodeType === Node.TEXT_NODE)
+          .map((child) => child.textContent ?? '')
+          .join('')
+      );
+      const text = ownText || normalizeDogTuoText(element.textContent ?? '');
       if (!text || !matchesDogTuoBannerText(text)) continue;
+      // 仅藏矮横幅；大块 UI 留给 Laya 侧按节点屏蔽。
+      if (rect.height > 180) continue;
       element.style.setProperty('display', 'none', 'important');
       element.style.setProperty('visibility', 'hidden', 'important');
     }

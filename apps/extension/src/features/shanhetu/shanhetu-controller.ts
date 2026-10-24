@@ -77,7 +77,6 @@ export function installShanhetuController(
     : () => undefined;
   const stopZhanfa = options.gameEvents
     ? installShanhetuZhanfaCount({
-      globalObject,
       locator,
       gameEvents: options.gameEvents,
       selfSeatId: options.selfSeatId ?? (() => null)

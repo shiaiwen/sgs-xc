@@ -48,6 +48,7 @@ export function installMicroClientMessageSource(
   options: MicroClientMessageSourceOptions = {}
 ): () => void {
   const recentPayloads = new Set<object>();
+  let recentPayloadsClearPending = false;
   const recentCardMovements = new Map<string, {
     startedAt: number;
     sourceCounts: Record<MessageSourceName, number>;
@@ -106,7 +107,13 @@ export function installMicroClientMessageSource(
       mutateProtocolPayload(payload, className);
       if (recentPayloads.has(payload)) return;
       recentPayloads.add(payload);
-      setTimeout(() => recentPayloads.delete(payload), 0);
+      if (!recentPayloadsClearPending) {
+        recentPayloadsClearPending = true;
+        setTimeout(() => {
+          recentPayloads.clear();
+          recentPayloadsClearPending = false;
+        }, 0);
+      }
       if (className === 'PubGsCMoveCard') {
         diagnostics.lastCardMovementInput = snapshotMovementPayload(payload, className);
       }

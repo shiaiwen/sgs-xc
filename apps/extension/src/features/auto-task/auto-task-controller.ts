@@ -247,6 +247,7 @@ export function installAutoTaskController(
         message: pending ? '排队等待下一轮' : '本轮结束'
       });
     }, guardMs);
+    runner.claimNewPrivilegeCards();
     if (!configStore.get('autoTask.skipDailyGeneralBag')) runner.claimDailyGeneralBag();
     PASS_DELAYS.forEach((delay) => {
       tasks.later(() => {
@@ -269,7 +270,10 @@ export function installAutoTaskController(
     tasks.later(async () => {
       if (!configStore.get(AUTO_TASK_ENABLED_KEY) || tasks.disposed) return;
       const ready = await tasks.poll(() => managersReady() || null, MANAGER_WAIT_ATTEMPTS, MANAGER_WAIT_INTERVAL);
-      if (ready && configStore.get(AUTO_TASK_ENABLED_KEY)) startRun(payload);
+      if (ready && configStore.get(AUTO_TASK_ENABLED_KEY)) {
+        runner.claimNewPrivilegeCards();
+        startRun(payload);
+      }
       else if (!tasks.disposed) setStatus({ phase: 'idle', message: '管理器未就绪，本轮取消' });
     }, SCHEDULE_DELAY_MS);
     return true;

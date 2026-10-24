@@ -381,7 +381,7 @@ export function installShanhetuMapController(
 
   const pollTimer = globalObject.setInterval(() => {
     if (!disposed) redraw();
-  }, intervalMs);
+  }, intervalMs * 2);
 
   const unsubscribe = configStore.subscribe(SHANHETU_MAP_KEY, ({ value }) => {
     if (!value) clear();

@@ -34,7 +34,7 @@ export function installCardLabelController(
     refresh();
   });
   refresh();
-  const intervalId = globalObject.setInterval(refresh, 1000);
+  const intervalId = globalObject.setInterval(refresh, 2000);
 
   return () => {
     unsubscribe();

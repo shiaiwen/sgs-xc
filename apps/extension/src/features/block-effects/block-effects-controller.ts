@@ -431,6 +431,7 @@ export function installBlockEffectsController(
   const wrappedMarqueeListenerRecords = new WeakSet<object>();
 
   function marqueeDisplayLayers(): Array<UnknownRecord | null> {
+    // 不要把 ChatSysNewsManager 当显示树根扫描：类名含 ChatSys，会被误判为跑马灯并藏掉，导致对局打不了字。
     return [
       locator.layer('TopUILayer'),
       locator.layer('PromptLayer'),
@@ -438,8 +439,7 @@ export function installBlockEffectsController(
       asRecord(locator.scene()?.topView),
       asRecord(locator.scene()?.noticeView),
       asRecord(locator.scene()?.marqueeView),
-      asRecord(locator.scene()?.chatMarquee),
-      asRecord(locator.manager('ChatSysNewsManager'))
+      asRecord(locator.scene()?.chatMarquee)
     ];
   }
 
@@ -457,6 +457,9 @@ export function installBlockEffectsController(
     return Array.from(new Set([...fromManager, ...fromTree, ...fromBannerScan]));
   }
 
+  let lastSyncMarqueeAt = 0;
+  const SYNC_MARQUEE_MIN_INTERVAL_MS = 500;
+
   function scheduleSyncMarquee(): void {
     if (syncMarqueeScheduled) return;
     syncMarqueeScheduled = true;
@@ -472,6 +475,9 @@ export function installBlockEffectsController(
   }
 
   function syncMarquee(): void {
+    const now = Date.now();
+    if (now - lastSyncMarqueeAt < SYNC_MARQUEE_MIN_INTERVAL_MS) return;
+    lastSyncMarqueeAt = now;
     const blocked = isOn('block.noticeWindow');
     const inTable = isTableGameScene();
     if (blocked && !inTable && marqueeManager && typeof marqueeManager.HideAllMarquee === 'function') {
@@ -555,7 +561,7 @@ export function installBlockEffectsController(
     const sweepTimer = setInterval(() => {
       if (disposed || !isOn('block.noticeWindow')) return;
       syncMarquee();
-    }, 120);
+    }, 500);
     cleanups.push(() => {
       clearInterval(sweepTimer);
       marqueeFrameLoopBound = false;

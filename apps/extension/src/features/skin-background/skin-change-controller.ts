@@ -35,6 +35,7 @@ const SKIN_WINDOWS = ['ChangeSkinWindow', 'SelectSkinWindow'] as const;
 const LOCKED_ITEM_NODES = ['timeBg', 'composeBg', 'composeIcon', 'composeTxt1', 'composeTxt2', 'composeTxt', 'timeLimiteTxt'];
 const SELF_GENERAL_KEYS = ['generalIds', 'GeneralIds', 'WuJiangs', 'generals'];
 const OTHER_BIND_DELAYS = [0, 50, 200, 600, 1500];
+const SELF_SKIN_APPLY_DELAYS = [0, 80, 250, 600, 1200];
 const OTHER_OPEN_TIMEOUT = 3000;
 
 interface SavedSkin {
@@ -194,6 +195,61 @@ export function installSkinChangeController(
     return false;
   }
 
+  /** 进局后把本地保存的皮肤套到自己座位，避免开换肤窗时先闪官方默认皮。 */
+  function applySavedSkinsForSelf(): void {
+    if (!localOn()) return;
+    const seat = selfSeat();
+    if (!seat) return;
+    for (const isZhu of [true, false]) {
+      const info = seatGeneral(seat, isZhu);
+      if (!info) continue;
+      const saved = savedSkin(info.generalID);
+      if (!saved) continue;
+      const skinMatches = info.skinID === saved.skinID;
+      const dynamicMatches = info.isDynamic === saved.isDynamic;
+      // 动态皮每局再套一次，避免皮号对了但特效仍是静态。
+      if (skinMatches && dynamicMatches && !saved.isDynamic) continue;
+      try {
+        applyToSelfSeat(info.generalID, saved.skinID, saved.isDynamic);
+      } catch (error) {
+        console.warn('[皮肤解锁] 进局套用本地皮肤失败:', error);
+      }
+    }
+  }
+
+  function scheduleApplySavedSkinsForSelf(): void {
+    if (!localOn()) return;
+    SELF_SKIN_APPLY_DELAYS.forEach((delay) => tasks.later(() => applySavedSkinsForSelf(), delay));
+  }
+
+  function pickerGeneralId(view: UnknownRecord): number {
+    return Number(view.defaultGeneralID ?? view.realGeneralID ?? view.generalID);
+  }
+
+  function activeSavedSkinForPicker(view: UnknownRecord): SavedSkin | null {
+    const generalID = pickerGeneralId(view);
+    return localOn() && isOwnGeneral(generalID) ? savedSkin(generalID) : null;
+  }
+
+  /** 列表解锁后会把 isUsing 清掉，这里把当前应选中的皮肤项标回去。 */
+  function syncPickerUsingState(view: UnknownRecord): void {
+    const saved = activeSavedSkinForPicker(view);
+    const skinID = saved?.skinID ?? Number(view.usingSkinID);
+    if (!(skinID >= 0)) return;
+    if (saved) {
+      view.usingSkinID = saved.skinID;
+      view.closeSelectSkinId = saved.skinID;
+      if ('usingDynamicState' in view) view.usingDynamicState = saved.isDynamic ? 1 : 0;
+    }
+    const guard = guardedViews.get(view);
+    if (!guard) return;
+    for (const item of guard.items) {
+      const original = itemStates.get(item);
+      const id = original?.skinID ?? itemSkinId(item);
+      item.isUsing = id === skinID;
+    }
+  }
+
   // ---------- 换肤窗口：未拥有皮肤显示为可选 ----------
 
   function itemSkinId(item: UnknownRecord): number | null {
@@ -301,14 +357,14 @@ export function installSkinChangeController(
     }
     if (view.clickCheck !== true) return { handled: false };
     const generalID = Number(view.defaultGeneralID ?? view.realGeneralID ?? view.generalID);
-    const isDynamic = preview.original.supportsDynamic;
+    const isDynamic = isDynamicChoice(view, skinID, view.closeSelectDynamicState);
     if (generalID > 0) saveSkin(generalID, skinID, isDynamic);
     let nativeResult: unknown = false;
     if (preview.original.hasSkin) {
       view.closeSelectDynamicState = preview.original.dynamicState ? 1 : 0;
       nativeResult = native.apply(view, args);
     } else {
-      view.closeSelectDynamicState = 0;
+      view.closeSelectDynamicState = isDynamic ? 1 : 0;
     }
     let applied = false;
     try {
@@ -405,6 +461,12 @@ export function installSkinChangeController(
       guardItemRender(item);
       unlockItem(item);
     });
+    syncPickerUsingState(view);
+    try {
+      callMethod(view, 'updateContent');
+    } catch {
+      // 列表尚未就绪时忽略。
+    }
   }
 
   function syncOpenWindows(): void {
@@ -781,7 +843,12 @@ export function installSkinChangeController(
   }
 
   function waitForSeats(): void {
-    void tasks.poll(() => (locator.gameScene() ? syncGameScene() > 0 : false), 60, 500);
+    void tasks.poll(() => {
+      if (!locator.gameScene()) return false;
+      const ready = syncGameScene() > 0;
+      if (ready) scheduleApplySavedSkinsForSelf();
+      return ready;
+    }, 60, 500);
   }
 
   // ---------- 换肤框原型：他人换肤接管初始化与确认 ----------
@@ -799,17 +866,32 @@ export function installSkinChangeController(
         }
         sessionByView.set(this, session);
       }
+      const saved = localOn() && isOwnGeneral(Number(generalID)) ? savedSkin(generalID) : null;
+      if (saved) {
+        this.usingSkinID = saved.skinID;
+        if ('usingDynamicState' in this) this.usingDynamicState = saved.isDynamic ? 1 : 0;
+      }
       const result = original.call(this, generalID, ...rest);
       if (!(Number(this.usingSkinID) > 0)) {
         const manager = locator.manager('GeneralSkinManager');
         const using = callMethod(manager, 'GetSelfUsingSkinID', generalID);
         if (using !== undefined) this.usingSkinID = using;
       }
-      // 本地换肤保存过就用本地那张，否则关掉窗口再打开或点空白处会回到原皮。
-      const saved = localOn() && isOwnGeneral(Number(generalID)) ? savedSkin(generalID) : null;
       if (saved) {
         this.usingSkinID = saved.skinID;
+        this.closeSelectSkinId = saved.skinID;
         if ('usingDynamicState' in this) this.usingDynamicState = saved.isDynamic ? 1 : 0;
+        try {
+          applyToSelfSeat(Number(generalID), saved.skinID, saved.isDynamic);
+        } catch (error) {
+          console.warn('[皮肤解锁] 换肤窗初始化套用本地皮肤失败:', error);
+        }
+        syncPickerUsingState(this);
+        try {
+          callMethod(this, 'updateContent');
+        } catch {
+          // 列表尚未就绪时忽略。
+        }
       }
       return result;
     });
@@ -861,7 +943,10 @@ export function installSkinChangeController(
   }
 
   unsubscribes.push(
-    configStore.subscribe('skin.localSkin', () => syncOpenWindows()),
+    configStore.subscribe('skin.localSkin', () => {
+      syncOpenWindows();
+      scheduleApplySavedSkinsForSelf();
+    }),
     configStore.subscribe('skin.otherLocalSkin', () => {
       syncGameScene();
       if (otherOn()) waitForSeats();
@@ -872,13 +957,17 @@ export function installSkinChangeController(
   watchSceneSwitch(locator, patcher, tasks, () => {
     syncGameScene();
     waitForSeats();
+    scheduleApplySavedSkinsForSelf();
     syncOpenWindows();
   });
   void tasks.poll(() => locator.dispatcher() && locator.manager('WindowManager'), Infinity, 1000).then((ready) => {
     if (!ready) return;
     preparePickerPrototype();
     syncGameScene();
-    if (locator.gameScene()) waitForSeats();
+    if (locator.gameScene()) {
+      waitForSeats();
+      scheduleApplySavedSkinsForSelf();
+    }
   });
 
   return {

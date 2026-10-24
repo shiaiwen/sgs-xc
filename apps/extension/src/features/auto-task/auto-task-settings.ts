@@ -34,7 +34,7 @@ export const AUTO_TASK_SKIP_SETTINGS: readonly AutoTaskSkipSetting[] = [
   {
     key: 'autoTask.skipHuanLeDou',
     label: '欢乐豆',
-    tooltip: '领取含欢乐豆的奖励，低于 600 豆时也会领免费豆'
+    tooltip: '领取含欢乐豆的奖励、官阶每日俸禄；低于 600 豆时也会领免费豆'
   }
 ];
 

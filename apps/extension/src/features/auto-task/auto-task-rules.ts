@@ -9,6 +9,8 @@ export const TAVERN_TASK_IDS: readonly number[] = [161114, 161115, 161116];
 /** 不自动领取的任务。 */
 const EXCLUDED_TASK_IDS = new Set([97, 98, 126, 127]);
 const HUAN_LE_DOU_ITEM_IDS = new Set(['9020101', '9030101']);
+/** 特惠礼包等「免费礼盒」商品 id；不勾欢乐豆时不自动购买。 */
+export const FREE_SHOP_BEAN_PROMO_GOODS_IDS = new Set([13360001, 11578201]);
 const COST_TASK_PATTERN = /兑换|兑取|换取|消费|消耗|扣除|合成|盲盒/;
 /** 已消费达标后的进度描述，领取时不再扣费。先从文案里摘掉，避免被上面的规则误伤。 */
 const SPEND_PROGRESS_PATTERN = /累计实际扣除|扣除绑定元宝|扣除元宝|消耗绑定元宝|消耗元宝|累计消费|消费/g;
@@ -58,8 +60,41 @@ export function taskRewards(task: unknown): unknown[] {
 /** 读取一条奖励的道具编号。 */
 export function rewardItemId(item: unknown): unknown {
   const record = asRecord(item);
-  return record?.ItemID ?? record?.itemID ?? record?.itemId ?? record?.id ?? record?.ID
+  return record?.ItemID ?? record?.itemID ?? record?.itemId ?? record?.ItemId
+    ?? record?.FfItemId ?? record?.ffItemId
+    ?? record?.id ?? record?.ID
     ?? record?.goodsId ?? record?.GoodsID ?? record?.baseId ?? record?.BaseID;
+}
+
+/** 展开嵌套奖励列表，兼容军典 JDShowRewardList、礼包预览等结构。 */
+export function flattenRewardEntries(rewards: unknown): UnknownRecord[] {
+  const out: UnknownRecord[] = [];
+  const seen = new Set<unknown>();
+  const visit = (value: unknown): void => {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const record = asRecord(value);
+    if (!record || seen.has(record)) return;
+    const hasIdentity = rewardItemId(record) != null
+      || record.itemName || record.ItemName || record.name || record.Name
+      || record.goodsName || record.GoodsName;
+    if (hasIdentity) {
+      seen.add(record);
+      out.push(record);
+    }
+    for (const key of [
+      'items', 'Items', 'rewards', 'Rewards', 'rewardList', 'RewardList',
+      'goods', 'Goods', 'awardList', 'AwardList', 'showList', 'ShowList',
+      'containGoods', 'ContainGoods', 'giftGoods', 'GiftGoods', 'previewList'
+    ]) {
+      visit(record[key]);
+    }
+  };
+  visit(rewards);
+  return out;
 }
 
 function rewardItemName(item: unknown, context: RewardFilterContext): string {
@@ -76,7 +111,7 @@ function someReward(
   context: RewardFilterContext,
   predicate: (itemId: unknown, name: string) => boolean
 ): boolean {
-  const list = Array.isArray(rewards) ? rewards : rewards ? [rewards] : [];
+  const list = flattenRewardEntries(rewards);
   return list.some((item) => predicate(rewardItemId(item), rewardItemName(item, context)));
 }
 
@@ -124,6 +159,55 @@ export function shouldClaimDdztllReward(
 ): boolean {
   if (options.skipHuanLeDou || !options.hasRewardRed) return false;
   return !rewardsBlocked(options.rewardInfo, context);
+}
+
+/**
+ * 充消返利军典一键领取 ReqDrawAllJDRwd。
+ * 不勾欢乐豆时不领；勾选且奖励未被抵价券规则挡住时可领。
+ */
+export function shouldClaimAllJdRechargeRewards(
+  skipHuanLeDou: boolean,
+  rewardList: unknown,
+  context: RewardFilterContext
+): boolean {
+  if (skipHuanLeDou) return false;
+  return !rewardsBlocked(rewardList, context);
+}
+
+/** 不勾欢乐豆时，商城免费礼盒等视为豆相关促销。 */
+/** 官阶每日/每周俸禄为欢乐豆；不勾欢乐豆时不自动领。 */
+export function shouldClaimOfficerSalaryReward(skipHuanLeDou: boolean): boolean {
+  return !skipHuanLeDou;
+}
+
+export function shouldSkipFreeShopGoodForHuanLeDou(
+  skipHuanLeDou: boolean,
+  goodsId: number,
+  goodsDisplayName: string,
+  rewardEntries: unknown,
+  context: RewardFilterContext
+): boolean {
+  if (!skipHuanLeDou) return false;
+  if (FREE_SHOP_BEAN_PROMO_GOODS_IDS.has(goodsId)) return true;
+  if (/免费礼盒|欢乐豆/.test(goodsDisplayName)) return true;
+  if (rewardsContainHuanLeDou(rewardEntries, context)) return true;
+  return !flattenRewardEntries(rewardEntries).length;
+}
+
+/** 任务奖励表里看不出豆、但文案像充值免费礼或豆礼包。 */
+export function taskLikelyGrantsHuanLeDou(task: unknown, context: RewardFilterContext): boolean {
+  const record = asRecord(task);
+  if (!record) return false;
+  if (rewardsContainHuanLeDou(taskRewards(task), context)) return true;
+  const text = taskText(record);
+  const rewardText = rewardTextOf(record, context);
+  const merged = `${text}${rewardText}`;
+  if (/欢乐豆|免费好礼|免费礼盒/.test(merged)) return true;
+  if (/充消返利|充值福利|消费福利/.test(text) && /免费|礼盒|礼包/.test(merged)) return true;
+  return taskRewards(task).some((item) => {
+    const name = rewardItemName(item, context);
+    return /礼盒|礼包/.test(name) && /免费|充值|返利|福利/.test(text);
+  });
 }
 
 /** 按数组 / datum / _objDatum / _maps 展开游戏容器。 */

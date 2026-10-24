@@ -19,6 +19,11 @@ import type {
   DeckRecordInteraction,
   DeckRecordListKind
 } from './deck-record-interaction.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import {
+  isNativeHudSuspended,
+  registerNativeHudPostGameTeardown
+} from '../../runtime/native-hud-post-game-guard.ts';
 
 type UnknownRecord = Record<string, unknown>;
 type SortMode = 'suit-type-number' | 'type-suit-number' | 'number-suit-type';
@@ -103,7 +108,8 @@ export function installNativeDeckRecordController(
   configStore: XiaochaoConfigStore,
   deckRecordStore: DeckRecordStore,
   interaction: DeckRecordInteraction,
-  gameCardCatalog?: GameCardCatalog
+  gameCardCatalog?: GameCardCatalog,
+  gameEvents?: GameEventBus
 ): () => void {
   let stopped = false;
   let scene: UnknownRecord | null = null;
@@ -233,6 +239,10 @@ export function installNativeDeckRecordController(
 
   const sync = () => {
     if (stopped) return;
+    if (isNativeHudSuspended()) {
+      destroyOverlay();
+      return;
+    }
     const nextScene = asRecord(locateGameScene(window));
     const roundInfo = asRecord(nextScene?.gameRoundInfo);
     const nextParent = asRecord(roundInfo?._parent) ?? roundInfo ?? nextScene;
@@ -294,11 +304,19 @@ export function installNativeDeckRecordController(
     if (snapshot.activeList) clearHideTimer();
     syncPopup();
   });
-  const timer = window.setInterval(sync, 250);
+  const timer = window.setInterval(() => {
+    if (configStore.get('display.deckHudEnabled')) sync();
+  }, 500);
+  const unregisterPostGameTeardown = registerNativeHudPostGameTeardown(destroyOverlay);
+  const stopGameEvents = gameEvents?.subscribe((event) => {
+    if (event.type === 'game-ended') destroyOverlay();
+  });
   sync();
 
   return () => {
     stopped = true;
+    unregisterPostGameTeardown();
+    stopGameEvents?.();
     window.clearInterval(timer);
     clearHideTimer();
     stopStore();

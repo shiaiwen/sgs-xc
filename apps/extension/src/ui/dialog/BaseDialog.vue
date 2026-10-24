@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 通用对话框：定位在小抄面板区域内，不占用整个窗口。 */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { DIALOG_DEFAULT_MAX_WIDTH, layoutDialogInPanel } from './dialog-layout.ts';
 
 const props = defineProps({
   open: {
@@ -18,6 +19,11 @@ const props = defineProps({
   dialogClass: {
     type: String,
     default: '',
+  },
+  /** 内容区期望最大宽度，实际仍受面板与视口限制。 */
+  maxWidth: {
+    type: Number,
+    default: DIALOG_DEFAULT_MAX_WIDTH,
   },
 });
 
@@ -82,13 +88,20 @@ const backdropStyle = computed(() => {
 const dialogStyle = computed(() => {
   const rect = panelRect.value;
   if (!rect) return {};
+  const layout = layoutDialogInPanel(rect, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }, props.maxWidth);
   return {
     position: 'fixed',
-    top: `${rect.top + rect.height / 2}px`,
-    left: `${rect.left + rect.width / 2}px`,
+    top: `${layout.centerY}px`,
+    left: `${layout.centerX}px`,
     transform: 'translate(-50%, -50%)',
-    width: `min(320px, ${rect.width - 24}px)`,
-    maxHeight: `${rect.height - 48}px`,
+    boxSizing: 'border-box',
+    width: `${layout.width}px`,
+    maxWidth: `${layout.width}px`,
+    minWidth: '0',
+    maxHeight: `${layout.maxHeight}px`,
     zIndex: '2147483602',
   } as Record<string, string>;
 });

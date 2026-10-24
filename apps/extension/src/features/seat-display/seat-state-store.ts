@@ -7,6 +7,7 @@ import {
   normalizeSeatState,
   type SeatStateSnapshot
 } from './seat-state.ts';
+import { now, recordSeatPublish } from '../mingpai/mingpai-perf.ts';
 
 export type SeatStateSubscriber = (snapshot: Readonly<SeatStateSnapshot>) => void;
 
@@ -66,9 +67,14 @@ export function createSeatStateStore(storage: Storage | null = getSessionStorage
   );
 
   function publish(nextSnapshot: SeatStateSnapshot): void {
-    if (sameSeatSnapshot(snapshot, nextSnapshot)) return;
+    const t0 = now();
+    if (sameSeatSnapshot(snapshot, nextSnapshot)) {
+      recordSeatPublish(now() - t0);
+      return;
+    }
     snapshot = freezeSnapshot(nextSnapshot);
     subscribers.forEach((subscriber) => subscriber(snapshot));
+    recordSeatPublish(now() - t0);
   }
 
   function persistTrackingIfChanged(): void {
@@ -146,7 +152,7 @@ export function createSeatStateStore(storage: Storage | null = getSessionStorage
     },
     applyKnownHandMovement(movement) {
       resolvePossible(movement.cardIds);
-      if (movement.fromZone === HAND_ZONE) {
+      if (movement.fromZone === HAND_ZONE || movement.fromZone === 6) {
         removeTrackedCards(trackedHands, movement.fromSeatId, movement.cardIds, movement.cardCount);
         suppressDepartedKnownCards(suppressedCardsBySeat, movement.fromSeatId, movement.cardIds);
         if (!trackedHands.has(movement.fromSeatId)) trackedOccupants.delete(movement.fromSeatId);
@@ -521,7 +527,47 @@ function freezeSnapshot(snapshot: SeatStateSnapshot): Readonly<SeatStateSnapshot
 }
 
 function sameSeatSnapshot(left: Readonly<SeatStateSnapshot>, right: SeatStateSnapshot): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return snapshotSignature(left) === snapshotSignature(right);
+}
+
+function snapshotSignature(value: Readonly<SeatStateSnapshot>): string {
+  const out: string[] = [];
+  out.push(
+    value.inGame ? '1' : '0',
+    value.isSpectating ? '1' : '0',
+    String(value.selfSeatId ?? ''),
+    String(value.playerCount),
+    value.mode,
+    value.controlledSeatIds.join(',')
+  );
+  for (const seat of value.seats) {
+    out.push(
+      String(seat.seatId),
+      String(seat.displayOrder),
+      seat.playerName,
+      seat.isSelf ? '1' : '0',
+      seat.isAlive ? '1' : '0',
+      String(seat.unknownCardCount)
+    );
+    const anchor = seat.anchor;
+    out.push(
+      anchor
+        ? [anchor.x, anchor.y, anchor.width, anchor.height, anchor.stageWidth, anchor.stageHeight].join(',')
+        : ''
+    );
+    out.push(seat.knownCards.map((card) => `${card.cardId}:${card.name}:${card.tags.join('|')}`).join(','));
+    out.push(
+      (seat.equipmentCards ?? [])
+        .map((card) => `${card.cardId}:${card.name}:${card.tags.join('|')}:${card.hints.join('|')}`)
+        .join(',')
+    );
+    out.push(
+      (seat.possibleCards ?? [])
+        .map((card) => `${card.cardId}:${card.name}:${card.tags.join('|')}`)
+        .join(',')
+    );
+  }
+  return out.join('\x00');
 }
 
 function serializeTracking(

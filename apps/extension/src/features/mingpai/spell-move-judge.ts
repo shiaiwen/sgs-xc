@@ -50,6 +50,12 @@ const SPELL_SELF_HAND_GAIN = [7016, 7017] as const;
 const SPELL_HAND_EXCHANGE = 361;
 /** 周旋：手牌暗置进自己的技能区。 */
 const SPELL_ZHOUXUAN = 3065;
+/** 与周旋同类：亮出后暗置到技能区，参考脚本与 0xbf9 同组。 */
+const SPELL_KNOWN_PILE_FROM_EQUIP = 0x122;
+const KNOWN_PILE_PLACEMENT_SPELLS = new Set<number>([SPELL_ZHOUXUAN, SPELL_KNOWN_PILE_FROM_EQUIP]);
+const ZONE_EQUIP = 6;
+/** 顺手牵羊锦囊。 */
+const SPELL_SNATCH = 2;
 /** 弃牌堆暗置进手。 */
 const SPELL_DISCARD_GAIN = 3157;
 /** 弃牌堆暗置放回牌堆顶。 */
@@ -153,6 +159,7 @@ export interface MoveJudgeHost {
   isRedCard: (cardId: number) => boolean | null;
   zoneCardIds: (seatId: number, zone: number) => readonly number[];
   handCardIds: (seatId: number) => readonly number[];
+  equipmentCardIds?: (seatId: number) => readonly number[];
 }
 
 export interface MoveJudgeResult {
@@ -176,7 +183,11 @@ let pileShowLeft = 0;
 let currentSeatId: number | null = null;
 let givenCardBy780: number | null = null;
 let handExchange361: { casterSeatId: number; targetSeatId: number; shown: number[]; choice: number } | null = null;
-const zhouxuanPending = new Map<number, number[]>();
+const knownPilePendingPlacements = new Map<string, number[]>();
+
+function knownPilePlacementKey(spellId: number, seatId: number): string {
+  return `${spellId}:${seatId}`;
+}
 const qingyiPending = new Map<number, number[]>();
 const qianfuPending = new Map<string, number[]>();
 /**
@@ -198,7 +209,7 @@ export function resetSpellMoveState(): void {
   currentSeatId = null;
   givenCardBy780 = null;
   handExchange361 = null;
-  zhouxuanPending.clear();
+  knownPilePendingPlacements.clear();
   qingyiPending.clear();
   qianfuPending.clear();
   pilePackCount3483 = 0;
@@ -239,7 +250,9 @@ export function noteSpellShownCards(
       handExchange361 = { casterSeatId: srcSeatId, targetSeatId: targets[0] ?? srcSeatId, shown: [], choice: 0 };
     }
   }
-  if (spellId === SPELL_ZHOUXUAN && effectIndex === 1 && known.length) zhouxuanPending.set(srcSeatId, known);
+  if (KNOWN_PILE_PLACEMENT_SPELLS.has(spellId) && effectIndex === 1 && known.length) {
+    knownPilePendingPlacements.set(knownPilePlacementKey(spellId, srcSeatId), known);
+  }
   if (spellId === SPELL_DISCARD_GAIN && known.length) qingyiPending.set(srcSeatId, known);
   if (spellId === SPELL_DISCARD_TO_TOP[0] || spellId === SPELL_DISCARD_TO_TOP[1]) {
     const key = `${spellId}-${srcSeatId}`;
@@ -598,6 +611,34 @@ function fillHiddenIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeH
     }
   }
 
+  if (
+    move.fromZone === ZONE_HAND
+    && host.myId !== null
+    && move.fromId === host.myId
+    && move.toId !== host.myId
+    && count === 1
+    && hidden
+  ) {
+    const knownHand = host.handCardIds(move.fromId).filter((cardId) => cardId > 0);
+    if (knownHand.length === 1) cardIds[0] = knownHand[0];
+  }
+
+  if (move.fromZone === ZONE_EQUIP && move.toZone === ZONE_HAND && hidden && count === 1) {
+    const equipIds = host.equipmentCardIds?.(move.fromId)?.filter((cardId) => cardId > 0) ?? [];
+    if (equipIds.length === 1) cardIds[0] = equipIds[0];
+  }
+
+  if (
+    move.spellId === SPELL_SNATCH
+    && move.fromZone === ZONE_HAND
+    && move.toZone === ZONE_HAND
+    && hidden
+    && count === 1
+  ) {
+    const equipIds = host.equipmentCardIds?.(move.fromId)?.filter((cardId) => cardId > 0) ?? [];
+    if (equipIds.length === 1) cardIds[0] = equipIds[0];
+  }
+
   fillClueIds(move, cardIds, host);
 }
 
@@ -656,9 +697,17 @@ function fillClueIds(move: MoveJudgeInput, cardIds: number[], host: MoveJudgeHos
       }
     }
   }
-  if (move.spellId === SPELL_ZHOUXUAN && move.moveType === MOVE_PLACE && move.fromZone === ZONE_HAND && move.toZone === ZONE_SKILL && move.toZoneParam === SPELL_ZHOUXUAN && move.toId === move.fromId) {
-    const pending = zhouxuanPending.get(move.fromId);
-    zhouxuanPending.delete(move.fromId);
+  if (
+    KNOWN_PILE_PLACEMENT_SPELLS.has(move.spellId)
+    && move.moveType === MOVE_PLACE
+    && move.toZone === ZONE_SKILL
+    && move.toZoneParam === move.spellId
+    && move.toId === move.fromId
+    && (move.fromZone === ZONE_HAND || (move.spellId === SPELL_KNOWN_PILE_FROM_EQUIP && move.fromZone === ZONE_EQUIP))
+  ) {
+    const pendingKey = knownPilePlacementKey(move.spellId, move.toId);
+    const pending = knownPilePendingPlacements.get(pendingKey);
+    knownPilePendingPlacements.delete(pendingKey);
     if (hidden && pending && pending.length === count) cardIds.splice(0, Infinity, ...pending);
   }
   if (move.spellId === SPELL_DISCARD_GAIN && move.fromZone === ZONE_DISCARD && move.toZone === ZONE_HAND) {

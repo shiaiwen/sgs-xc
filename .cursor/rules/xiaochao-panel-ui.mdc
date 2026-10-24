@@ -1,0 +1,31 @@
+---
+description: 小抄 Vue 面板与对话框 UI 约束，避免溢出、裁切与错位
+globs: apps/extension/src/ui/**/*
+alwaysApply: false
+---
+
+# 小抄面板 UI 规范
+
+适用范围：`apps/extension/src/ui` 内所有面板、设置区、`BaseDialog` 及 `panel-shell-styles` 中的样式。
+
+## 容器与定位
+
+- 设置类弹窗一律用 `BaseDialog`，禁止再写 `position: fixed` 全屏居中且忽略 `#createIframe` 范围。
+- 对话框宽高与中心点由 `dialog-layout.ts` 计算，必须同时限制在**面板矩形**与**浏览器视口**内；不得用 `min-width` 把框撑得比面板还宽。
+- `Teleport` 到 `body` 时，布局仍以 `#createIframe` 的 `getBoundingClientRect` 为参照；改定位逻辑只改 `BaseDialog` / `dialog-layout`，不要在业务组件里硬编码 `left`/`width`。
+
+## 尺寸与溢出
+
+- 禁止 `width: max-content` 作为弹窗主宽度；弹窗宽度以 JS 算出的像素值为准，CSS 只写 `width: 100%`、`min-width: 0`、`max-width: 100%`。
+- 禁止在窄容器内使用 `grid-template-columns: repeat(N, max-content)` 或多列 `white-space: nowrap` 长文案，导致横向撑破；列表用 `minmax(0, 1fr)`，文案用 `overflow-wrap: anywhere`，必要时纵向滚动 `overflow-y: auto`，横向 `overflow-x: hidden`。
+- 子项 flex/grid 子元素需 `min-width: 0`，避免省略号与换行失效。
+
+## 自检
+
+改 UI 后至少核对：面板贴右停靠、面板宽度约 200px、折叠后再展开三种情况下，弹窗四边仍在面板内且右侧不超出屏幕；内容过长时出现纵向滚动条而非横向裁切。
+
+## 禁止的低级问题
+
+- 弹窗或列表右侧超出视口或面板。
+- 仅依赖 `100vw` 定宽而忽略面板实际宽度。
+- 用过大 `min-width` 导致小面板必溢出。

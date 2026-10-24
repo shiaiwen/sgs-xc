@@ -35,6 +35,7 @@ import {
 } from './card-graph.ts';
 import { applyGraphMove, type GraphMoveMessage, type GraphMoveState } from './move-pipeline.ts';
 import { MINGPAI_ZONE } from '../mingpai-zones.ts';
+import { now, recordEnginePublish } from '../mingpai-perf.ts';
 import type {
   KnownCardMovement,
   MingpaiEngine,
@@ -43,6 +44,7 @@ import type {
 } from '../mingpai-engine.ts';
 
 const HAND_ZONE = 5;
+const EQUIP_ZONE = 6;
 const DRAW_PILE_ZONE = 1;
 const DISCARD_ZONE = 2;
 const RECYCLE_ZONE = 12;
@@ -146,10 +148,15 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
   }
 
   function publish(): void {
+    const t0 = now();
     const next = buildSnapshot();
-    if (JSON.stringify(snapshot) === JSON.stringify(next)) return;
+    if (snapshotSignature(snapshot) === snapshotSignature(next)) {
+      recordEnginePublish(now() - t0);
+      return;
+    }
     snapshot = next;
     listeners.forEach((listener) => listener(snapshot));
+    recordEnginePublish(now() - t0);
   }
 
   /**
@@ -342,9 +349,57 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
 
     observeKnownHandCard(cardId, seatId, tags = []) {
       if (!(cardId > 0)) return;
+      for (const zoneKey of findSlotZones(cardId).zones) {
+        const parsed = parseZoneId(zoneKey);
+        if (!parsed) continue;
+        if (parsed.ownerId === seatId && parsed.zone !== HAND_ZONE) return;
+        if (
+          parsed.ownerId !== seatId
+          && parsed.ownerId < GLOBAL_OWNER
+          && (parsed.zone === HAND_ZONE || parsed.zone === EQUIP_ZONE)
+        ) return;
+      }
       const zoneId = formatZoneId(seatId, HAND_ZONE);
       placeInZone(slotFor(cardId, zoneId), zoneId);
       if (tags.length) mergeMingpaiCardTags(cardId, tags);
+      publish();
+    },
+
+    observeKnownZoneCard(cardId, seatId, zone) {
+      if (!(cardId > 0) || !Number.isInteger(zone) || zone < 0) return;
+      if (zone === HAND_ZONE) {
+        this.observeKnownHandCard(cardId, seatId);
+        return;
+      }
+      for (const zoneKey of findSlotZones(cardId).zones) {
+        const parsed = parseZoneId(zoneKey);
+        if (!parsed || parsed.ownerId !== seatId) continue;
+        if (parsed.zone === zone) return;
+      }
+      const zoneId = formatZoneId(seatId, zone);
+      placeInZone(slotFor(cardId, zoneId), zoneId);
+      publish();
+    },
+
+    reconcileVisibleEquipment(equipment) {
+      for (const entry of equipment) {
+        const allowed = new Set(uniquePositive(entry.cardIds));
+        const zoneId = formatZoneId(entry.seatId, EQUIP_ZONE);
+        const cards = getMutableZoneCards(zoneId);
+        for (let index = cards.length - 1; index >= 0; index -= 1) {
+          const slot = cards[index];
+          if (!(slot.key > 0) || allowed.has(slot.key)) continue;
+          cards.splice(index, 1);
+          retainPersistentMingpaiCardTags(slot.key);
+          slot.key = 0;
+          getMutableZoneCards(DEFAULT_ZONE).push(slot);
+          getUnknownZoneSlots().add(slot);
+        }
+        allowed.forEach((cardId) => {
+          const equipZoneId = formatZoneId(entry.seatId, EQUIP_ZONE);
+          placeInZone(slotFor(cardId, equipZoneId), equipZoneId);
+        });
+      }
       publish();
     },
 
@@ -507,6 +562,26 @@ export function createGraphMingpaiEngine(storage: Storage | null = getSessionSto
 }
 
 const EMPTY: readonly number[] = Object.freeze([]);
+
+function snapshotSignature(value: Readonly<MingpaiEngineSnapshot>): string {
+  const out: string[] = [];
+  for (const zoneId of Object.keys(value.zones).sort()) {
+    out.push(zoneId, value.zones[zoneId].join(','));
+  }
+  for (const record of value.records) {
+    out.push(
+      String(record.cardId),
+      record.tags.join('|'),
+      record.persistentTags.join('|'),
+      record.zoneId,
+      String(record.location?.position ?? ''),
+      String(record.location?.zoneParam ?? ''),
+      String(record.originalOwnerSeatId ?? '')
+    );
+  }
+  out.push(value.drawPile.top.join(','), value.drawPile.bottom.join(','));
+  return out.join('\x00');
+}
 
 function uniquePositive(cardIds: readonly number[]): number[] {
   const seen = new Set<number>();

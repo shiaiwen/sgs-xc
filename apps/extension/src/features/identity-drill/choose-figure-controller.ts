@@ -84,7 +84,7 @@ export function installChooseFigureController(
   let lastDebugSignature = '';
   let lastDebugAt = 0;
   const debug = createDebugState(globalObject);
-  const timer = globalObject.setInterval(applyChooseFigures, 500);
+  const timer = globalObject.setInterval(applyChooseFigures, 1000);
   const unsubscribe = gameEvents?.subscribe((event) => {
     if (event.type === 'game-reconnected') {
       // 手里真有锁定才需要冻结。没有锁定可保的时候也冻结，会把之后每一局都锁死，

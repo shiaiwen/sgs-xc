@@ -6,6 +6,7 @@
 
 import { PEIXIU_SUIT_META, PEIXIU_SUITS } from './peixiu-map-model.ts';
 import type { PeixiuRewardInfo } from './peixiu-map-model.ts';
+import { detachLayaNode, isLayaDisplayNode, mountLayaChild } from '../../runtime/laya-display-node.ts';
 import {
   flattenRouteSegments,
   remainingSuitCounts,
@@ -22,7 +23,6 @@ export interface PeixiuLayaWindow {
     Sprite?: new () => UnknownRecord;
     Text?: new () => UnknownRecord;
     Label?: new () => UnknownRecord;
-    HTMLDivElement?: new () => UnknownRecord;
     Point?: new (x: number, y: number) => { x: number; y: number };
     Event?: { CLICK?: string; ROLL_OVER?: string; ROLL_OUT?: string };
     stage?: UnknownRecord;
@@ -254,14 +254,6 @@ function estimateTextWidth(text: string, size = 16): number {
   return width;
 }
 
-function escapeHtml(text: string): string {
-  return String(text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 /** 剩余花色张数画在棋盘一侧，打出后会变少。 */
 function renderRemainingSuits(host: PeixiuOverlayHost, size: { width: number; height: number }, counts: number[], globalObject: PeixiuLayaWindow): void {
   const root = ensureControlRoot(host, size, globalObject);
@@ -468,77 +460,93 @@ function renderSequence(
   const hostNode = globalObject.Laya?.stage;
   const board = asRecord(host.boardEffectRoot);
   const Sprite = globalObject.Laya?.Sprite;
-  const Html = globalObject.Laya?.HTMLDivElement;
-  if (!text || !hostNode?.addChild || !board || !Sprite || !Html) {
+  const Text = globalObject.Laya?.Text;
+  if (!text || !hostNode?.addChild || !board || !Sprite || !Text) {
     const existing = asRecord(host.__xcPeiXiuCardSequenceLabel);
     if (existing) existing.visible = false;
     return '';
   }
   let box = asRecord(host.__xcPeiXiuCardSequenceLabel);
-  if (!box || box.destroyed || !asRecord(box.__xcPeiXiuRichTextNode) || asRecord(box.__xcPeiXiuRichTextNode)?.destroyed) {
-    try { box?.destroy?.(true); } catch { /* ignore */ }
+  if (!box || box.destroyed || box.__xcPeiXiuRichTextNode) {
+    if (box) {
+      try {
+        detachLayaNode(box);
+        if (isLayaDisplayNode(box)) box.destroy?.(true);
+      } catch { /* ignore */ }
+    }
     box = new Sprite();
     box.name = 'xcPeiXiuCardSequenceLabel';
     box.mouseEnabled = false;
     box.mouseThrough = true;
     box.zOrder = 10000;
-    const rich = new Html();
-    rich.name = 'xcPeiXiuCardSequenceRichText';
-    rich.mouseEnabled = false;
-    rich.mouseThrough = true;
-    Object.assign(asRecord(rich.style) ?? {}, {
-      color: '#0A0A0A',
-      fontSize: 26,
-      fontFamily: FONT,
-      bold: true,
-      stroke: 2,
-      strokeColor: '#D9BE8A',
-      wordWrap: false
-    });
-    rich.pos?.(0, 3);
-    box.addChild?.(rich);
-    box.__xcPeiXiuRichTextNode = rich;
+    box.__xcPeiXiuSequenceSegments = [];
     host.__xcPeiXiuCardSequenceLabel = box;
   }
   if (box.parent !== hostNode) {
-    try { hostNode.addChild?.(box); } catch { return ''; }
+    try {
+      if (!mountLayaChild(hostNode, box)) return '';
+    } catch {
+      return '';
+    }
   }
   const rect = boardRectIn(board, hostNode, size, globalObject);
   const width = Math.max(240, Math.min(900, rect.width + 152));
   box.pos?.(rect.x + 4 * rect.scaleX, rect.y + rect.height + 60 * rect.scaleY + 12);
-  box.size?.(width, 42);
-  const rich = asRecord(box.__xcPeiXiuRichTextNode);
-  rich?.size?.(width, 36);
-  if (rich?.style) {
-    Object.assign(asRecord(rich.style)!, {
-      width,
-      color: '#0A0A0A',
-      fontSize: 26,
-      fontFamily: FONT,
-      bold: true,
-      stroke: 2,
-      strokeColor: '#D9BE8A',
-      wordWrap: false
-    });
+  const segments = sequenceLineSegments(solution);
+  const labels = (box.__xcPeiXiuSequenceSegments ||= []) as UnknownRecord[];
+  let cursor = 0;
+  segments.forEach((segment, index) => {
+    let label = labels[index];
+    if (!label || label.destroyed) {
+      label = new Text();
+      label.name = 'xcPeiXiuCardSequenceText';
+      label.mouseEnabled = false;
+      label.font = FONT;
+      label.bold = true;
+      label.stroke = 2;
+      label.strokeColor = '#D9BE8A';
+      label.wordWrap = false;
+      if (!mountLayaChild(box, label)) return;
+      labels[index] = label;
+    }
+    const segmentWidth = Math.max(1, estimateTextWidth(segment.text, 26));
+    label.text = segment.text;
+    label.color = segment.color;
+    label.fontSize = 26;
+    label.size?.(segmentWidth, 36);
+    label.pos?.(cursor, 3);
+    label.visible = true;
+    cursor += segmentWidth;
+  });
+  for (let index = segments.length; index < labels.length; index += 1) {
+    if (labels[index]) labels[index].visible = false;
   }
-  const html = sequenceRichParts(solution).map((part) => {
-    const raw = String(part.text || '');
-    const accent = String(part.accent || '');
-    const accentIndex = accent ? raw.indexOf(accent) : -1;
-    if (accentIndex < 0) return escapeHtml(raw);
-    return `${escapeHtml(raw.slice(0, accentIndex))}<font color='${part.accentColor || '#0A0A0A'}'>${escapeHtml(accent)}</font>${escapeHtml(raw.slice(accentIndex + accent.length))}`;
-  }).join('');
-  if (rich) {
-    rich.innerHTML = '';
-    rich.innerHTML = html;
-    rich.visible = true;
-    rich.layout?.();
-    rich.repaint?.();
-  }
+  box.size?.(Math.max(width, cursor), 42);
   box.repaint?.();
   hostNode.sortChildren?.();
   box.visible = true;
   return text;
+}
+
+function sequenceLineSegments(solution: PeixiuRouteSolution | undefined): Array<{ text: string; color: string }> {
+  const base = '#0A0A0A';
+  const segments: Array<{ text: string; color: string }> = [];
+  for (const part of sequenceRichParts(solution)) {
+    const raw = String(part.text || '');
+    const accent = String(part.accent || '');
+    const accentIndex = accent ? raw.indexOf(accent) : -1;
+    if (!raw) continue;
+    if (accentIndex < 0) {
+      segments.push({ text: raw, color: base });
+      continue;
+    }
+    const prefix = raw.slice(0, accentIndex);
+    const suffix = raw.slice(accentIndex + accent.length);
+    if (prefix) segments.push({ text: prefix, color: base });
+    segments.push({ text: accent, color: part.accentColor || base });
+    if (suffix) segments.push({ text: suffix, color: base });
+  }
+  return segments;
 }
 
 function hideSkillBubble(host: PeixiuOverlayHost, delay: number, globalObject: PeixiuLayaWindow): void {
@@ -714,8 +722,8 @@ export function destroyPeixiuOverlay(host: PeixiuOverlayHost | null | undefined,
     const record = asRecord(node);
     if (!record) continue;
     try {
-      record.removeSelf?.();
-      record.destroy?.(true);
+      detachLayaNode(record);
+      if (isLayaDisplayNode(record)) record.destroy?.(true);
     } catch { /* ignore */ }
   }
   host.__xcPeiXiuRouteLayer = null;
@@ -758,6 +766,9 @@ export function renderPeixiuRoute(options: {
     size.width,
     size.height
   ].join('|');
+  if (asRecord(host.__xcPeiXiuCardSequenceLabel)?.__xcPeiXiuRichTextNode) {
+    host.__xcPeiXiuRouteRenderSignature = '';
+  }
   if (!options.force && host.__xcPeiXiuRouteRenderSignature === signature) return false;
   host.__xcPeiXiuRouteRenderSignature = signature;
   const graphics = asRecord(layer.graphics);

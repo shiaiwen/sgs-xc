@@ -32,7 +32,7 @@ export function installClassicRoomFilterController(
 
   const timer = global.setInterval(() => {
     try { sync(); } catch (error) { console.warn('[room-filter] sync failed', error); }
-  }, intervalMs);
+  }, intervalMs * 2);
   const unsubscribe = config.subscribe(CONFIG_KEY, () => replay());
   sync();
 
