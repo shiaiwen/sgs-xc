@@ -62,6 +62,41 @@ function clickFirstChild(list: unknown, globalObject?: LayaRuntimeWindow): boole
   return item ? clickLayaNode(item, globalObject) : false;
 }
 
+/**
+ * 顺手/拆桥等牌在选中目标后会打开独立的 SelectCardWindow。
+ * 该窗口不是普通 cardUis，原客户端要求对区域卡调用 onTouchCard({ target })，
+ * 选满 SelectCardCountWhenResponse 后再 confirmClick。
+ */
+export function handleSelectCardWindow(locator: LayaObjectLocator): boolean {
+  const win = asRecord(locator.window('SelectCardWindow') ?? locator.findWindows('SelectCardWindow')[0]);
+  if (!win || win.destroyed || win.visible === false) return false;
+  const selected = Array.isArray(win.selectCardUis) ? win.selectCardUis : [];
+  const required = Number(asRecord(win.Skill)?.SelectCardCountWhenResponse ?? 1) || 1;
+  if (selected.length >= required) {
+    if (typeof win.confirmClick === 'function') {
+      try { win.confirmClick(); return true; } catch { return false; }
+    }
+    const ok = asRecord(win.btnOK) ?? asRecord(win.sureBtn) ?? asRecord(win.btnSure);
+    return ok ? clickLayaNode(ok) : false;
+  }
+  const cards = [
+    ...((win.equipCardUis as unknown[]) || []),
+    ...((win.handCardUis as unknown[]) || []),
+    ...((win.judgeCardUis as unknown[]) || []),
+    ...((win.regionCardUis as unknown[]) || [])
+  ].map(asRecord).filter((card): card is UnknownRecord => !!card
+    && (card.Activated === true || card.activated === true)
+    && !selected.includes(card));
+  const target = cards[0];
+  if (!target || typeof win.onTouchCard !== 'function') return false;
+  try {
+    win.onTouchCard({ target });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function closeWindow(win: UnknownRecord): boolean {
   for (const method of ['laterClose', 'CloseWin', 'Close', 'close', 'onClose']) {
     const fn = win[method];
@@ -86,8 +121,8 @@ function collectNamedOptions(root: unknown, prefix: string, bucket: unknown[]): 
 
 /** 局内五谷、选牌窗口点第一项再确定。 */
 export function handlePlayWindows(locator: LayaObjectLocator, globalObject: LayaRuntimeWindow): boolean {
-  const names = ['WuGuFengDengWindow', 'SelectCardWindow'];
-  let acted = false;
+  let acted = handleSelectCardWindow(locator);
+  const names = ['WuGuFengDengWindow'];
   for (const name of names) {
     const win = locator.window(name) ?? locator.findWindows(name)[0];
     if (!win || win.destroyed || win.visible === false) continue;

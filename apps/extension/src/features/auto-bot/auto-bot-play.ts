@@ -92,6 +92,28 @@ function isShaCard(ui: unknown): boolean {
   return /^(?:杀|火杀|雷杀|冰杀|普通杀)$/.test(cardNameOf(ui));
 }
 
+function isWineCard(ui: unknown): boolean {
+  return /^(?:酒|烈酒)$/.test(cardNameOf(ui));
+}
+
+function isWuxieCard(ui: unknown): boolean {
+  return cardNameOf(ui) === '无懈可击';
+}
+
+/** 山河图单人作战没有友军，AOE 没有误伤代价且不需要选择座位。 */
+function isAoeCard(ui: unknown): boolean {
+  return /^(?:南蛮入侵|万箭齐发)$/.test(cardNameOf(ui));
+}
+
+function isIronChainCard(ui: unknown): boolean {
+  return cardNameOf(ui) === '铁索连环';
+}
+
+/** 这两张牌在山河图自动流程中只针对有手牌的敌人，避免空目标触发无效交互。 */
+function needsEnemyHandCard(ui: unknown): boolean {
+  return /^(?:顺手牵羊|过河拆桥)$/.test(cardNameOf(ui));
+}
+
 /** 山河图主动清手牌时绝不使用防御/响应牌。 */
 function isReservedResponseCard(ui: unknown): boolean {
   return /^(?:闪|无懈可击)$/.test(cardNameOf(ui));
@@ -101,6 +123,18 @@ function isReservedResponseCard(ui: unknown): boolean {
 function isForcedResponseContext(context: UnknownRecord | null): boolean {
   const text = String(context?.message ?? context?.Message ?? context?.tip ?? context?.Tip ?? '');
   return /请使用|成为.*目标|响应|无懈|火攻.*展示/.test(text);
+}
+
+/** 无懈只允许在服务端明确要求响应时使用，绝不作为己方锦囊的主动出牌。 */
+function isWuxieResponseContext(context: UnknownRecord | null): boolean {
+  const text = String(context?.message ?? context?.Message ?? context?.tip ?? context?.Tip ?? '');
+  return isForcedResponseContext(context) && /无懈可击|无懈/.test(text);
+}
+
+/** 火攻后只允许弃置与展示牌同花色的一张手牌；这是独立的无目标响应步骤。 */
+function isFireAttackResponseContext(context: UnknownRecord | null): boolean {
+  const text = String(context?.message ?? context?.Message ?? context?.tip ?? context?.Tip ?? '');
+  return /火攻/.test(text) && /展示|弃置|花色|请使用/.test(text);
 }
 
 /** 南蛮须出杀、万箭须出闪；这是被动响应，不需要选攻击目标。 */
@@ -127,41 +161,51 @@ function isEquipmentCard(ui: unknown): boolean {
 
 /**
  * 山河图的 Activated 只表示“当前窗口可选”，并不表示一张锦囊必然可以安全
- * 地自动使用。火攻、借刀、铁索、延时锦囊等还会打开二次选牌/多目标窗口，
+ * 地自动使用。借刀等还会打开额外选牌/多目标窗口，
  * 一旦误入便会把后续拼点、无懈等交互当成主动出牌。这里只放行单目标且没有
  * 额外选择语义的牌；其余牌保留给官方 AI 或玩家处理。
  */
 function isSimpleOffensiveTrick(ui: unknown): boolean {
-  return /^(?:过河拆桥|顺手牵羊|决斗)$/.test(cardNameOf(ui));
+  // 火攻的第一步与决斗相同，都是“选敌人-确认”；之后服务端才会打开其展示花色
+  // 的独立响应窗口。铁索不能无目标确认，否则客户端会按重铸处理。
+  return /^(?:过河拆桥|顺手牵羊|决斗|火攻|铁索连环|乐不思蜀|兵粮寸断)$/.test(cardNameOf(ui));
 }
 
 /** 仅包含没有额外选牌语义、可由统一“选牌-选目标-确认”流程处理的牌。 */
 function isAutoSpendableCard(ui: unknown): boolean {
   if (isReservedResponseCard(ui)) return false;
-  // 桃和酒均是稀缺的生存/爆发资源，不能在没有“杀”的确定收益时裸用。
+  // 桃是稀缺生存资源；酒仅在后续有可杀敌方时由调用点放行。
   // 无中与装备不需要目标，主动阶段可安全地立即结算。
   return isShaCard(ui)
     || isSimpleOffensiveTrick(ui)
     || isEquipmentCard(ui)
+    || isWineCard(ui)
+    || isAoeCard(ui)
     || /^(?:无中生有)$/.test(cardNameOf(ui));
 }
 
-/** 先扩充资源/装备，再拆顺决斗，最后才打杀；保留桃、酒、闪和无懈。 */
+/** 先扩充资源/装备，再控制敌人；延时锦囊最后使用。 */
 function autoSpendPriority(ui: unknown): number {
   const name = cardNameOf(ui);
   if (name === '无中生有') return 0;
   if (isEquipmentCard(ui)) return 1;
-  if (name === '过河拆桥') return 2;
-  if (name === '顺手牵羊') return 3;
-  if (name === '决斗') return 4;
-  if (isShaCard(ui)) return 5;
+  if (isAoeCard(ui)) return 2;
+  if (name === '过河拆桥') return 3;
+  if (name === '顺手牵羊' || name === '铁索连环') return 4;
+  if (isWineCard(ui)) return 5;
+  if (name === '决斗') return 6;
+  if (isShaCard(ui)) return 7;
+  // 火攻放在伤害牌之后：避免过早暴露手牌花色，仍会在回合结束前对敌人使用。
+  if (name === '火攻') return 8;
+  if (name === '乐不思蜀') return 9;
+  if (name === '兵粮寸断') return 10;
   return 99;
 }
 
-/** 桃、酒、装备、无中不要求敌方座位；其余可消耗牌先取 Boss/逆时针下家。 */
+/** 桃、酒、装备、无中不要求敌方座位；其余可消耗牌先取敌方目标。 */
 function needsEnemyTarget(ui: unknown): boolean {
   const name = cardNameOf(ui);
-  return name !== '无中生有' && !isEquipmentCard(ui);
+  return name !== '无中生有' && !isEquipmentCard(ui) && !isWineCard(ui) && !isAoeCard(ui) && !isWuxieCard(ui);
 }
 
 /** 将选择上下文转成稳定指纹，不能把对象直接 String() 成 “[object Object]”。 */
@@ -272,14 +316,16 @@ function nextCounterclockwiseAliveSeat(self: UnknownRecord, seatUis: unknown[]):
 function bestConfirmedEnemyTarget(
   self: UnknownRecord,
   seatUis: unknown[],
-  activatedOnly = false
+  activatedOnly = false,
+  requireHandCard = false
 ): unknown | undefined {
   const selfIndex = seatUis.indexOf(self);
   const total = seatUis.length;
   return seatUis
     .filter((item) => isAliveSeat(item)
       && isConfirmedEnemySeat(self, item)
-      && (!activatedOnly || (isActivated(item) && !isSelected(item))))
+      && (!activatedOnly || (isActivated(item) && !isSelected(item)))
+      && (!requireHandCard || combatPressure(item).hand > 0))
     .sort((left, right) => {
       const leftState = combatPressure(left);
       const rightState = combatPressure(right);
@@ -328,10 +374,17 @@ function closestActivatedAttackTarget(self: UnknownRecord, seatUis: unknown[]): 
   const total = seatUis.length;
   const candidates = seatUis.filter((item) => isSafeLocalAttackTarget(self, item)
     && isActivated(item) && !isSelected(item));
-  if (selfIndex < 0 || total < 2) return candidates[0];
+  const lord = candidates.find((item) => isLordSeat(self, item));
+  const finishLord = isRebel(self) && !!lord && candidates
+    .filter((item) => figureOf(item) === 2)
+    .some((loyalist) => combatPressure(lord).hp < combatPressure(loyalist).hp);
+  if (selfIndex < 0 || total < 2) return finishLord ? lord : candidates[0];
   return candidates.sort((left, right) => {
     // 反贼先清附近忠臣，再处理内奸，最后才集火主公；同一身份按左右最近选人。
-    const priority = (item: unknown) => ({ 2: 0, 4: 1, 1: 2 } as Record<number, number>)[figureOf(item)] ?? 9;
+    const priority = (item: unknown) => {
+      if (finishLord && item === lord) return -1;
+      return ({ 2: 0, 4: 1, 1: 2 } as Record<number, number>)[figureOf(item)] ?? 9;
+    };
     const roleDifference = priority(left) - priority(right);
     if (roleDifference) return roleDifference;
     const leftIndex = seatUis.indexOf(left);
@@ -602,10 +655,14 @@ function executeLocal(
   // 山河图的自动攻击只处理已经能确认的存活敌人。先于任何按钮、技能或卡牌操作判断，
   // 避免把手动操作留在选牌状态，或在敌我信息尚未同步时误操作。
   const confirmedEnemy = enemyOnly ? bestConfirmedEnemyTarget(self, seatUis) : undefined;
+  const confirmedEnemyCount = enemyOnly
+    ? seatUis.filter((item) => isAliveSeat(item) && isConfirmedEnemySeat(self, item)).length
+    : 0;
   const counterclockwiseTarget = enemyOnly && !confirmedEnemy
     ? nextCounterclockwiseAliveSeat(self, seatUis)
     : undefined;
-  if (enemyOnly && !confirmedEnemy && !counterclockwiseTarget) return false;
+  // 没有存活敌人时仍可能正处于己方出牌阶段；必须继续到末尾点击 btnCancel
+  // （客户端界面上它实际表示“结束回合”），不能在这里提前返回。
   const skillId = Number(asRecord(context?.Skill)?.SkillId ?? asRecord(context?.Skill)?.ID ?? 0);
   if (skillId === SKIP_SELECT_SKILL_ID && Number(context?.SelectCountMin) === 0 && Number(context?.SelectCountMax) === 0) {
     return clickButtonByName(buttons, 'btnCancel', globalObject) || clickButtonByName(buttons, 'btnOK', globalObject);
@@ -621,23 +678,40 @@ function executeLocal(
   if (enemyOnly && skillPromptId(self, context) > 0 && clickButtonByName(buttons, 'btnOK', globalObject)) {
     return true;
   }
-  const selectableEnemy = enemyOnly
-    ? bestConfirmedEnemyTarget(self, seatUis, true)
-      ?? [counterclockwiseTarget].find((item) => item && isActivated(item) && !isSelected(item))
-    : undefined;
   if (selectedCards.length) {
-    if (enemyOnly && !selectedCards.every(isAutoSpendableCard)) return false;
+    const fireAttackResponse = isFireAttackResponseContext(context);
+    if (enemyOnly && !fireAttackResponse && !selectedCards.every(isAutoSpendableCard)) return false;
     // 与客户端原有自动逻辑保持相同的顺序：先尝试确认选牌；只有确认按钮
     // 尚未可用时才选择目标，并再次确认。不能以过期的 _enabled 状态强点，
     // 那会被按钮自身忽略而留下“已选杀、未出牌”的假状态。
     if (enemyOnly) {
+      // 火攻展示后的弃牌不再选座位，服务端已校验花色；直接确认已选中的有效手牌。
+      if (fireAttackResponse) return clickButtonByName(buttons, 'btnOK', globalObject);
       // QS 的 useCard 流程也是先填目标再提交。先点 btnOK 会让山河图把无目标的
       // 确认吞掉，留下“已选牌、未出牌”的状态。
-      if (needsEnemyTarget(selectedCards[0])) {
+      // 山河图敌方不足两人时，铁索连环按无目标的重铸路径确认；否则才对敌方使用。
+      const recastIronChain = isIronChainCard(selectedCards[0]) && confirmedEnemyCount < 2;
+      if (needsEnemyTarget(selectedCards[0]) && !recastIronChain) {
+        const requireHandCard = needsEnemyHandCard(selectedCards[0]);
+        // 选牌后的下一帧，目标和 btnOK 才会一起刷新。此前这里始终只找“未选中”
+        // 的目标；目标已经选好时会直接返回 false，导致顺手、拆桥、决斗等卡在
+        // “已选牌 + 已选目标 + 可确认”的状态。优先提交这个已完整的选择。
+        const hasSelectedTarget = seatUis.some((seat) => isAliveSeat(seat) && isSelected(seat));
+        if (hasSelectedTarget && clickButtonByName(buttons, 'btnOK', globalObject)) {
+          console.info('[小抄][自动挂机] 已确认选牌与目标', {
+            card: cardNameOf(selectedCards[0]),
+            cardId: cardIdOf(selectedCards[0])
+          });
+          return true;
+        }
+        const selectableEnemy = bestConfirmedEnemyTarget(self, seatUis, true, requireHandCard)
+          ?? [counterclockwiseTarget].find((item) => item
+            && isActivated(item)
+            && !isSelected(item)
+            && (!requireHandCard || combatPressure(item).hand > 0));
         if (!selectableEnemy) return false;
-        const selectedTarget = clickSeat(selectableEnemy);
-        const confirmed = clickButtonByName(buttons, 'btnOK', globalObject);
-        return selectedTarget || confirmed;
+        // 不在同一调用栈中同时点目标和确认：Laya 会在下一帧才将 btnOK 设为可用。
+        return clickSeat(selectableEnemy);
       }
       return clickButtonByName(buttons, 'btnOK', globalObject);
     }
@@ -664,14 +738,32 @@ function executeLocal(
     ? !!(confirmedEnemy ?? counterclockwiseTarget)
     : seatUis.some((item) => isAliveSeat(item) && !isLordSeat(self, item));
   const hasSafeLocalAttackTarget = seatUis.some((item) => isSafeLocalAttackTarget(self, item));
-  const safePlayableCards = (enemyOnly ? playableCards.filter(isAutoSpendableCard) : playableCards)
-    .filter((item) => !aoeResponse || aoeResponseCardAllowed(context, item))
+  const canWineSlash = enemyOnly && hasNonLordTarget && playableCards.some(isShaCard);
+  const safePlayableCards = (enemyOnly
+    ? playableCards.filter((item) => isAutoSpendableCard(item)
+      || (isWuxieCard(item) && isWuxieResponseContext(context))
+      // 火攻响应由客户端只激活同花色的合法牌，不能再按主动出牌白名单过滤。
+      || isFireAttackResponseContext(context))
+    : playableCards)
+    .filter((item) => !aoeResponse || aoeResponseCardAllowed(context, item)
+      || (isWuxieCard(item) && isWuxieResponseContext(context)))
     .filter((item) => !isReservedResponseCard(item) || isForcedResponseContext(context))
     .filter((item) => aoeResponseCardAllowed(context, item)
-      || !needsEnemyTarget(item) || (enemyOnly ? hasNonLordTarget : hasSafeLocalAttackTarget))
+      || !needsEnemyTarget(item)
+      || (enemyOnly && isIronChainCard(item) && confirmedEnemyCount < 2)
+      || (enemyOnly ? hasNonLordTarget : hasSafeLocalAttackTarget))
     // 反贼只要存在已确认的敌方目标，就允许使用单目标攻击牌；目标选择统一走
     // “忠臣 → 内奸 → 主公、同类取左右最近”的安全排序，绝不碰反贼队友。
-    .filter((item) => !rebel || !needsEnemyTarget(item) || hasSafeLocalAttackTarget);
+    .filter((item) => !rebel || !needsEnemyTarget(item) || hasSafeLocalAttackTarget)
+    // 山河图酒只为随后的杀服务，不能没有杀或没有敌人时空喝。
+    .filter((item) => !isWineCard(item) || !enemyOnly || canWineSlash)
+    // 山河图没有队友，南蛮/万箭可直接释放；没有敌方时仍不浪费。
+    .filter((item) => !isAoeCard(item) || !enemyOnly || hasNonLordTarget)
+    // 敌方空手时不浪费顺手/拆桥；本地没有可靠装备区明细，按用户可见手牌保守处理。
+    .filter((item) => !enemyOnly || !needsEnemyHandCard(item)
+      || seatUis.some((seat) => isAliveSeat(seat)
+        && isConfirmedEnemySeat(self, seat)
+        && combatPressure(seat).hand > 0));
   if (prioritizeTricks) {
     safePlayableCards.sort((left, right) => {
       const priority = (card: unknown): number => isTrickCard(card) ? 0 : isShaCard(card) ? 1 : 2;
@@ -686,11 +778,9 @@ function executeLocal(
     clickCard(playableCard);
     // 山河图的目标通常在选牌后才会 Activated；已确认敌人存在时先选牌，下一轮再确认目标。
     if (enemyOnly) return true;
-    const targetSeat = enemyOnly
-      ? selectableEnemy
-      : needsEnemyTarget(playableCard)
-        ? closestActivatedAttackTarget(self, seatUis)
-        : undefined;
+    const targetSeat = needsEnemyTarget(playableCard)
+      ? closestActivatedAttackTarget(self, seatUis)
+      : undefined;
     if (targetSeat) clickSeat(targetSeat);
     const name = cardNameOf(playableCard);
     const dying = seatUis.some((item) => {
@@ -700,9 +790,14 @@ function executeLocal(
     clickButtonByIndex(buttons, buttonOrderForCard(name, dying, false), globalObject);
     return true;
   }
-  // 山河图不应把“没有可安全攻击的牌”回退成点取消、技能或任意按钮；
-  // 这些控件可能属于弃牌/托管等完全不同的流程。
-  if (enemyOnly) return false;
+  // 山河图只有在客户端明确处于出牌阶段、且取消键真实可用时，才结束本回合。
+  // 响应、选牌、无懈等窗口即使没有可用伤害牌也绝不点取消。
+  if (enemyOnly) {
+    if (!playPhase || forcedResponse) return false;
+    const ended = clickButtonByName(buttons, 'btnCancel', globalObject);
+    if (ended) console.info('[小抄][自动挂机] 已点击结束回合', { button: 'btnCancel' });
+    return ended;
+  }
   const cancel = buttons.find((item) => {
     const name = String(asRecord(item)?.name || '');
     return /btnCancel|取消|不出/.test(name) && isEnabledFlag(item, '_enabled');

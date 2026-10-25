@@ -7,6 +7,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { runAutoBotDeal, type AutoBotPlayContext } from '../auto-bot/auto-bot-play.ts';
+import { handleSelectCardWindow } from '../auto-bot/auto-bot-windows.ts';
 import { AUTO_LOG_ENABLED_KEY } from '../extra-assist/extra-assist-settings.ts';
 import { SHANHETU_AUTO_BATTLE_KEY } from './shanhetu-settings.ts';
 
@@ -77,14 +78,34 @@ function buttonSnapshot(locator: LayaObjectLocator): Array<Record<string, unknow
   const scene = asRecord(locator.gameScene()) ?? asRecord(locator.scene());
   const self = asRecord(scene?.SelfSeatUi) ?? asRecord(scene?.selfSeatUi);
   const bar = buttonBarOf(self);
-  const buttons = (bar?.btns as unknown[]) || (bar?.btnList as unknown[]) || (bar?.buttons as unknown[]) || [];
-  return buttons.map((button) => {
+  const source = Array.isArray(bar?.btns) ? 'btns'
+    : Array.isArray(bar?.btnList) ? 'btnList'
+    : Array.isArray(bar?.buttons) ? 'buttons'
+    : 'none';
+  const buttons = (bar?.[source] as unknown[]) || [];
+  return buttons.map((button, index) => {
     const record = asRecord(button);
+    const data = asRecord(record?.data);
+    const parent = asRecord(record?.parent ?? record?._parent);
+    const label = asRecord(record?.label ?? record?._label ?? record?.textLabel);
     return {
+      source,
+      index,
       name: record?.name,
       enabled: record?._enabled ?? record?.enabled,
+      rawEnabled: record?._enabled,
+      publicEnabled: record?.enabled,
       visible: record?.visible,
-      hasOnClick: typeof record?.onClick === 'function'
+      mouseEnabled: record?.mouseEnabled,
+      gray: record?.gray,
+      label: record?.labelText ?? record?.text ?? label?.text ?? label?.label,
+      sendData: data?.sendData,
+      dataName: data?.name ?? data?.Name,
+      parentName: parent?.name,
+      parentClass: parent?._className_ ?? parent?.constructor?.name,
+      hasOnClick: typeof record?.onClick === 'function',
+      hasEvent: typeof record?.event === 'function',
+      keys: record ? Object.keys(record).filter((key) => /enabled|visible|label|text|data|click|mouse|gray/i.test(key)).slice(0, 20) : []
     };
   });
 }
@@ -134,6 +155,63 @@ function cardSnapshot(locator: LayaObjectLocator): Array<Record<string, unknown>
   });
 }
 
+/** 供 bug.txt 使用的浅层 Laya 结构；完整对象引用另行输出到 Console，避免循环序列化。 */
+function layaNodeSnapshot(value: unknown): Record<string, unknown> | null {
+  const node = asRecord(value);
+  if (!node) return null;
+  const children = Number(node.numChildren ?? (Array.isArray(node._childs) ? node._childs.length : 0)) || 0;
+  return {
+    name: node.name,
+    className: node._className_ ?? node.className ?? node.constructor?.name,
+    visible: node.visible,
+    destroyed: node.destroyed,
+    activated: node.Activated ?? node.activated,
+    selected: node.Selected ?? node.selected,
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: node.height,
+    children,
+    keys: Object.keys(node).slice(0, 40)
+  };
+}
+
+function layaRuntimeSnapshot(locator: LayaObjectLocator): Record<string, unknown> {
+  const scene = asRecord(locator.gameScene()) ?? asRecord(locator.scene());
+  const self = asRecord(scene?.SelfSeatUi) ?? asRecord(scene?.selfSeatUi);
+  const container = asRecord(self?.cardContainer);
+  const names = ['SelectCardWindow', 'WuGuFengDengWindow', 'PromptLayer', 'PinDianWindow'];
+  return {
+    scene: layaNodeSnapshot(scene),
+    self: layaNodeSnapshot(self),
+    buttonBar: layaNodeSnapshot(buttonBarOf(self)),
+    cardContainer: layaNodeSnapshot(container),
+    cardLists: {
+      hand: Array.isArray(container?.handCardUis) ? container.handCardUis.length : 0,
+      normal: Array.isArray(container?.cardUis) ? container.cardUis.length : 0,
+      activated: Array.isArray(container?.activatedCardtems) ? container.activatedCardtems.length : 0,
+      selected: Array.isArray(container?.selectCardUis) ? container.selectCardUis.length : 0
+    },
+    windows: Object.fromEntries(names.map((name) => [
+      name,
+      layaNodeSnapshot(name === 'PromptLayer' ? locator.layer(name) : locator.window(name) ?? locator.findWindows(name)[0])
+    ]))
+  };
+}
+
+function layaRuntimeRefs(locator: LayaObjectLocator): Record<string, unknown> {
+  const scene = asRecord(locator.gameScene()) ?? asRecord(locator.scene());
+  const self = asRecord(scene?.SelfSeatUi) ?? asRecord(scene?.selfSeatUi);
+  return {
+    scene,
+    self,
+    buttonBar: buttonBarOf(self),
+    cardContainer: self?.cardContainer,
+    selectCardWindow: locator.window('SelectCardWindow') ?? locator.findWindows('SelectCardWindow')[0],
+    promptLayer: locator.layer('PromptLayer')
+  };
+}
+
 export function installShanhetuAutoBattleController(
   configStore: XiaochaoConfigStore,
   options: { globalObject?: LayaRuntimeWindow; locator?: LayaObjectLocator } = {}
@@ -163,12 +241,15 @@ export function installShanhetuAutoBattleController(
       seats: seatSnapshot(locator),
       cards: cardSnapshot(locator),
       buttons: buttonSnapshot(locator),
-      prompt: promptSnapshot(locator)
+      prompt: promptSnapshot(locator),
+      laya: layaRuntimeSnapshot(locator)
     };
     const fingerprint = JSON.stringify(detail);
     if (fingerprint === lastTrace) return;
     lastTrace = fingerprint;
     trace('出牌决策', detail);
+    // Console 保留真实对象引用，可直接展开查字段、回调与子节点；不写入 JSON。
+    console.info('[小抄][山河图自动战斗] Laya对象引用（可展开）', layaRuntimeRefs(locator));
   };
   const stopConfigWatch = configStore.subscribe(SHANHETU_AUTO_BATTLE_KEY, () => {
     // 开关切换后不沿用上一场/上一轮的回退状态。
@@ -184,6 +265,11 @@ export function installShanhetuAutoBattleController(
   });
   const timer = globalObject.setInterval?.(() => {
     if (configStore.get(SHANHETU_AUTO_BATTLE_KEY) !== true || !isBattleScene(locator)) return;
+    // 顺手/拆桥目标确认后的“选择对方区域牌”是独立窗口，必须优先处理。
+    if (handleSelectCardWindow(locator)) {
+      traceDecision();
+      return;
+    }
     play = runAutoBotDeal(locator, globalObject, play, {
       enemyOnly: true,
       prioritizeTricks: false
