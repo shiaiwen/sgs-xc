@@ -120,7 +120,7 @@ export function createConfigStore(
     set,
     reset,
     subscribe,
-    snapshot: () => structuredClone(values),
+    snapshot: () => cloneConfigValues(values),
     resetAll,
     syncAccount
   };
@@ -128,4 +128,12 @@ export function createConfigStore(
 
 function isSameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** 配置均为 JSON 可序列化值；避免依赖 structuredClone，以兼容旧版 Chromium。 */
+function cloneConfigValues(source: XiaochaoConfig): XiaochaoConfig {
+  if (typeof globalThis.structuredClone === 'function') {
+    return globalThis.structuredClone(source);
+  }
+  return JSON.parse(JSON.stringify(source)) as XiaochaoConfig;
 }

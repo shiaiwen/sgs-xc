@@ -351,14 +351,25 @@ function getLocalScriptInjection(data) {
     localScriptInjectCache = {
         data,
         code: `
-            if (!window.__XIAOCHAO_MICROCLIENT_INJECTED__) {
+            (function () {
+                function remountXiaochaoPanel() {
+                    var bridge = window.__XIAOCHAO_ENGINEERING__;
+                    if (bridge && typeof bridge.mountPanelShell === 'function') {
+                        try { bridge.mountPanelShell(); } catch (error) {
+                            console.error('[xiaochao] remount panel failed:', error);
+                        }
+                    }
+                }
+                if (window.__XIAOCHAO_MICROCLIENT_INJECTED__) {
+                    if (!document.getElementById('xiaochao-app')) remountXiaochaoPanel();
+                    return;
+                }
                 window.__XIAOCHAO_MICROCLIENT_INJECTED__ = true;
-                let script = document.createElement('script');
+                var script = document.createElement('script');
                 script.type = 'text/javascript';
-                let src = document.createTextNode(\`${escapedData}\`);
-                script.appendChild(src);
+                script.appendChild(document.createTextNode(\`${escapedData}\`));
                 (document.body || document.documentElement).appendChild(script);
-            }
+            })();
         `
     };
     return localScriptInjectCache.code;

@@ -16,7 +16,7 @@ export function getMissingGameRuntimeDependencies({
   const missing = [];
   // JSZipUtils/CtrUtil 只影响部分资源解析，不能阻塞面板和基础功能启动。
   if (globalObject.SystemContext === undefined) missing.push('SystemContext');
-  if (!documentObject?.getElementById?.('bgDiv')) missing.push('bgDiv');
+  // 不在登录页/加载页阻塞 Vue 面板；牌局内功能自行等场景就绪。
   return missing;
 }
 

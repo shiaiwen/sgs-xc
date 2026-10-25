@@ -98,15 +98,17 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     configStore.syncAccount();
     const missing = probeRuntimeReady();
     panelStartupStatus.missing = missing;
-    if (missing.length > 0) {
-      core?.teardownPanel();
-      panelStartupStatus.state = 'waiting';
+    if (!document.body) {
+      if (!core) panelStartupStatus.state = 'waiting';
       return;
     }
     if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
-    core.syncRuntimeSession();
-    if (!document.body) return;
     core.mountPanelShell();
+    if (missing.length > 0) {
+      panelStartupStatus.state = 'degraded';
+      return;
+    }
+    core.syncRuntimeSession();
     panelStartupStatus.state = 'ready';
   };
 
@@ -118,12 +120,14 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     mountPanelShell: () => core?.mountPanelShell()
   });
 
+  const sessionTimer = window.setInterval(syncAccountSession, 1000);
+  lifecycle.register(() => window.clearInterval(sessionTimer));
+  syncAccountSession();
+
   void waitForGameRuntime({
     probe: probeRuntimeReady,
     initialize: () => {
       syncAccountSession();
-      const sessionTimer = window.setInterval(syncAccountSession, 1000);
-      lifecycle.register(() => window.clearInterval(sessionTimer));
       return true;
     },
     registerCleanup: (cleanup) => lifecycle.register(cleanup),

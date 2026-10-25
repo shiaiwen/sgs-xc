@@ -823,27 +823,32 @@ ipcMain.on('xiaochao-credentials-set-sync', (event, payload) => {
 
 function readLocalScriptCached() {
     try {
-        if (!fs.existsSync(scriptPath)) {
+        let sourcePath = scriptPath;
+        if (!fs.existsSync(sourcePath)) {
+            const bundledPath = bundledScriptPath();
+            if (fs.existsSync(bundledPath)) sourcePath = bundledPath;
+        }
+        if (!fs.existsSync(sourcePath)) {
             localScriptCache.sourcePath = '';
             localScriptCache.mtimeMs = -1;
             localScriptCache.size = -1;
             localScriptCache.data = '';
             return { success: false, error: 'local script not found' };
         }
-        const stat = fs.statSync(scriptPath);
+        const stat = fs.statSync(sourcePath);
         if (
             localScriptCache.data &&
-            localScriptCache.sourcePath === scriptPath &&
+            localScriptCache.sourcePath === sourcePath &&
             localScriptCache.mtimeMs === stat.mtimeMs &&
             localScriptCache.size === stat.size
         ) {
-            return { success: true, data: localScriptCache.data };
+            return { success: true, data: localScriptCache.data, sourcePath };
         }
-        localScriptCache.sourcePath = scriptPath;
+        localScriptCache.sourcePath = sourcePath;
         localScriptCache.mtimeMs = stat.mtimeMs;
         localScriptCache.size = stat.size;
-        localScriptCache.data = fs.readFileSync(scriptPath, 'utf8');
-        return { success: true, data: localScriptCache.data };
+        localScriptCache.data = fs.readFileSync(sourcePath, 'utf8');
+        return { success: true, data: localScriptCache.data, sourcePath };
     } catch (error) {
         return { success: false, error: error.message };
     }

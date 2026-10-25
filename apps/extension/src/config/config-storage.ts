@@ -34,7 +34,11 @@ export function currentConfigAccount(): string {
   }
 }
 
-/** 按账号分开的配置键。旧的 XC::config 只在迁移时读一次。 */
+/**
+ * 按游戏登录账号分开的配置键。面板位置、功能开关、皮肤等都在各自账号下。
+ * 版本更新提示的「稍后 / 已打开更新页」不在此文件，见 update-device-state 整机一份。
+ * 旧的 XC::config 只在迁移时读一次。
+ */
 export function accountConfigStorageKey(accountId: string): string {
   const safe = accountId.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
   return `${CONFIG_STORAGE_KEY}::${safe}`;
