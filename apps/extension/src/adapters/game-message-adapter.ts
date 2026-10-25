@@ -77,8 +77,9 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
   }
   if (GAME_OVER_MESSAGE_NAMES.has(className)) return [{ type: 'game-ended' }];
   if (className === 'GsCUpdateHpNtf') {
-    const event = translateSpellDamage(payload);
-    return event ? [event] : [];
+    const hpEvent = translateHpUpdate(payload);
+    const damageEvent = translateSpellDamage(payload);
+    return [hpEvent, damageEvent].filter((item): item is GameEvent => item !== null);
   }
   const friendTags = translateFriendHandTags(payload);
   if (friendTags) return [friendTags];
@@ -108,6 +109,61 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
     return [event, phaseEvent].filter((item): item is GameEvent => item !== null);
   }
   return event ? [event] : [];
+}
+
+export interface HpUpdateParseResult {
+  seatId: number;
+  hp: number | null;
+  maxHp: number | null;
+  maxHpOnly: boolean;
+}
+
+/** 从 GsCUpdateHpNtf 读出座位与体力，兼容嵌套 Protocol 与多种字段名。 */
+export function parseGsCUpdateHpNotification(payload: UnknownRecord): HpUpdateParseResult | null {
+  const candidates: UnknownRecord[] = [payload];
+  for (const key of ['Protocol', 'protocol', 'data', 'Data']) {
+    const nested = asRecord(payload[key]);
+    if (nested && !candidates.includes(nested)) candidates.push(nested);
+  }
+  for (const body of candidates) {
+    const maxHpOnly = body.isMaxHp === true || body.IsMaxHp === true;
+    const seatId = readSeatId(body, [
+      'SeatID', 'SeatId', 'seatID', 'seatId', 'DestSeatID', 'DestSeatId', 'destSeatID', 'destSeatId'
+    ]);
+    if (seatId === null) continue;
+    const maxHp = readNonNegativeInteger(body, ['MaxHp', 'MaxHP', 'maxHp', 'maxHP', 'MaxHP']);
+    if (maxHpOnly) {
+      return { seatId, hp: null, maxHp, maxHpOnly: true };
+    }
+    const hp = readNonNegativeInteger(body, [
+      'HP', 'Hp', 'hp', 'CurHp', 'curHp', 'CurrentHp', 'currentHp', 'DestHp', 'destHp'
+    ]);
+    if (hp !== null) return { seatId, hp, maxHp, maxHpOnly: false };
+  }
+  return null;
+}
+
+function translateHpUpdate(payload: UnknownRecord): GameEvent | null {
+  const parsed = parseGsCUpdateHpNotification(payload);
+  if (!parsed) return null;
+  if (parsed.maxHpOnly) {
+    if (parsed.maxHp === null) return null;
+    return {
+      type: 'hp-updated',
+      seatId: parsed.seatId,
+      hp: null,
+      maxHp: parsed.maxHp,
+      maxHpOnly: true
+    };
+  }
+  if (parsed.hp === null) return null;
+  return {
+    type: 'hp-updated',
+    seatId: parsed.seatId,
+    hp: parsed.hp,
+    maxHp: parsed.maxHp,
+    maxHpOnly: false
+  };
 }
 
 function translateSpellDamage(payload: UnknownRecord): GameEvent | null {

@@ -1,6 +1,6 @@
 /**
- * 关闭按钮已出现后：停掉旧的 checkButtonMode 循环，拦截自动 TipsHide / TIPS_OUT；
- * 手动点关闭时短暂标记 userClosing，不拦 TipsHide。
+ * 武将技能详情停驻：关闭钮出现后进入 static 停驻，与客户端一致——
+ * 移开鼠标不关，点 X 或悬停另一武将才关；系统确认窗打开时强制收起。
  */
 
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator.ts';
@@ -13,6 +13,7 @@ const TIP_CLASS = 'XWi';
 const TIPS_OUT_EVENT = 'TIPS_OUT_EVENT';
 const TIP_CLICK_BOUND = '__xcGeneralSkillTipClickBound';
 const CLOSE_BTN_BOUND = '__xcGeneralSkillTipCloseBtnBound';
+const BLOCKING_WINDOW_PATTERN = /退出游戏|LeaveTable|LeaveRoom|MessageBox|ConfirmBox|提示/i;
 
 let nativeCheckButtonMode: NativeFn | null = null;
 const wrappedCloseBtnHandlers = new WeakSet<NativeFn>();
@@ -24,21 +25,28 @@ function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
 }
 
-export function generalTipCloseButtonVisible(tip: unknown): tip is UnknownRecord {
-  const node = asRecord(tip);
-  if (!node || node.name !== TIP_NAME || node.destroyed) return false;
-  const closeBtn = asRecord(node.closeBtn);
+function tipCloseButtonVisible(tip: UnknownRecord): boolean {
+  if (tip.name !== TIP_NAME || tip.destroyed) return false;
+  const closeBtn = asRecord(tip.closeBtn);
   if (!closeBtn || closeBtn.destroyed) return false;
   if (closeBtn.visible === false || closeBtn._visible === false) return false;
   return true;
 }
 
-function collectAwaitingManualClose(manager: UnknownRecord | null): UnknownRecord[] {
+function isVisibleGeneralTip(tip: UnknownRecord): boolean {
+  if (tip.name !== TIP_NAME || tip.destroyed) return false;
+  if (tip.visible === false || tip._visible === false) return false;
+  const alpha = Number(tip.alpha);
+  if (Number.isFinite(alpha) && alpha <= 0.01) return false;
+  return true;
+}
+
+function collectVisibleGeneralTips(manager: UnknownRecord | null): UnknownRecord[] {
   if (!manager) return [];
   const found: UnknownRecord[] = [];
   const visit = (raw: unknown) => {
     const tip = asRecord(raw);
-    if (!tip || !generalTipCloseButtonVisible(tip)) return;
+    if (!tip || !isVisibleGeneralTip(tip)) return;
     if (!found.includes(tip)) found.push(tip);
   };
   visit(manager.staticTip2);
@@ -47,11 +55,30 @@ function collectAwaitingManualClose(manager: UnknownRecord | null): UnknownRecor
   return found;
 }
 
-function shouldBlockAutoHide(
-  manager: UnknownRecord | null,
-  userClosing: ReadonlySet<object>
-): boolean {
-  return collectAwaitingManualClose(manager).some((tip) => !userClosing.has(tip));
+/** 停驻未关时又悬了新武将：新详情先展开、关闭钮尚未出现。 */
+function hasReplacingHoverTip(manager: UnknownRecord | null): boolean {
+  if (!manager) return false;
+  const staticTip = asRecord(manager.staticTip2);
+  if (!staticTip || !tipCloseButtonVisible(staticTip) || !isVisibleGeneralTip(staticTip)) return false;
+  for (const tip of collectVisibleGeneralTips(manager)) {
+    if (tip === staticTip) continue;
+    if (!tipCloseButtonVisible(tip)) return true;
+  }
+  return false;
+}
+
+function collectStayTips(manager: UnknownRecord | null): UnknownRecord[] {
+  if (!manager) return [];
+  const found: UnknownRecord[] = [];
+  const visit = (raw: unknown) => {
+    const tip = asRecord(raw);
+    if (!tip || !tipCloseButtonVisible(tip)) return;
+    if (!found.includes(tip)) found.push(tip);
+  };
+  visit(manager.staticTip2);
+  visit(manager.currentTip);
+  if (Array.isArray(manager.viewArr)) manager.viewArr.forEach(visit);
+  return found;
 }
 
 function readManager(globalObject: LayaRuntimeWindow): UnknownRecord | null {
@@ -96,6 +123,53 @@ function readPrototype(
     proto = asRecord(Object.getPrototypeOf(proto));
   }
   return null;
+}
+
+function windowIdentity(win: UnknownRecord): string {
+  const ctor = asRecord(win.constructor);
+  return [String(win.name ?? ''), String(win.sceneName ?? ''), String(ctor?.name ?? '')].join('|');
+}
+
+function isVisibleWindow(win: UnknownRecord): boolean {
+  if (win.destroyed) return false;
+  if (win.visible === false || win._visible === false) return false;
+  const alpha = Number(win.alpha);
+  if (Number.isFinite(alpha) && alpha <= 0.01) return false;
+  return true;
+}
+
+function isBlockingGameWindowOpen(globalObject: LayaRuntimeWindow): boolean {
+  const context = asRecord(globalObject.GameContext);
+  const windowManager = asRecord(context?.WindowManager)
+    ?? createLayaObjectLocator(globalObject).manager('WindowManager');
+  const dict = asRecord(windowManager?.WindowInstanceDict);
+  if (!dict) return false;
+  const stack: UnknownRecord[] = [dict];
+  const seen = new Set<object>();
+  while (stack.length > 0 && seen.size < 48) {
+    const record = stack.pop()!;
+    if (seen.has(record)) continue;
+    seen.add(record);
+    for (const value of Object.values(record)) {
+      const win = asRecord(value);
+      if (!win) continue;
+      if (isVisibleWindow(win) && BLOCKING_WINDOW_PATTERN.test(windowIdentity(win))) return true;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) stack.push(win);
+    }
+  }
+  return false;
+}
+
+function ensureTipAboveExtension(tip: UnknownRecord): void {
+  if (Number(tip.zOrder) < GAME_TIP_LAYER_Z) tip.zOrder = GAME_TIP_LAYER_Z;
+  const parent = asRecord(tip.parent);
+  if (typeof parent?.sortChildren === 'function') {
+    try {
+      (parent.sortChildren as NativeFn).call(parent);
+    } catch {
+      // 忽略。
+    }
+  }
 }
 
 function stopCheckButtonLoop(globalObject: LayaRuntimeWindow, manager: UnknownRecord): void {
@@ -161,55 +235,56 @@ function bindTipCloseClick(tip: UnknownRecord, userClosing: WeakSet<object>): vo
   bindCloseBtnHandlers(tip, userClosing);
 }
 
-function ensureTipAboveExtension(tip: UnknownRecord): void {
-  if (Number(tip.zOrder) < GAME_TIP_LAYER_Z) tip.zOrder = GAME_TIP_LAYER_Z;
-  const parent = asRecord(tip.parent);
-  if (typeof parent?.sortChildren === 'function') {
-    try {
-      (parent.sortChildren as NativeFn).call(parent);
-    } catch {
-      // 忽略。
-    }
+function forceDismissStayTips(manager: UnknownRecord | null): void {
+  if (!manager || typeof manager.TipsHide !== 'function') return;
+  try {
+    (manager.TipsHide as NativeFn).call(manager);
+  } catch {
+    // 忽略。
   }
 }
 
-function scanOpenTips(globalObject: LayaRuntimeWindow, userClosing: WeakSet<object>): void {
-  const manager = readManager(globalObject);
-  if (!manager) return;
-  for (const tip of collectAwaitingManualClose(manager)) {
-    ensureTipAboveExtension(tip);
-    bindTipCloseClick(tip, userClosing);
-    stopCheckButtonLoop(globalObject, manager);
-  }
-}
-
-export function installGeneralSkillTipAutoCloseGuard(
+export function installGeneralSkillTipStayCoordinator(
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): () => void {
   const userClosing = new WeakSet<object>();
   const patcher = createMethodPatcher();
-  let managerProtoReady = false;
-  let tipProtoReady = false;
   let dispatcherReady = false;
+  let tipProtoReady = false;
+  let managerProtoReady = false;
+
+  function shouldKeepStayOpen(manager: UnknownRecord | null): boolean {
+    if (isBlockingGameWindowOpen(globalObject)) return false;
+    if (hasReplacingHoverTip(manager)) return false;
+    const stays = collectStayTips(manager);
+    if (stays.length !== 1) return false;
+    return !userClosing.has(stays[0]!);
+  }
+
+  function installDispatcherGuard(): void {
+    if (dispatcherReady) return;
+    const ged = createLayaObjectLocator(globalObject).dispatcher();
+    const proto = ged ? Object.getPrototypeOf(ged) as UnknownRecord : null;
+    if (!proto || typeof proto.event !== 'function') return;
+    patcher.wrap(proto, 'event', (original) => function (this: unknown, ...args: unknown[]) {
+      if (args[0] === TIPS_OUT_EVENT && shouldKeepStayOpen(readManager(globalObject))) {
+        return true;
+      }
+      return original.apply(this, args);
+    });
+    dispatcherReady = true;
+  }
 
   function installManagerProto(manager: UnknownRecord): void {
     if (managerProtoReady) return;
     const proto = readPrototype(globalObject, MANAGER_CLASS, 'TipsHide', manager);
     if (!proto) return;
-    const block = (self: UnknownRecord) => shouldBlockAutoHide(self, userClosing);
+    const block = (self: UnknownRecord) => shouldKeepStayOpen(self);
 
     patcher.wrap(proto, 'TipsHide', (original) => function (this: unknown, ...args: unknown[]) {
       const self = asRecord(this);
       if (self && block(self)) return undefined;
       return original.apply(this, args);
-    });
-    patcher.wrap(proto, 'checkButtonMode', (original) => {
-      nativeCheckButtonMode = original as NativeFn;
-      return function (this: unknown, ...args: unknown[]) {
-        const self = asRecord(this);
-        if (self && block(self)) return undefined;
-        return original.apply(this, args);
-      };
     });
     patcher.wrap(proto, 'HideTargetTips', (original) => function (this: unknown, ...args: unknown[]) {
       const self = asRecord(this);
@@ -223,25 +298,23 @@ export function installGeneralSkillTipAutoCloseGuard(
     });
     patcher.wrap(proto, 'onCheckStaticTip2', (original) => function (this: unknown, ...args: unknown[]) {
       const self = asRecord(this);
-      if (args[0] === false && self) {
-        const tips = collectAwaitingManualClose(self);
-        if (tips.length) {
-          tips.forEach((tip) => userClosing.add(tip));
-          try {
-            return original.apply(this, args);
-          } finally {
-            tips.forEach((tip) => userClosing.delete(tip));
-          }
-        }
-      }
+      if (args[0] === false && self && block(self)) return undefined;
       return original.apply(this, args);
+    });
+    patcher.wrap(proto, 'checkButtonMode', (original) => {
+      nativeCheckButtonMode = original as NativeFn;
+      return function (this: unknown, ...args: unknown[]) {
+        const self = asRecord(this);
+        if (self && block(self)) return undefined;
+        return original.apply(this, args);
+      };
     });
     managerProtoReady = true;
   }
 
   function installTipProto(manager: UnknownRecord): void {
     if (tipProtoReady) return;
-    const proto = readPrototype(globalObject, TIP_CLASS, 'onTimeComplete', manager);
+    const proto = readPrototype(globalObject, TIP_CLASS, 'onTimeComplete', null);
     if (!proto || typeof proto.onTimeComplete !== 'function') return;
     patcher.wrap(proto, 'clickSprite', (original) => function (this: unknown, ...args: unknown[]) {
       const tip = asRecord(this);
@@ -252,7 +325,7 @@ export function installGeneralSkillTipAutoCloseGuard(
       const result = original.apply(this, args);
       const tip = asRecord(this);
       const mgr = readManager(globalObject);
-      if (!tip || !mgr) return result;
+      if (!tip || !mgr || !tipCloseButtonVisible(tip)) return result;
       ensureTipAboveExtension(tip);
       bindTipCloseClick(tip, userClosing);
       stopCheckButtonLoop(globalObject, mgr);
@@ -269,38 +342,52 @@ export function installGeneralSkillTipAutoCloseGuard(
     tipProtoReady = true;
   }
 
-  function installDispatcherGuard(): void {
-    if (dispatcherReady) return;
-    const ged = createLayaObjectLocator(globalObject).dispatcher();
-    if (!ged || typeof ged.event !== 'function') return;
-    const proto = Object.getPrototypeOf(ged) as UnknownRecord;
-    patcher.wrap(proto, 'event', (original) => function (this: unknown, ...args: unknown[]) {
-      if (args[0] === TIPS_OUT_EVENT && shouldBlockAutoHide(readManager(globalObject), userClosing)) {
-        return true;
-      }
-      return original.apply(this, args);
-    });
-    dispatcherReady = true;
+  function scanStayTips(manager: UnknownRecord): void {
+    for (const tip of collectStayTips(manager)) {
+      ensureTipAboveExtension(tip);
+      bindTipCloseClick(tip, userClosing);
+      stopCheckButtonLoop(globalObject, manager);
+    }
   }
 
   function tick(): void {
     installDispatcherGuard();
     const manager = readManager(globalObject);
     if (!manager) return;
+    if (isBlockingGameWindowOpen(globalObject)) {
+      forceDismissStayTips(manager);
+      return;
+    }
+    if (collectStayTips(manager).length > 1) {
+      try {
+        if (typeof manager.onCheckStaticTip2 === 'function') {
+          (manager.onCheckStaticTip2 as NativeFn).call(manager, false);
+        }
+      } catch {
+        // 忽略。
+      }
+      return;
+    }
     installManagerProto(manager);
-    installTipProto(manager);
-    scanOpenTips(globalObject, userClosing);
+    installTipProto();
+    scanStayTips(manager);
   }
 
-  const timer = globalObject.setInterval(tick, 100);
+  const timer = globalObject.setInterval(tick, 50);
   tick();
 
   return () => {
     globalObject.clearInterval(timer);
     patcher.restoreAll();
-    managerProtoReady = false;
-    tipProtoReady = false;
     dispatcherReady = false;
+    tipProtoReady = false;
+    managerProtoReady = false;
     nativeCheckButtonMode = null;
   };
 }
+
+export const generalSkillTipStayCoordinatorTesting = {
+  hasReplacingHoverTip,
+  collectVisibleGeneralTips,
+  isVisibleGeneralTip,
+};

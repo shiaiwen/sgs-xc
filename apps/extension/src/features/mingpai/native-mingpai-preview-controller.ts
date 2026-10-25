@@ -55,7 +55,11 @@ import {
   registerNativeHudPostGameTeardown
 } from '../../runtime/native-hud-post-game-guard.ts';
 import { mingpaiPerf, now, recordNativeSync } from './mingpai-perf.ts';
-import { clampExtensionZOrder, EXTENSION_Z_BELOW_GAME_TIP } from '../../runtime/game-tip-layer.ts';
+import {
+  clampExtensionZOrder,
+  EXTENSION_Z_BELOW_GAME_TIP,
+  isGeneralSkillTipManualCloseVisible
+} from '../../runtime/game-tip-layer.ts';
 
 type UnknownRecord = Record<string, unknown>;
 interface Rect { x: number; y: number; width: number; height: number }
@@ -297,6 +301,7 @@ export function installNativeMingpaiPreviewController(
     const Event = readLayaEvent();
     const seatId = entry.seatId;
     call(tile, 'on', Event?.ROLL_OVER ?? 'mouseover', entry, () => {
+      if (isGeneralSkillTipManualCloseVisible(window)) return;
       if (pinnedSeatId !== null && pinnedSeatId !== seatId) return;
       clearHideTimer();
       showPopup(entry);
@@ -718,6 +723,13 @@ export function installNativeMingpaiPreviewController(
    */
   function syncNow(): void {
     if (stopped) return;
+    if (isGeneralSkillTipManualCloseVisible(window)) {
+      clearHideTimer();
+      if (popup) destroyPopup();
+      if (root) root.mouseEnabled = false;
+      return;
+    }
+    if (root) root.mouseEnabled = true;
     if (!configStore.get('display.seatUiEnabled')) {
       destroyAll();
       return;

@@ -22,6 +22,14 @@ export type GameEvent =
   | { type: 'heart-alive' }
   | { type: 'spell-damage-resolved'; seatId: number; spellId: number; damage: number }
   | {
+    /** GsCUpdateHpNtf：当前体力或仅体力上限变化。 */
+    type: 'hp-updated';
+    seatId: number;
+    hp: number | null;
+    maxHp: number | null;
+    maxHpOnly: boolean;
+  }
+  | {
     type: 'turn-started';
     seatId: number;
     /** false when MsgGameTurnNtf omits SeatID and the adapter uses a placeholder seatId. */
@@ -209,6 +217,29 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     const damage = Number(event.damage);
     if (seatId === null || spellId === null || !Number.isFinite(damage)) return null;
     return Object.freeze({ type: event.type, seatId, spellId, damage });
+  }
+  if (event.type === 'hp-updated') {
+    const seatId = normalizeSeatId(event.seatId);
+    if (seatId === null) return null;
+    const maxHpOnly = event.maxHpOnly === true;
+    const maxHp = event.maxHp === null || event.maxHp === undefined
+      ? null
+      : normalizeNonNegativeInteger(event.maxHp);
+    if (maxHpOnly) {
+      if (maxHp === null) return null;
+      return Object.freeze({ type: event.type, seatId, hp: null, maxHp, maxHpOnly: true });
+    }
+    const hp = event.hp === null || event.hp === undefined
+      ? null
+      : normalizeNonNegativeInteger(event.hp);
+    if (hp === null) return null;
+    return Object.freeze({
+      type: event.type,
+      seatId,
+      hp,
+      maxHp,
+      maxHpOnly: false
+    });
   }
   if (event.type === 'card-list-ready') {
     const cardIds = [...new Set(event.cardIds.map(normalizePositiveInteger).filter(isNumber))];

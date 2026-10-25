@@ -29,7 +29,7 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
-import { installGeneralSkillTipAutoCloseGuard } from '../runtime/general-skill-tip-auto-close-guard';
+import { installGeneralSkillTipStayCoordinator } from '../runtime/general-skill-tip-stay-coordinator';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
 import { createGameCardCatalog } from '../features/cards/game-card-catalog';
@@ -86,7 +86,7 @@ interface XiaochaoCoreRuntime {
 /** Electron 和油猴共用的启动边界；平台差异只能通过 adapter 注入。 */
 export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const lifecycle = createLifecycle();
-  lifecycle.register(installGeneralSkillTipAutoCloseGuard(window));
+  lifecycle.register(installGeneralSkillTipStayCoordinator(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
@@ -210,7 +210,7 @@ function startXiaochaoCore(
   lifecycle.register(installTiesuoRecastController());
   const blockEffects = installBlockEffectsController(configStore, { gameEvents });
   lifecycle.register(blockEffects.dispose);
-  const skinChange = installSkinChangeController(configStore);
+  const skinChange = installSkinChangeController(configStore, { gameEvents });
   lifecycle.register(skinChange.dispose);
   let officialBackground: OfficialBackgroundController | undefined;
   const skinPaper = installSkinPaperController(configStore, {

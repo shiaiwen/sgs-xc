@@ -1,7 +1,12 @@
+export { isGeneralSkillTipManualCloseVisible } from './general-skill-tip-state.ts';
+
 /** 游戏内武将技能说明等提示层 zOrder，与打包脚本 ri.tipLayer 一致。 */
 export const GAME_TIP_LAYER_Z = 2005;
 
-/** 局内小抄 Laya 节点不得超过此值，避免挡住 GameGeneralToolTip 与关闭按钮。 */
+/**
+ * 局内小抄 Laya 节点不得超过此值，避免挡住 GameGeneralToolTip 与关闭按钮。
+ * 停驻协调见 general-skill-tip-stay-coordinator。
+ */
 export const EXTENSION_Z_BELOW_GAME_TIP = 2000;
 
 export function clampExtensionZOrder(requested: number): number {

@@ -8,8 +8,10 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
+import { isGeneralSkillTipManualCloseVisible } from '../../runtime/game-tip-layer.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
   asRecord,
   callMethod,
@@ -36,7 +38,10 @@ const LOCKED_ITEM_NODES = ['timeBg', 'composeBg', 'composeIcon', 'composeTxt1', 
 const SELF_GENERAL_KEYS = ['generalIds', 'GeneralIds', 'WuJiangs', 'generals'];
 const OTHER_BIND_DELAYS = [0, 50, 200, 600, 1500];
 const SELF_SKIN_APPLY_DELAYS = [0, 80, 250, 600, 1200];
+const HP_REPAINT_DELAYS = [0, 80, 250, 600, 1200, 2000, 3500];
+const HP_SYNC_DELAYS = [0, 50, 150, 400];
 const OTHER_OPEN_TIMEOUT = 3000;
+const SEAT_SKIN_OVERRIDE_HOOK = '__xcSeatSetGeneralSkinOverrideHook';
 
 interface SavedSkin {
   skinID: number;
@@ -86,6 +91,7 @@ export interface SkinChangeOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
   storage?: Pick<Storage, 'getItem' | 'setItem'>;
+  gameEvents?: GameEventBus;
 }
 
 /**
@@ -98,6 +104,8 @@ export function installSkinChangeController(
   options: SkinChangeOptions = {}
 ): SkinChangeController {
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
+  const gameEvents = options.gameEvents;
+  const hpBySeat = new Map<number, { hp: number; maxHp: number }>();
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const storage = options.storage ?? globalObject.localStorage;
   const patcher = createMethodPatcher();
@@ -168,11 +176,75 @@ export function installSkinChangeController(
     return false;
   }
 
+  function seatIndexOf(seat: UnknownRecord): number | null {
+    const id = Number(seat.Index ?? seat.index ?? seat.SeatID ?? seat.seatID);
+    return Number.isFinite(id) ? id : null;
+  }
+
   function shownHp(seat: UnknownRecord): { hp: number; maxHp: number } | null {
     const hp = Number(seat.Hp ?? seat.HP ?? seat.currentHp ?? seat.CurrentHp);
     const maxHp = Number(seat.MaxHp ?? seat.maxHp ?? seat.MaxHP ?? seat.maxHP);
     if (!Number.isFinite(hp)) return null;
     return { hp, maxHp: Number.isFinite(maxHp) && maxHp > 0 ? maxHp : Math.max(hp, 1) };
+  }
+
+  function resolveHpForSeat(seat: UnknownRecord): { hp: number; maxHp: number } | null {
+    const seatId = seatIndexOf(seat);
+    const cached = seatId !== null ? hpBySeat.get(seatId) : undefined;
+    if (cached) return cached;
+    return shownHp(seat);
+  }
+
+  function noteSeatHp(seatId: number, hp: number, maxHp: number): void {
+    hpBySeat.set(seatId, { hp, maxHp: Math.max(1, maxHp) });
+  }
+
+  function clearSeatHpCache(): void {
+    hpBySeat.clear();
+  }
+
+  function shouldYieldToGeneralSkillTip(): boolean {
+    return isGeneralSkillTipManualCloseVisible(globalObject);
+  }
+
+  function restoreSeatSetGeneralSkinOverride(seat: UnknownRecord): void {
+    const hook = asRecord(seat[SEAT_SKIN_OVERRIDE_HOOK]);
+    const native = hook?.native;
+    if (typeof native === 'function') {
+      seat.SetGeneralSkin = native as PatchableFunction;
+    }
+    delete seat[SEAT_SKIN_OVERRIDE_HOOK];
+  }
+
+  function ensureSeatSetGeneralSkinOverrideHook(seat: UnknownRecord): void {
+    if (asRecord(seat[SEAT_SKIN_OVERRIDE_HOOK])?.native) return;
+    const native = seat.SetGeneralSkin;
+    if (typeof native !== 'function') return;
+    seat[SEAT_SKIN_OVERRIDE_HOOK] = { native };
+    seat.SetGeneralSkin = function (this: UnknownRecord, ...args: unknown[]) {
+      const override = findOverride(this, Number(args[0]));
+      if (override) {
+        args[1] = override.skinID;
+        args[2] = override.isDynamic;
+        args[3] = override.skinType;
+        args[4] = true;
+      }
+      return (native as PatchableFunction).apply(this, args);
+    };
+  }
+
+  function isSelfSeat(seat: UnknownRecord): boolean {
+    if (seat.IsSelf === true || seat.isSelf === true) return true;
+    const self = selfSeat();
+    return Boolean(self && self === seat);
+  }
+
+  function seedSelfHpCache(): void {
+    const seat = selfSeat();
+    if (!seat) return;
+    const seatId = seatIndexOf(seat);
+    const live = shownHp(seat);
+    if (seatId !== null && live) noteSeatHp(seatId, live.hp, live.maxHp);
   }
 
   /** 换肤会按皮肤默认体力重画血点，这里把座位上的真实体力画回去。 */
@@ -191,9 +263,35 @@ export function installSkinChangeController(
   }
 
   function applySkin(seat: UnknownRecord, generalID: number, skinID: number, isDynamic: boolean, skinType: number): void {
-    const shown = shownHp(seat);
+    if (shouldYieldToGeneralSkillTip()) return;
+    const shown = resolveHpForSeat(seat);
     callMethod(seat, 'SetGeneralSkin', generalID, skinID, isDynamic, skinType, true);
-    if (shown) repaintHp(seat, shown.hp, shown.maxHp);
+    if (shown) scheduleRepaintHp(seat, shown.hp, shown.maxHp);
+  }
+
+  function repaintHpForSeat(seat: UnknownRecord, fallbackHp: number, fallbackMaxHp: number): void {
+    const seatId = seatIndexOf(seat);
+    const cached = seatId !== null ? hpBySeat.get(seatId) : undefined;
+    const live = shownHp(seat);
+    if (cached) {
+      repaintHp(seat, cached.hp, cached.maxHp);
+      return;
+    }
+    if (live) {
+      if (seatId !== null) noteSeatHp(seatId, live.hp, live.maxHp);
+      repaintHp(seat, live.hp, live.maxHp);
+      return;
+    }
+    repaintHp(seat, fallbackHp, fallbackMaxHp);
+  }
+
+  function scheduleRepaintHp(seat: UnknownRecord, hp: number, maxHp: number): void {
+    for (const delay of HP_REPAINT_DELAYS) {
+      tasks.later(() => {
+        if (shouldYieldToGeneralSkillTip()) return;
+        repaintHpForSeat(seat, hp, maxHp);
+      }, delay);
+    }
   }
 
   function formForHp(skinID: number, hp: number): number | null {
@@ -233,8 +331,7 @@ export function installSkinChangeController(
     return null;
   }
 
-  function syncShownHp(seat: UnknownRecord, hp: number): void {
-    const maxHp = shownHp(seat)?.maxHp ?? Math.max(hp, 1);
+  function syncDynamicFormForHp(seat: UnknownRecord, hp: number): void {
     for (const isZhu of [true, false]) {
       const info = seatGeneral(seat, isZhu);
       if (!info?.isDynamic) continue;
@@ -242,22 +339,40 @@ export function installSkinChangeController(
       if (form === null || form === info.skinType) continue;
       callMethod(seat, 'SetGeneralSkin', info.generalID, info.skinID, true, form, true);
     }
-    repaintHp(seat, hp, maxHp);
-    tasks.later(() => repaintHp(seat, hp, maxHp), 80);
+  }
+
+  function syncShownHp(seat: UnknownRecord, hp: number, maxHp: number): void {
+    syncDynamicFormForHp(seat, hp);
+    scheduleRepaintHp(seat, hp, maxHp);
+  }
+
+  function handleHpUpdated(seatId: number, hp: number | null, maxHp: number | null, maxHpOnly: boolean): void {
+    let formSynced = false;
+    const run = () => {
+      if (shouldYieldToGeneralSkillTip()) return;
+      const seat = seatByIndex(seatId);
+      if (!seat) return;
+      let resolvedHp = hp;
+      let resolvedMax = maxHp;
+      if (maxHpOnly) {
+        const live = shownHp(seat);
+        if (!live) return;
+        resolvedHp = live.hp;
+        resolvedMax = maxHp ?? live.maxHp;
+      }
+      if (resolvedHp === null || !Number.isFinite(resolvedHp)) return;
+      const max = resolvedMax ?? shownHp(seat)?.maxHp ?? Math.max(resolvedHp, 1);
+      noteSeatHp(seatId, resolvedHp, max);
+      if (!formSynced) {
+        syncDynamicFormForHp(seat, resolvedHp);
+        formSynced = true;
+      }
+      scheduleRepaintHp(seat, resolvedHp, max);
+    };
+    HP_SYNC_DELAYS.forEach((delay) => tasks.later(run, delay));
   }
 
   function filterMessage(payload: UnknownRecord, className: string): void {
-    if (className === 'GsCUpdateHpNtf' && payload.isMaxHp !== true) {
-      const hp = Number(payload.HP ?? payload.Hp ?? payload.hp);
-      const seatId = Number(payload.SeatID ?? payload.SeatId ?? payload.seatID ?? payload.seatId);
-      if (Number.isFinite(hp) && Number.isFinite(seatId)) {
-        tasks.later(() => {
-          const seat = seatByIndex(seatId);
-          if (seat) syncShownHp(seat, hp);
-        }, 0);
-      }
-      return;
-    }
     if (className !== 'ClientGeneralSkinRep' || !localOn()) return;
     const list = payload.GeneralSkinList;
     if (!Array.isArray(list)) return;
@@ -287,7 +402,8 @@ export function installSkinChangeController(
 
   /** 进局后把本地保存的皮肤套到自己座位，避免开换肤窗时先闪官方默认皮。 */
   function applySavedSkinsForSelf(): void {
-    if (!localOn()) return;
+    if (!localOn() || shouldYieldToGeneralSkillTip()) return;
+    seedSelfHpCache();
     const seat = selfSeat();
     if (!seat) return;
     for (const isZhu of [true, false]) {
@@ -815,6 +931,7 @@ export function installSkinChangeController(
         const key = overrideKey(session.seat, session.isZhu, info.generalID);
         const previous = overrides.get(key);
         overrides.set(key, { epoch, seat: session.seat, generalID: info.generalID, skinID, isDynamic, skinType: info.skinType });
+        ensureSeatSetGeneralSkinOverrideHook(session.seat);
         try {
           applySkin(session.seat, info.generalID, skinID, isDynamic, info.skinType);
           applied = true;
@@ -860,7 +977,34 @@ export function installSkinChangeController(
 
   const originalSkinClick = new WeakMap<object, PatchableFunction>();
 
+  function bindOtherSkinButton(manager: UnknownRecord, isZhu: boolean): void {
+    const seat = asRecord(manager.seat);
+    if (!seat || seat.IsSelf || isSpectating(manager)) return;
+    const prototype = prototypeOf(manager);
+    const button = asRecord(manager.skinBtn);
+    if (button && prototype && !ownSkinButtons.has(button)) {
+      const eventName = layaEvent()?.CLICK;
+      const nativeClick = originalSkinClick.get(prototype);
+      if (eventName) {
+        if (nativeClick) callMethod(button, 'off', eventName, manager, nativeClick);
+        callMethod(button, 'off', eventName, manager, manager.onSKinClick);
+        callMethod(button, 'on', eventName, manager, manager.onSKinClick);
+      }
+      ownSkinButtons.add(button);
+    }
+    if (button) {
+      button.mouseEnabled = true;
+      button.mouseThrough = true;
+      button.__xcOtherSkinIsZhu = isZhu;
+      if (seat.General2 && typeof manager.getTipGeneral === 'function') {
+        const half = Math.round(Number(manager.width || 146) / 2);
+        button.x = isZhu ? Math.max(0, 104 - half) : 104;
+      }
+    }
+  }
+
   function patchSeatManager(manager: UnknownRecord): void {
+    if (!otherOn()) return;
     const prototype = prototypeOf(manager);
     if (!prototype) return;
     patcher.wrap(prototype, 'onSKinClick', (original) => {
@@ -874,36 +1018,22 @@ export function installSkinChangeController(
     patcher.wrap(prototype, 'OnSomeTextureOver', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       const seat = asRecord(this.seat);
       if (!seat || seat.IsSelf) return original.apply(this, args);
+      const result = original.apply(this, args);
       if (!otherOn()) {
-        const result = original.apply(this, args);
         const button = asRecord(this.skinBtn);
         if (button) Object.assign(button, { visible: false, mouseEnabled: false });
         return result;
       }
-      const isZhu = hoveredIsZhu(this);
-      const result = hoverAsSelf(this, args, isZhu, original);
-      if (isSpectating(this)) return result;
-      const button = asRecord(this.skinBtn);
-      if (button && !ownSkinButtons.has(button)) {
-        const eventName = layaEvent()?.CLICK;
-        const nativeClick = originalSkinClick.get(prototype);
-        if (eventName) {
-          if (nativeClick) callMethod(button, 'off', eventName, this, nativeClick);
-          callMethod(button, 'off', eventName, this, this.onSKinClick);
-          callMethod(button, 'on', eventName, this, this.onSKinClick);
-        }
-        ownSkinButtons.add(button);
-      }
-      if (button) {
-        // 换肤按钮可点，但不参与命中，避免盖住武将悬停区导致原生技能说明被误判为移出。
-        button.mouseEnabled = true;
-        button.mouseThrough = true;
-        button.__xcOtherSkinIsZhu = isZhu;
-        if (seat.General2 && typeof this.getTipGeneral === 'function') {
-          const half = Math.round(Number(this.width || 146) / 2);
-          button.x = isZhu ? Math.max(0, 104 - half) : 104;
-        }
-      }
+      const manager = this;
+      const isZhu = hoveredIsZhu(manager);
+      tasks.later(() => {
+        if (shouldYieldToGeneralSkillTip()) return;
+        if (!otherOn()) return;
+        const liveSeat = asRecord(manager.seat);
+        if (!liveSeat || liveSeat.IsSelf || isSpectating(manager)) return;
+        hoverAsSelf(manager, args, isZhu, original);
+        bindOtherSkinButton(manager, isZhu);
+      }, 0);
       return result;
     });
   }
@@ -945,21 +1075,6 @@ export function installSkinChangeController(
     return true;
   }
 
-  function patchSeat(seat: unknown): void {
-    const prototype = prototypeOf(seat);
-    if (!prototype) return;
-    patcher.wrap(prototype, 'SetGeneralSkin', (original) => function (this: UnknownRecord, ...args: unknown[]) {
-      const override = findOverride(this, Number(args[0]));
-      if (override) {
-        args[1] = override.skinID;
-        args[2] = override.isDynamic;
-        args[3] = override.skinType;
-        args[4] = true;
-      }
-      return original.apply(this, args);
-    });
-  }
-
   function seatManagers(scene: UnknownRecord | null): UnknownRecord[] {
     const managers = new Set<UnknownRecord>();
     const visit = (seatUi: unknown) => {
@@ -991,6 +1106,9 @@ export function installSkinChangeController(
     hideOwnSkinButtons();
     ownSkinButtons.clear();
     cancelAllSessions();
+    for (const override of overrides.values()) {
+      restoreSeatSetGeneralSkinOverride(override.seat);
+    }
     overrides.clear();
     epoch += 1;
   }
@@ -999,11 +1117,9 @@ export function installSkinChangeController(
     const scene = locator.gameScene();
     if (scene && currentScene && scene !== currentScene) resetForScene();
     if (scene) currentScene = scene;
-    patchSeat(asRecord(scene?.SelfSeatUi)?.seat);
     const managers = seatManagers(scene);
     managers.forEach((manager) => {
-      patchSeatManager(manager);
-      patchSeat(manager.seat);
+      if (otherOn()) patchSeatManager(manager);
     });
     if (!otherOn()) {
       hideOwnSkinButtons();
@@ -1115,6 +1231,17 @@ export function installSkinChangeController(
     void applyPreview(windowName);
   }
 
+  if (gameEvents) {
+    unsubscribes.push(gameEvents.subscribe((event) => {
+      if (event.type === 'game-started' || event.type === 'game-ended') {
+        clearSeatHpCache();
+        return;
+      }
+      if (event.type !== 'hp-updated') return;
+      handleHpUpdated(event.seatId, event.hp, event.maxHp, event.maxHpOnly);
+    }));
+  }
+
   unsubscribes.push(
     configStore.subscribe('skin.localSkin', () => {
       syncOpenWindows();
@@ -1152,6 +1279,7 @@ export function installSkinChangeController(
       hideOwnSkinButtons();
       cancelAllSessions();
       overrides.clear();
+      clearSeatHpCache();
       patcher.restoreAll();
     }
   };
