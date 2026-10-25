@@ -73,9 +73,6 @@ export interface XiaochaoConfig {
   'assist.autoHGEnabled': boolean;
   'assist.baiShengEnabled': boolean;
   'assist.autoBotTavernTarget': 'none' | 'dailyGame' | 'dailyWin' | 'weeklyWin';
-  'update.dismissedVersion': string;
-  /** 浏览器更新完成后记下的脚本版本。微端检查不读这个值。 */
-  'update.installedVersion': string;
 }
 
 export type XiaochaoConfigKey = keyof XiaochaoConfig;
@@ -238,18 +235,6 @@ export const CONFIG_SCHEMA: {
         : undefined;
     }
   },
-  'update.dismissedVersion': {
-    defaultValue: '',
-    parse(value) {
-      return typeof value === 'string' ? value : undefined;
-    }
-  },
-  'update.installedVersion': {
-    defaultValue: '',
-    parse(value) {
-      return typeof value === 'string' ? value : undefined;
-    }
-  }
 };
 
 /** 按 schema 生成一份默认配置。 */

@@ -5,7 +5,12 @@
 
 import type { XiaochaoConfigStore } from '../../config/config-store';
 import {
-  compareVersions,
+  migrateUpdateDeviceStateFromLegacy,
+  readUpdateDeviceState,
+  rememberDismissedVersion,
+  rememberInstalledVersion
+} from './update-device-state.ts';
+import {
   getXiaochaoVersion,
   isNewerVersion,
   newerVersion,
@@ -45,9 +50,6 @@ export interface UpdateNoticeControllerOptions {
   platform?: 'electron' | 'userscript';
 }
 
-const DISMISSED_VERSION_KEY = 'update.dismissedVersion' as const;
-const INSTALLED_VERSION_KEY = 'update.installedVersion' as const;
-
 function createEmptySnapshot(currentVersion: string): UpdateNoticeSnapshot {
   return {
     currentVersion,
@@ -62,7 +64,6 @@ function createEmptySnapshot(currentVersion: string): UpdateNoticeSnapshot {
 
 /** 创建更新提示控制器（不自动请求；由 install / checkNow 触发）。 */
 export function createUpdateNoticeController(
-  configStore: XiaochaoConfigStore,
   openExternal: (url: string) => Promise<void>,
   options: UpdateNoticeControllerOptions = {}
 ): UpdateNoticeController {
@@ -78,17 +79,13 @@ export function createUpdateNoticeController(
     if (!browserUpdate) return baked;
     return newerVersion(
       newerVersion(baked, readUserscriptManagerVersion()),
-      configStore.get(INSTALLED_VERSION_KEY)
+      readUpdateDeviceState().installedVersion
     );
   }
   /** 浏览器打开更新页后，把线上脚本版本记成已安装，避免下次仍拿更新前的版本去比。 */
   function rememberInstalled(version: string): void {
     if (!browserUpdate) return;
-    const next = String(version || '').trim();
-    if (!/^\d+(?:\.\d+)*$/.test(next)) return;
-    const previous = configStore.get(INSTALLED_VERSION_KEY);
-    if (previous && compareVersions(next, previous) <= 0) return;
-    configStore.set(INSTALLED_VERSION_KEY, next);
+    rememberInstalledVersion(version);
   }
   let snapshot = createEmptySnapshot(readVersion());
   const listeners = new Set<(next: UpdateNoticeSnapshot) => void>();
@@ -106,7 +103,7 @@ export function createUpdateNoticeController(
   /** 「稍后」：记下 latestVersion 并关闭弹窗；角标仍由 hasUpdate 决定。 */
   function dismissDialog(): void {
     const latest = snapshot.latestVersion;
-    if (latest) configStore.set(DISMISSED_VERSION_KEY, latest);
+    if (latest) rememberDismissedVersion(latest);
     if (snapshot.dialogOpen) emit({ ...snapshot, dialogOpen: false });
   }
 
@@ -235,7 +232,8 @@ export function installUpdateNoticeController(
   openExternal: (url: string) => Promise<void>,
   options: UpdateNoticeControllerOptions = {}
 ): UpdateNoticeController {
-  const controller = createUpdateNoticeController(configStore, openExternal, options);
+  migrateUpdateDeviceStateFromLegacy(configStore);
+  const controller = createUpdateNoticeController(openExternal, options);
   controller.start();
   return controller;
 }
