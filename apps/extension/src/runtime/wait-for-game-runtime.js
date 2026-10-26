@@ -14,9 +14,8 @@ export function getMissingGameRuntimeDependencies({
   if (globalObject.PUERTS_JS_RESOURCES !== undefined) return [];
 
   const missing = [];
-  // JSZipUtils/CtrUtil 只影响部分资源解析，不能阻塞面板和基础功能启动。
+  // 没有游戏运行时就先不挂面板，官网和登录页不该先出小抄。
   if (globalObject.SystemContext === undefined) missing.push('SystemContext');
-  // 不在登录页/加载页阻塞 Vue 面板；牌局内功能自行等场景就绪。
   return missing;
 }
 

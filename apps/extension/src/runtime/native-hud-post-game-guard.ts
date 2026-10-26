@@ -9,7 +9,8 @@ import {
   type LayaRuntimeWindow
 } from '../adapters/laya-object-locator.ts';
 import type { GameEventBus } from './game-event-bus.ts';
-import { locateSceneManager } from '../features/seat-display/game-scene-locator.ts';
+import { locateGameScene, locateSceneManager } from '../features/seat-display/game-scene-locator.ts';
+import { readSeatStateFromGameScene } from '../features/seat-display/seat-game-adapter.ts';
 import {
   detachLayaNode,
   isLayaDisplayNode,
@@ -220,9 +221,17 @@ export function installNativeHudPostGameGuard(
       }
     });
   };
+  const readSceneInGame = () => Boolean(readSeatStateFromGameScene(locateGameScene(globalObject)).inGame);
+
   const onPoll = () => {
     if (!sceneHookReady) installSceneLeaveScrub();
-    if (detectSettlementBlockingInput(globalObject)) noteSuspended(true, globalObject);
+    const settlementVisible = detectSettlementBlockingInput(globalObject);
+    if (settlementVisible) {
+      noteSuspended(true, globalObject);
+      return;
+    }
+    // 连局时座位 inGame 可能一直为 true，只能靠结算窗判断局后；结算关闭且仍在牌局内时应恢复。
+    if (readSceneInGame()) suspended = false;
   };
   const stopEvents = gameEvents.subscribe((event) => {
     if (event.type === 'game-ended') noteSuspended(true, globalObject);

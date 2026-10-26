@@ -16,7 +16,7 @@ export interface AutoTaskSkipSetting {
 export const AUTO_TASK_ENABLED_KEY = 'autoTask.enabled' satisfies XiaochaoConfigKey;
 
 export const AUTO_TASK_ENABLED_TOOLTIP = '打开后按下面勾选的项自动领取\n'
-  + '也会顺带做砍树、敲鼓、活跃任务、月卡、签到等\n'
+  + '也会顺带做砍树、敲鼓、活跃任务、月卡、签到、皮肤册奖励等\n'
   + '自动化操作存在账号风险，请自行斟酌';
 
 /** 配置为 true 表示跳过；设置页勾选表示要领，读写时取反。 */
@@ -35,6 +35,11 @@ export const AUTO_TASK_SKIP_SETTINGS: readonly AutoTaskSkipSetting[] = [
     key: 'autoTask.skipHuanLeDou',
     label: '欢乐豆',
     tooltip: '领取含欢乐豆的奖励、官阶每日俸禄；低于 600 豆时也会领免费豆'
+  },
+  {
+    key: 'autoTask.skipFreeTreasureFlip',
+    label: '翻翻乐',
+    tooltip: '奇珍翻翻乐当天能免费翻的时候自动翻一张，不消耗道具'
   }
 ];
 

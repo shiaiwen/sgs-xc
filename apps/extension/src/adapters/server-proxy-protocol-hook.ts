@@ -1,17 +1,23 @@
 /**
  * 仅在 ServerProxy / ActivityManager 的 event 上挂协议钩子，避免误伤场景/UI 分发器。
+ *
+ * 管线：mutate（可改写 payload）→ shouldDrop（整包丢弃）→ onBeforeForward → 原 event。
+ * 用 getter/setter 持久化包装：游戏热更或重绑会重新赋值 event，setter 只替换下游，
+ * 不丢掉我们的 wrapper，否则钩子会整局失效。
  */
 
 import { createLayaObjectLocator } from './laya-object-locator.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
+/** 钩子回调：改写 / 丢弃 / 转发前旁路（如投递到小抄事件总线）。 */
 export interface ProtocolEventHookHandlers {
   mutate?: (className: string, payload: UnknownRecord) => void;
   shouldDrop?: (className: string, payload: UnknownRecord) => boolean;
   onBeforeForward?: (className: string, payload: UnknownRecord) => void;
 }
 
+/** 挂接诊断，挂到 __XIAOCHAO_* 上供开发监控读取。 */
 export interface ProtocolEventHookDiagnostics {
   hookedTargets: string[];
   lastClassName: string;
@@ -19,8 +25,13 @@ export interface ProtocolEventHookDiagnostics {
   dropped: number;
 }
 
+/** 已挂过钩的 event 宿主；WeakSet 避免拦住对象回收。 */
 const hookedEventTargets = new WeakSet<UnknownRecord>();
 
+/**
+ * 安装协议钩子。管理器可能晚于脚本出现，故每 300ms 扫一次；
+ * restore() 只清定时器，不拆已挂的 getter（页面卸载后无意义）。
+ */
 export function installProtocolEventHooks(
   globalObject: Window = window,
   handlers: ProtocolEventHookHandlers = {}
@@ -48,6 +59,7 @@ export function installProtocolEventHooks(
   };
 }
 
+/** 目标已有 event 且尚未挂过时，装上持久包装。 */
 function hookEventIfNeeded(
   target: UnknownRecord | null,
   label: string,
@@ -61,6 +73,10 @@ function hookEventIfNeeded(
   diagnostics.hookedTargets.push(label);
 }
 
+/**
+ * 把 target.event 换成「永远返回 wrapper」的属性。
+ * 外部再赋值 event 时，setter 把新函数存进 underlying，wrapper 仍在。
+ */
 function installPersistentEventHook(
   target: UnknownRecord,
   handlers: ProtocolEventHookHandlers,
@@ -93,6 +109,7 @@ function installPersistentEventHook(
   }
 }
 
+/** 单次 event 调用：诊断计数 → mutate → drop → forward。 */
 function runProtocolHook(
   type: unknown,
   data: unknown,
@@ -113,6 +130,7 @@ function runProtocolHook(
   return forward();
 }
 
+/** 优先用 event 的 type 字符串，否则读 payload.ClassName / className。 */
 function resolveClassName(type: unknown, payload: UnknownRecord | null): string {
   if (typeof type === 'string' && type) return type;
   if (!payload) return '';

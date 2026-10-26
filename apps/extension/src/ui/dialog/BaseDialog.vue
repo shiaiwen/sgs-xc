@@ -2,6 +2,8 @@
 /** 通用对话框：定位在小抄面板区域内，不占用整个窗口。 */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { DIALOG_DEFAULT_MAX_WIDTH, layoutDialogInPanel } from './dialog-layout.ts';
+import { isNativeGamePopupProtected } from '../../runtime/game-native-dialog.ts';
+import { DOM_OVERLAY_Z, XIAOCHAO_DIALOG_HOST_ID, XIAOCHAO_PANEL_ID } from '../display-layer.ts';
 
 const props = defineProps({
   open: {
@@ -34,7 +36,7 @@ let previouslyFocusedElement: Element | null = null;
 const panelRect = ref<DOMRect | null>(null);
 
 function refreshPanelRect() {
-  const panel = document.querySelector<HTMLElement>('#createIframe');
+  const panel = document.querySelector<HTMLElement>(`#${XIAOCHAO_PANEL_ID}`);
   panelRect.value = panel?.getBoundingClientRect() ?? null;
 }
 
@@ -59,10 +61,10 @@ onBeforeUnmount(() => {
 });
 
 function handleEscape(event: KeyboardEvent) {
-  if (props.open && event.key === 'Escape') {
-    event.preventDefault();
-    requestClose();
-  }
+  if (!props.open || event.key !== 'Escape') return;
+  if (isNativeGamePopupProtected()) return;
+  event.preventDefault();
+  requestClose();
 }
 
 function requestClose() {
@@ -102,13 +104,13 @@ const dialogStyle = computed(() => {
     maxWidth: `${layout.width}px`,
     minWidth: '0',
     maxHeight: `${layout.maxHeight}px`,
-    zIndex: '2147483602',
+    zIndex: String(DOM_OVERLAY_Z.dialog),
   } as Record<string, string>;
 });
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport :to="`#${XIAOCHAO_DIALOG_HOST_ID}`">
     <div
       v-if="open"
       class="xiaochao-dialog-backdrop"

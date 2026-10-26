@@ -4,6 +4,11 @@
 
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import {
+  isUserInfoDialogOpen,
+  isUserInfoViewUnderOpenWindow,
+  shouldDeferSeatTopManagerSync,
+} from '../../runtime/game-native-dialog.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
 import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
@@ -181,6 +186,7 @@ export function installAiPlayerTipController(
 
   function scan(): void {
     setPollInterval(locateGameScene(globalObject) ? 500 : 2000);
+    if (shouldDeferSeatTopManagerSync(globalObject)) return;
     // 彼此独立扫描：座位 UI 尚未就绪或某一步访问异常时，也要继续挂资料页钩子。
     try { scanSeats(); } catch { /* 下一轮重试 */ }
     try { scanProfile(); } catch { /* 下一轮重试 */ }
@@ -240,6 +246,10 @@ export function installAiPlayerTipController(
   /** 资料页打开后：人机提示，真人显示编号按钮。 */
   function scanProfile(): void {
     hookUserInfoView(globalObject, tipProfile);
+    if (!isUserInfoDialogOpen(globalObject)) {
+      profileTipId = 0;
+      return;
+    }
     const view = findUserInfoView(globalObject);
     if (!view) {
       profileTipId = 0;
@@ -317,7 +327,9 @@ function findView(node: UnknownRecord, depth: number, allow: () => boolean): Unk
   const looksLikeUserInfoView = 'userData' in node
     && 'result7Btn' in node
     && typeof node.onWinInfo === 'function';
-  if (ctor === 'UserInfoView' || node.name === 'UserInfoView' || looksLikeUserInfoView) return node;
+  if (ctor === 'UserInfoView' || node.name === 'UserInfoView' || looksLikeUserInfoView) {
+    if (isUserInfoViewUnderOpenWindow(node)) return node;
+  }
   for (const child of childNodes(node)) {
     const found = findView(child, depth + 1, allow);
     if (found) return found;

@@ -1,4 +1,7 @@
 {
+  "vueCompilerOptions": {
+    "plugins": ["@vue/typescript-plugin"]
+  },
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,

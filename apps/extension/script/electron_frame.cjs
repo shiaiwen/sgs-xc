@@ -1,17 +1,37 @@
+/**
+ * 微端外框脚本：跑在壳层窗口（非 guest），驱动顶栏/底栏、游戏 webview、
+ * 本地小抄脚本注入，以及登录页密码管理助手。
+ *
+ * 主要块：
+ * 1. 开发态热重载（源码变更 → 合并 reload webview）
+ * 2. 运行时全局兼容层（remote.getGlobal / getPath 的 IPC 降级）
+ * 3. 读取并注入本地小抄脚本（userData 或主进程 read-local-script）
+ * 4. 壳层 UI：最大化/最小化/关闭、全屏、更新进度、大区切换
+ * 5. execute()：向登录页注入「记住账号密码」面板（含 4399 iframe）
+ *
+ * 与 electron_renderer.cjs 配合：guest preload 发 xiaochao-focus-webview，
+ * 本文件在外框侧对 webview 调用 focus()，修好中文输入。
+ */
 
 
 const electron = require('electron');
 const { ipcRenderer } = electron;
 const nativeRemote = electron.remote;
+/** remote.getGlobal 不可用时的包配置缓存（version、LoginURL 等）。 */
 const runtimeGlobalFallback = {};
+/** app.getPath 结果缓存，避免反复 IPC。 */
 const appPathCache = {};
 let runtimeGlobalsLoaded = false;
+/** 本地小抄脚本原文缓存，避免每次 dom-ready 都读盘/IPC。 */
 let localScriptResponseCache = null;
+/** 已转义可 executeJavaScript 的注入代码缓存（与原文成对）。 */
 let localScriptInjectCache = null;
+/** 开发态：一次只允许一个 webview.reload 在途，其余变更合并排队。 */
 let developmentReloadInProgress = false;
 let developmentReloadQueued = false;
 let developmentWebviewReady = false;
 
+// ---------- 开发态：源码变更 → 清缓存并重载游戏 webview ----------
 ipcRenderer.on('xiaochao-dev-script-changed', () => {
     localScriptResponseCache = null;
     localScriptInjectCache = null;
@@ -81,6 +101,10 @@ function requestDevelopmentWebviewReload() {
     }
 }
 
+/**
+ * 在游戏页内安装 postMessage 桥：页面请求打开小抄原生报告窗口时，
+ * 走 electron.openWindow(data:text/html...)，并把 success 回传给发起方。
+ */
 function getReportWindowPageBridgeScript() {
     return `(() => {
         if (window.__XIAOCHAO_REPORT_WINDOW_BRIDGE__) return;
@@ -118,6 +142,7 @@ function hasOwn(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+/** 把主进程全局写入本地兜底表，后续 remote 挂了也能用缓存。 */
 function rememberRuntimeGlobal(name, value) {
     if (typeof value !== 'undefined' && value !== null && value !== '') {
         runtimeGlobalFallback[name] = value;
@@ -125,6 +150,10 @@ function rememberRuntimeGlobal(name, value) {
     return value;
 }
 
+/**
+ * 读取主进程全局：优先 electron.remote.getGlobal，失败则同步 IPC get-global-sync。
+ * 新 Electron 无 remote 时靠这条 IPC 兼容旧壳逻辑。
+ */
 function fetchRuntimeGlobal(name) {
     if (hasOwn(runtimeGlobalFallback, name)) return runtimeGlobalFallback[name];
     try {
@@ -140,6 +169,7 @@ function fetchRuntimeGlobal(name) {
     return runtimeGlobalFallback[name];
 }
 
+/** 读取 app.getPath(name)；无 remote 时走 get-app-path-sync。 */
 function fetchAppPath(name) {
     if (hasOwn(appPathCache, name)) return appPathCache[name];
     try {
@@ -158,6 +188,7 @@ function fetchAppPath(name) {
     return '';
 }
 
+/** 仿旧版 electron.remote 的薄封装，供下方 init / 读脚本路径使用。 */
 const remote = {
     getGlobal: fetchRuntimeGlobal,
     app: {
@@ -187,6 +218,7 @@ const { contextBridge } = require('electron');
 //     }
 // });
 
+/** 把 get-package 返回的快照灌进 runtimeGlobalFallback，统一字段名。 */
 function applyPackageSnapshotCompat(packageObj) {
     if (!packageObj || typeof packageObj !== 'object') return;
     runtimeGlobalFallback.Version = packageObj.version;
@@ -203,6 +235,7 @@ function applyPackageSnapshotCompat(packageObj) {
     runtimeGlobalFallback.ChannelId = packageObj.ChannelId;
 }
 
+/** 首次拉齐 ChannelId / PackageId 等，后续调用直接返回。 */
 async function ensureRuntimeGlobalsCompat() {
     if (runtimeGlobalsLoaded) return;
     runtimeGlobalsLoaded = true;
@@ -217,6 +250,10 @@ async function ensureRuntimeGlobalsCompat() {
     window.PackageId = getRemoteGlobalCompat('PackageId', runtimeGlobalFallback.PackageId);
 }
 
+/**
+ * 壳层入口：拉齐运行时全局 → 绑 UI/webview → 通知主进程检查更新。
+ * 页面 onload 会调 window.loadElectronFrame。
+ */
 async function loadElectronFrame() {
     await ensureRuntimeGlobalsCompat();
     initElectronFrame();
@@ -232,11 +269,13 @@ async function loadElectronFrame() {
 
 window.loadElectronFrame = loadElectronFrame;
 
+// ---------- 主进程 → 壳层 / webview 的状态同步 ----------
 ipcRenderer.on('payment-authorized', (event, message) => {
     const webview = document.getElementById('wb');
     if (webview) webview.send('payment-authorized', message);
 });
 
+/** 显示更新下载进度条（百分比与已下/总量 MB）。 */
 ipcRenderer.on('downloadProgress', (event, progressObj) => {
     const updateDiv = document.getElementById('updateDiv');
     if (!updateDiv) return;
@@ -253,6 +292,10 @@ ipcRenderer.on('downloadProgress', (event, progressObj) => {
 
 
 
+/**
+ * 全屏时藏顶栏底栏，并把 webview 容器贴满；退出则恢复 30px 顶栏留白。
+ * msg == 1 表示进入全屏。
+ */
 ipcRenderer.on('enter-full-screen', (e, msg) => {
     const top = document.getElementById('topDiv');
     const bottom = document.getElementById('topBottmDiv');
@@ -275,6 +318,7 @@ ipcRenderer.on('resize', (e, msg) => {
 });
 
 
+/** 读 remote 全局，失败或 undefined 时用调用方给的 fallback。 */
 function getRemoteGlobalCompat(name, fallbackValue) {
     try {
         if (remote && typeof remote.getGlobal === 'function') {
@@ -287,6 +331,10 @@ function getRemoteGlobalCompat(name, fallbackValue) {
     return fallbackValue;
 }
 
+/**
+ * 读应用路径；userData 在 IPC/remote 都失败时回退到 %APPDATA%/SGSOL
+ *（与官方微端默认目录对齐）。
+ */
 function getAppPathCompat(name) {
     try {
         if (remote && remote.app && typeof remote.app.getPath === 'function') {
@@ -308,6 +356,7 @@ function getAppPathCompat(name) {
     return '';
 }
 
+/** ipcRenderer.invoke 的容错封装，通道不存在时返回 null。 */
 async function invokeCompat(channel, ...args) {
     try {
         if (ipcRenderer && typeof ipcRenderer.invoke === 'function') {
@@ -319,6 +368,10 @@ async function invokeCompat(channel, ...args) {
     return null;
 }
 
+/**
+ * 最后兜底：直接从磁盘读本地小抄脚本。
+ * 候选路径：主进程 scriptPath，或 userData 下「三国杀打小抄.js」。
+ */
 function readLocalScriptFromDisk() {
     try {
         const fs = require('fs');
@@ -340,6 +393,10 @@ function readLocalScriptFromDisk() {
     return '';
 }
 
+/**
+ * 读取本地小抄脚本，优先级：内存缓存 → 异步 IPC → 同步 IPC → 磁盘。
+ * 成功结果写入 localScriptResponseCache，供后续注入复用。
+ */
 async function readLocalScriptCompat() {
     if (localScriptResponseCache && localScriptResponseCache.success && localScriptResponseCache.data) {
         return localScriptResponseCache;
@@ -372,6 +429,13 @@ async function readLocalScriptCompat() {
     };
 }
 
+/**
+ * 把脚本原文包成可 executeJavaScript 的 IIFE：
+ * - 已注入过且面板仍在 → 直接返回
+ * - 已注入但 #xiaochao-app 丢了 → 调 bridge.mountPanelShell 重挂
+ * - 否则创建 script 节点写入正文并打 __XIAOCHAO_MICROCLIENT_INJECTED__
+ * 对反引号/$/反斜杠做转义，避免模板字符串注入炸掉。
+ */
 function getLocalScriptInjection(data) {
     if (localScriptInjectCache && localScriptInjectCache.data === data) {
         return localScriptInjectCache.code;
@@ -405,6 +469,7 @@ function getLocalScriptInjection(data) {
 }
 
 
+/** 读本地小抄脚本并注入当前游戏 webview；失败只打日志，不挡登录。 */
 async function loadScript(webview) {
     const response = await readLocalScriptCompat();
     // const videoPath = remote.getGlobal('videoPath'); // 你的视频文件路径
@@ -422,6 +487,7 @@ async function loadScript(webview) {
     }
 }
 
+/** 在 webview 里装报告窗口 postMessage 桥（见 getReportWindowPageBridgeScript）。 */
 function installReportWindowPageBridge(webview) {
     const result = webview.executeJavaScript(getReportWindowPageBridgeScript());
     if (result && typeof result.catch === 'function') {
@@ -429,6 +495,11 @@ function installReportWindowPageBridge(webview) {
     }
 }
 
+/**
+ * 绑定壳层控件与游戏 webview：
+ * 顶栏按钮、登录 URL（测试/正式/按大区）、IPC 消息表、F6 开 DevTools、
+ * 焦点回交、dom-ready 时注入小抄脚本与密码管理助手。
+ */
 function initElectronFrame() {
 
 
@@ -551,7 +622,9 @@ function initElectronFrame() {
         }
     }
     //webview.src = 'http://10.225.11.80:8080'
+    // 主进程 rendererMsg 分发表：大区切换、执行 JS、改游戏最小宽高
     const msgList = {
+        /** 按 PackageId 切登录大区；webview 已就绪用 loadURL，否则改 src。 */
         channel(packageId) {
             const list = Array.isArray(loginURL) ? loginURL : [];
             const index = Number(packageId) - 1;
@@ -670,6 +743,11 @@ ipcRenderer.on('set-video-path', (event, url) => {
 
 
 
+/**
+ * 向游戏/登录 webview 注入密码管理助手：
+ * 识别官网与 4399 登录表单（含跨 iframe），挂「记住账号密码」勾选与下拉面板，
+ * 凭证经 xiaochaoStorage 与本地 localStorage 双写，最多保留 30 条。
+ */
 function execute(webview) {
     console.log('dom-ready');
     const helperSource = String.raw`
@@ -686,6 +764,7 @@ function execute(webview) {
     return null;
   }
 
+  /** 收集当前文档及可同源访问的 iframe document（4399 登录框依赖）。 */
   function getAccessibleDocuments() {
     const documents = [];
     const visit = (currentDocument) => {
@@ -703,6 +782,7 @@ function execute(webview) {
     return documents;
   }
 
+  /** 走原生 value setter 并派发 input/change，保证框架能感知填表。 */
   function setNativeValue(input, value) {
     if (!input) return;
     const prototype = Object.getPrototypeOf(input);
@@ -867,6 +947,7 @@ function execute(webview) {
     (loginDocument.head || loginDocument.documentElement).appendChild(style);
   }
 
+  /** 定位登录控件、挂面板与「记住账号密码」行；成功返回 true。 */
   function mountPasswordManager() {
     bindRememberCheckbox();
     const parts = findLoginParts();
@@ -1212,6 +1293,7 @@ function execute(webview) {
     return true;
   }
 
+  // 登录 DOM 可能晚于 dom-ready（尤其 4399 iframe），轮询挂载直到成功或超时
   if (window.__sgsolPasswordManagerTimer) clearInterval(window.__sgsolPasswordManagerTimer);
   let tries = 0;
   window.__sgsolPasswordManagerTimer = setInterval(() => {

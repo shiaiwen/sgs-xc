@@ -1,0 +1,1536 @@
+/**
+ * 游戏原生 Laya 弹窗：可见性、窗口遍历，以及小抄不得干扰的窗口名单。
+ */
+
+import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator.ts';
+import { locateGameScene } from '../features/seat-display/game-scene-locator.ts';
+import { yieldGeneralSkillTipsToSeatUi } from './general-skill-tip-state.ts';
+import { createMethodPatcher } from './method-patch.ts';
+
+type UnknownRecord = Record<string, unknown>;
+
+/** 个人信息 / 资料页窗口名片段，与 WindowManager 实例 name 或类名一致即可。 */
+/** 座位相关会秒关的窗：资料页 + 互动道具；SelectCard 仅在座位流程里武装（见 matchesGuardedSeatPopupWindow）。 */
+export const USER_INFO_WINDOW_MARKERS = [
+  'UserInfoWindow',
+  'InteractPropWindow',
+] as const;
+
+/** Only the profile page should Hide the seat opt menu. InteractProp must not releaseSeatMenu. */
+const USER_INFO_PROFILE_WINDOW_MARKERS = ['UserInfoWindow'] as const;
+
+/** 对局技能选牌窗；仅座位菜单/资料流程活跃时才武装，避免干扰正常出牌。 */
+const SEAT_FLOW_EXTRA_WINDOW_MARKERS = ['SelectCardWindow'] as const;
+
+/** 系统级确认窗：技能详情停驻在这些窗打开时应收起；不含泛用「提示」，避免误伤资料页等。 */
+const SYSTEM_CONFIRM_WINDOW_PATTERN = /退出游戏|LeaveTable|LeaveRoom|MessageBox|ConfirmBox/i;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
+}
+
+export function layaNodeIdentity(node: UnknownRecord): string {
+  const ctor = asRecord(node.constructor);
+  return [String(node.name ?? ''), String(node.sceneName ?? ''), String(ctor?.name ?? '')].join('|');
+}
+
+export function isVisibleLayaNode(node: UnknownRecord | null | undefined): boolean {
+  if (!node || node.destroyed === true) return false;
+  if (node.visible === false || node._visible === false) return false;
+  const alpha = Number(node.alpha);
+  if (Number.isFinite(alpha) && alpha <= 0.01) return false;
+  return true;
+}
+
+function matchesWindowMarkers(node: UnknownRecord, markers: readonly string[]): boolean {
+  const id = layaNodeIdentity(node);
+  return markers.some((marker) => id.includes(marker));
+}
+
+function readWindowManager(globalObject: LayaRuntimeWindow): UnknownRecord | null {
+  const context = asRecord(globalObject.GameContext);
+  return asRecord(context?.WindowManager)
+    ?? createLayaObjectLocator(globalObject).manager('WindowManager');
+}
+
+/** 遍历 WindowInstanceDict 内可见窗口实例。 */
+export function forEachVisibleManagedWindow(
+  globalObject: LayaRuntimeWindow,
+  visit: (win: UnknownRecord) => void
+): void {
+  const dict = asRecord(readWindowManager(globalObject)?.WindowInstanceDict);
+  if (!dict) return;
+  const stack: UnknownRecord[] = [dict];
+  const seen = new Set<object>();
+  while (stack.length > 0 && seen.size < 64) {
+    const record = stack.pop()!;
+    if (seen.has(record)) continue;
+    seen.add(record);
+    for (const value of Object.values(record)) {
+      const win = asRecord(value);
+      if (!win) continue;
+      if (isVisibleLayaNode(win)) visit(win);
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) stack.push(win);
+    }
+  }
+}
+
+function looksLikeUserInfoView(node: UnknownRecord): boolean {
+  if (node.destroyed === true) return false;
+  const ctorName = String(asRecord(node.constructor)?.name ?? '');
+  if (node.name === 'UserInfoView' || ctorName === 'UserInfoView') return true;
+  return typeof node.onWinInfo === 'function'
+    && ('userData' in node || 'UserData' in node || 'userInfo' in node || 'UserInfo' in node);
+}
+
+export function isUserInfoViewVisibleOnStage(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  const locator = createLayaObjectLocator(globalObject);
+  let found = false;
+  for (const layerName of ['WindowLayer', 'TopUILayer', 'PromptLayer']) {
+    const layer = locator.layer(layerName);
+    if (!layer) continue;
+    walkDisplayTree(layer, (node) => {
+      if (found || !isVisibleLayaNode(node)) return;
+      if (looksLikeUserInfoView(node)) found = true;
+    }, 400);
+  }
+  return found;
+}
+
+function forEachManagedWindow(
+  globalObject: LayaRuntimeWindow,
+  visit: (win: UnknownRecord) => void
+): void {
+  const dict = asRecord(readWindowManager(globalObject)?.WindowInstanceDict);
+  if (!dict) return;
+  const stack: UnknownRecord[] = [dict];
+  const seen = new Set<object>();
+  while (stack.length > 0 && seen.size < 64) {
+    const record = stack.pop()!;
+    if (seen.has(record)) continue;
+    seen.add(record);
+    for (const value of Object.values(record)) {
+      const win = asRecord(value);
+      if (!win) continue;
+      visit(win);
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) stack.push(win);
+    }
+  }
+}
+
+function findUserInfoManagedWindow(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): UnknownRecord | null {
+  let found: UnknownRecord | null = null;
+  forEachManagedWindow(globalObject, (win) => {
+    if (matchesWindowMarkers(win, USER_INFO_WINDOW_MARKERS)) found = win;
+  });
+  return found;
+}
+
+export function isUserInfoDialogOpen(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  if (isUserInfoManagedWindowOpenCheap(globalObject)) return true;
+  // 仅在守卫已武装时才扫 stage，避免轮询/50ms tip-stay 拖垮内存
+  if (!isUserInfoDismissGuardActive(globalObject)) return false;
+  return isUserInfoViewVisibleOnStage(globalObject);
+}
+
+/** 资料视图是否挂在已打开的资料窗口下。 */
+export function isUserInfoViewUnderOpenWindow(view: UnknownRecord): boolean {
+  if (!isVisibleLayaNode(view)) return false;
+  let current: UnknownRecord | null = view;
+  for (let depth = 0; current && depth < 28; depth += 1) {
+    if (matchesWindowMarkers(current, USER_INFO_WINDOW_MARKERS)) {
+      return isVisibleLayaNode(current);
+    }
+    current = asRecord(current.parent);
+  }
+  return false;
+}
+
+export function isSystemConfirmWindowOpen(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  let open = false;
+  forEachVisibleManagedWindow(globalObject, (win) => {
+    if (SYSTEM_CONFIRM_WINDOW_PATTERN.test(layaNodeIdentity(win))) open = true;
+  });
+  return open;
+}
+
+const SEAT_PLAYER_MENU_ITEM = /(?:复制昵称|发送密语|申请好友|屏蔽发言|收为徒弟|穿戴对比|举报玩家|加黑名单)/;
+const seatUiGraceUntil = new WeakMap<LayaRuntimeWindow, number>();
+const lastSeatMenuSeenAt = new WeakMap<LayaRuntimeWindow, number>();
+const seatMenuWasOpen = new WeakMap<LayaRuntimeWindow, boolean>();
+const seatMenuWasVisible = new WeakMap<LayaRuntimeWindow, boolean>();
+const SEAT_UI_GRACE_MS = 2500;
+const SEAT_MENU_TAIL_MS = 4500;
+/** 菜单/资料页流程内尽量常驻：延长拦截全局 Tips 收起的有效期。 */
+const SEAT_POPUP_DISMISS_PIN_MS = 120_000;
+const seatPopupDismissPinUntil = new WeakMap<LayaRuntimeWindow, number>();
+const cachedSeatMenuRoot = new WeakMap<LayaRuntimeWindow, UnknownRecord>();
+const cachedUserInfoWindow = new WeakMap<LayaRuntimeWindow, UnknownRecord>();
+const USER_INFO_DISMISS_GUARD_MS = 2_500;
+const MENU_TO_USERINFO_GUARD_MS = 5000;
+/** 挂在 window 上，HMR 换模块后新旧钩子仍读同一截止时间 */
+const USER_INFO_DISMISS_GUARD_UNTIL_KEY = '__xcUserInfoDismissGuardUntil';
+/** ShowUserOptMenu 刚打开后短时强拦 TipsHide，避免小抄误伤秒关；不碰原生 Hide/stageClick */
+const SEAT_MENU_TIPS_HOLD_UNTIL_KEY = '__xcSeatMenuTipsHoldUntil';
+const SEAT_MENU_TIPS_HOLD_MS = 2_500;
+
+const USER_INFO_GUARD_LOG_KEY = '__xcUserInfoGuardLog';
+const USER_INFO_GUARD_LOG_MAX = 40;
+/** Always-on ring buffer. Dump without copy(): window.__xcDumpUserInfoGuardTrace() or __xcUserInfoGuardTraceText */
+const USER_INFO_GUARD_TRACE_KEY = '__xcUserInfoGuardTrace';
+const USER_INFO_GUARD_TRACE_TEXT_KEY = '__xcUserInfoGuardTraceText';
+const USER_INFO_GUARD_TRACE_MAX = 60;
+/** 默认关：开 F12 时 console 格式化探针会卡死；需要时设 window.__xcUserInfoGuardDebug = true */
+const USER_INFO_GUARD_DEBUG_KEY = '__xcUserInfoGuardDebug';
+
+export function pushUserInfoGuardTrace(via: string, extra?: UnknownRecord): void {
+  try {
+    const bag = window as unknown as UnknownRecord;
+    let buf = bag[USER_INFO_GUARD_TRACE_KEY] as UnknownRecord[] | undefined;
+    if (!Array.isArray(buf)) {
+      buf = [];
+      bag[USER_INFO_GUARD_TRACE_KEY] = buf;
+    }
+    let stack = '';
+    try {
+      stack = String(new Error('xc-trace').stack ?? '')
+        .split('\n')
+        .slice(2, 14)
+        .map((line) => line.trim())
+        .join(' | ');
+    } catch { stack = ''; }
+    const entry: UnknownRecord = { t: Date.now(), via, stack };
+    if (extra) {
+      for (const key of Object.keys(extra)) entry[key] = extra[key];
+    }
+    buf.push(entry);
+    while (buf.length > USER_INFO_GUARD_TRACE_MAX) buf.shift();
+    try {
+      bag[USER_INFO_GUARD_TRACE_TEXT_KEY] = JSON.stringify(buf);
+    } catch { /* ignore stringify */ }
+  } catch {
+    // ignore ring failures
+  }
+}
+
+/** Paste-friendly dump; does not use clipboard copy(). */
+export function dumpUserInfoGuardTrace(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): string {
+  const bag = globalObject as UnknownRecord;
+  const buf = bag[USER_INFO_GUARD_TRACE_KEY];
+  let text = '[]';
+  try {
+    text = JSON.stringify(Array.isArray(buf) ? buf : [], null, 2);
+  } catch {
+    text = String(bag[USER_INFO_GUARD_TRACE_TEXT_KEY] ?? '[]');
+  }
+  bag[USER_INFO_GUARD_TRACE_TEXT_KEY] = text;
+  bag.__xcDumpUserInfoGuardTrace = dumpUserInfoGuardTrace;
+  try { console.log('[userinfo-guard] dump length=' + text.length); } catch { /* ignore */ }
+  return text;
+}
+
+function userInfoGuardLog(...parts: unknown[]): void {
+  const line = parts.map((part) => {
+    if (part === null || part === undefined) return String(part);
+    if (typeof part === 'string' || typeof part === 'number' || typeof part === 'boolean') return String(part);
+    try { return JSON.stringify(part); } catch { return Object.prototype.toString.call(part); }
+  }).join(' ');
+  pushUserInfoGuardTrace('log', { line });
+  let debug = false;
+  try { debug = (window as unknown as UnknownRecord)[USER_INFO_GUARD_DEBUG_KEY] === true; } catch { debug = false; }
+  if (!debug) return;
+  try {
+    const bag = window as unknown as UnknownRecord;
+    let buf = bag[USER_INFO_GUARD_LOG_KEY] as string[] | undefined;
+    if (!Array.isArray(buf)) {
+      buf = [];
+      bag[USER_INFO_GUARD_LOG_KEY] = buf;
+    }
+    buf.push(Date.now() + ' ' + line);
+    while (buf.length > USER_INFO_GUARD_LOG_MAX) buf.shift();
+  } catch {
+    // 忽略环形缓冲失败
+  }
+  try { console.log('[userinfo-guard]', line); } catch { /* 忽略 */ }
+}
+
+const WM_USER_INFO_HIDE_METHODS = [
+  'HideWindow',
+  'HideWin',
+  'CloseWindow',
+  'CloseWin',
+  'hideWindow',
+  'closeWindow',
+] as const;
+
+function yieldSkillTipsForSeatUi(globalObject: LayaRuntimeWindow): void {
+  yieldGeneralSkillTipsToSeatUi(globalObject);
+}
+
+/** 点击牌桌后短时内不要刷新座位 UI 或 TipsHide，避免操作菜单一闪就关。 */
+export function markSeatUiInteractionGrace(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow,
+  durationMs: number = SEAT_UI_GRACE_MS
+): void {
+  seatUiGraceUntil.set(globalObject, Date.now() + Math.max(200, durationMs));
+}
+
+export function isSeatUiInteractionGraceActive(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  const until = seatUiGraceUntil.get(globalObject) ?? 0;
+  return Date.now() < until;
+}
+
+function readNodeText(node: UnknownRecord): string {
+  const chunks: string[] = [];
+  for (const key of ['text', '_text', 'innerHTML', 'innerTEXT', '_innerHTML', 'label']) {
+    const value = node[key];
+    if (typeof value === 'string' && value.trim()) chunks.push(value);
+  }
+  const inner = asRecord(node._tf);
+  if (typeof inner?.text === 'string') chunks.push(inner.text);
+  const element = asRecord(node._element);
+  if (typeof element?.innerHTML === 'string' && element.innerHTML.trim()) chunks.push(element.innerHTML);
+  return chunks.join('');
+}
+
+function collectSubtreeText(root: UnknownRecord, maxDepth: number): string {
+  const parts: string[] = [];
+  const queue: Array<{ node: UnknownRecord; depth: number }> = [{ node: root, depth: 0 }];
+  let steps = 0;
+  while (queue.length > 0 && steps < 180) {
+    const item = queue.shift()!;
+    steps += 1;
+    const chunk = readNodeText(item.node);
+    if (chunk) parts.push(chunk);
+    if (item.depth >= maxDepth) continue;
+    const count = Number(item.node.numChildren);
+    if (!Number.isInteger(count) || typeof item.node.getChildAt !== 'function') continue;
+    for (let index = 0; index < count; index += 1) {
+      const child = asRecord(item.node.getChildAt(index));
+      if (child) queue.push({ node: child, depth: item.depth + 1 });
+    }
+  }
+  return parts.join('');
+}
+
+function walkDisplayTree(
+  root: UnknownRecord,
+  visit: (node: UnknownRecord) => void,
+  budget: number
+): void {
+  const queue: UnknownRecord[] = [root];
+  let scanned = 0;
+  while (queue.length > 0 && scanned < budget) {
+    const node = queue.shift()!;
+    scanned += 1;
+    visit(node);
+    const count = Number(node.numChildren);
+    if (!Number.isInteger(count) || typeof node.getChildAt !== 'function') continue;
+    // 限制扇出，避免宽 UI 树一次扫爆内存
+    const fanout = Math.min(count, 48);
+    for (let index = 0; index < fanout; index += 1) {
+      const child = asRecord(node.getChildAt(index));
+      if (child) queue.push(child);
+    }
+  }
+}
+
+/** 仅 PromptLayer 轻量扫菜单文案；禁止嵌套 collectSubtreeText，热路径专用。 */
+function lightSeatMenuVisible(globalObject: LayaRuntimeWindow): boolean {
+  const locator = createLayaObjectLocator(globalObject);
+  const layer = locator.layer('PromptLayer');
+  if (!layer) return false;
+  let hit = false;
+  walkDisplayTree(layer, (node) => {
+    if (hit || !isVisibleLayaNode(node)) return;
+    const text = readNodeText(node);
+    if (text && SEAT_PLAYER_MENU_ITEM.test(text)) hit = true;
+  }, 240);
+  return hit;
+}
+
+function isUserInfoManagedWindowOpenCheap(
+  globalObject: LayaRuntimeWindow
+): boolean {
+  let open = false;
+  forEachVisibleManagedWindow(globalObject, (win) => {
+    if (matchesWindowMarkers(win, USER_INFO_WINDOW_MARKERS)) open = true;
+  });
+  if (open) return true;
+  const locator = createLayaObjectLocator(globalObject);
+  for (const marker of USER_INFO_WINDOW_MARKERS) {
+    const single = locator.window(marker);
+    if (single && isVisibleLayaNode(single)) return true;
+  }
+  return false;
+}
+
+function collectVisibleOverlayText(globalObject: LayaRuntimeWindow): string {
+  // 热路径禁用：只扫 PromptLayer，小预算，不再扫 stage
+  const locator = createLayaObjectLocator(globalObject);
+  const layer = locator.layer('PromptLayer');
+  if (!layer) return '';
+  const parts: string[] = [];
+  walkDisplayTree(layer, (node) => {
+    if (!isVisibleLayaNode(node)) return;
+    const chunk = readNodeText(node);
+    if (chunk) parts.push(chunk);
+  }, 400);
+  return parts.join('|');
+}
+
+function mergedTextShowsSeatPlayerMenu(merged: string): boolean {
+  if (!SEAT_PLAYER_MENU_ITEM.test(merged)) return false;
+  if (merged.includes('个人信息')) return true;
+  const coreItems = ['复制昵称', '申请好友', '发送密语', '屏蔽发言'].filter((label) => merged.includes(label));
+  return coreItems.length >= 2;
+}
+
+export function refreshSeatPopupDismissPin(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow,
+  durationMs: number = SEAT_POPUP_DISMISS_PIN_MS
+): void {
+  seatPopupDismissPinUntil.set(globalObject, Date.now() + Math.max(5000, durationMs));
+}
+
+export function isSeatPopupDismissPinActive(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  return Date.now() < (seatPopupDismissPinUntil.get(globalObject) ?? 0);
+}
+
+export function armUserInfoDismissGuard(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow,
+  durationMs: number = USER_INFO_DISMISS_GUARD_MS
+): void {
+  const until = Date.now() + Math.max(800, durationMs);
+  const bag = globalObject as UnknownRecord;
+  const prev = Number(bag[USER_INFO_DISMISS_GUARD_UNTIL_KEY] ?? 0);
+  if (until > prev) bag[USER_INFO_DISMISS_GUARD_UNTIL_KEY] = until;
+}
+
+export function isUserInfoDismissGuardActive(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  return Date.now() < Number((globalObject as UnknownRecord)[USER_INFO_DISMISS_GUARD_UNTIL_KEY] ?? 0);
+}
+
+/** 用户主动关资料页时解除守卫，避免 HideWindow 被一直拦住。 */
+export function clearUserInfoDismissGuard(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  delete (globalObject as UnknownRecord)[USER_INFO_DISMISS_GUARD_UNTIL_KEY];
+}
+
+export function armSeatMenuTipsHold(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow,
+  durationMs: number = SEAT_MENU_TIPS_HOLD_MS
+): void {
+  const until = Date.now() + Math.max(400, durationMs);
+  const bag = globalObject as UnknownRecord;
+  const prev = Number(bag[SEAT_MENU_TIPS_HOLD_UNTIL_KEY] ?? 0);
+  if (until > prev) bag[SEAT_MENU_TIPS_HOLD_UNTIL_KEY] = until;
+}
+
+export function isSeatMenuTipsHoldActive(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  return Date.now() < Number((globalObject as UnknownRecord)[SEAT_MENU_TIPS_HOLD_UNTIL_KEY] ?? 0);
+}
+
+function clearSeatMenuTipsHold(globalObject: LayaRuntimeWindow): void {
+  const bag = globalObject as UnknownRecord;
+  try { delete bag[SEAT_MENU_TIPS_HOLD_UNTIL_KEY]; } catch { /* ignore */ }
+  try { seatUiGraceUntil.delete(globalObject); } catch { /* ignore */ }
+}
+
+function matchesUserInfoWindowName(windowName: unknown): boolean {
+  const name = String(windowName ?? '');
+  return USER_INFO_WINDOW_MARKERS.some((marker) => name.includes(marker));
+}
+
+function matchesSeatFlowExtraWindowName(windowName: unknown): boolean {
+  const name = String(windowName ?? '');
+  return SEAT_FLOW_EXTRA_WINDOW_MARKERS.some((marker) => name.includes(marker));
+}
+
+function matchesUserInfoWindowArg(windowName: unknown): boolean {
+  if (matchesUserInfoWindowName(windowName)) return true;
+  const win = asRecord(windowName);
+  return Boolean(win && matchesWindowMarkers(win, USER_INFO_WINDOW_MARKERS));
+}
+
+function matchesUserInfoProfileWindowName(windowName: unknown): boolean {
+  const name = String(windowName ?? '');
+  return USER_INFO_PROFILE_WINDOW_MARKERS.some((marker) => name.includes(marker));
+}
+
+function matchesUserInfoProfileWindowArg(windowName: unknown): boolean {
+  if (matchesUserInfoProfileWindowName(windowName)) return true;
+  const win = asRecord(windowName);
+  return Boolean(win && matchesWindowMarkers(win, USER_INFO_PROFILE_WINDOW_MARKERS));
+}
+
+/** 资料页/互动道具始终匹配；SelectCardWindow 仅座位流程或已武装时匹配。 */
+function matchesGuardedSeatPopupWindow(
+  globalObject: LayaRuntimeWindow,
+  windowName: unknown
+): boolean {
+  if (matchesUserInfoWindowArg(windowName)) return true;
+  if (!matchesSeatFlowExtraWindowName(windowName)) {
+    const win = asRecord(windowName);
+    if (!(win && SEAT_FLOW_EXTRA_WINDOW_MARKERS.some((marker) => matchesWindowMarkers(win, [marker])))) {
+      return false;
+    }
+  }
+  return isUserInfoDismissGuardActive(globalObject)
+    || isSeatUiInteractionGraceActive(globalObject)
+    || isSeatPlayerMenuRecentlySeen(globalObject)
+    || isGameSeatUiFlowActive(globalObject);
+}
+
+function shouldBlockUserInfoManagedWindowHide(
+  globalObject: LayaRuntimeWindow,
+  windowName: unknown
+): boolean {
+  if (!matchesGuardedSeatPopupWindow(globalObject, windowName)) return false;
+  // ShowWindow 后立刻 TipsHide/HideWindow 会误关资料页；守卫期内必须拦住。
+  // 旧逻辑在 isUserInfoDialogOpen 时 return false，等于刚显示就放行关掉。
+  // 不用 isSeatPlayerMenuProtected：菜单节点常留在显示树里，会把关窗永久拦住。
+  return isUserInfoDismissGuardActive(globalObject);
+}
+
+/** 树上是否仍有座位操作菜单文案；轻量版，禁止全 stage O(n²) 扫。 */
+export function isSeatPlayerMenuTextPresentInTree(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  if (cached && cached.destroyed !== true) {
+    const text = readNodeText(cached) || collectSubtreeText(cached, 4);
+    if (mergedTextShowsSeatPlayerMenu(text)) return true;
+  }
+  return lightSeatMenuVisible(globalObject);
+}
+
+export function isSeatPlayerMenuProtected(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  if (isSeatUiInteractionGraceActive(globalObject)) return true;
+  if (isSeatPlayerMenuRecentlySeen(globalObject)) return true;
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  if (cached && cached.destroyed !== true && isVisibleLayaNode(cached)) return true;
+  return lightSeatMenuVisible(globalObject);
+}
+
+/** 点头像菜单、资料页或资料页打开过渡期：改用局部收起，不跑全局 TipsHide。 */
+export function shouldBlockGlobalTipsDismissForSeatPopup(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  // 资料页 / 座位菜单 tips-hold：拦全局 TipsHide，避免菜单秒关。
+  // 点菜单项走 ShowWindow + releaseSeatMenuForUserInfo，不依赖放行 TipsHide。
+  if (isUserInfoDialogOpen(globalObject)) return true;
+  if (isSeatMenuTipsHoldActive(globalObject)) return true;
+  if (isUserInfoDismissGuardActive(globalObject)) return true;
+  return false;
+}
+
+/** 效果触发的全局收起：只关武将技能详情，并拉回座位菜单/资料页可见性。 */
+export function applySeatPopupSafeTipsDismiss(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  yieldSkillTipsForSeatUi(globalObject);
+  // 资料页已开：不要拉回座位菜单。菜单 hold 期间即使 dismiss 守卫在也要 sustain。
+  if (!isUserInfoDialogOpen(globalObject)) {
+    if (isSeatMenuTipsHoldActive(globalObject) || !isUserInfoDismissGuardActive(globalObject)) {
+      sustainVisibleSeatPlayerMenu(globalObject);
+    }
+  }
+  sustainVisibleUserInfoWindow(globalObject);
+}
+
+/** 找当前座位操作菜单根节点；仅 PromptLayer + 小预算，避免内存飙升。 */
+export function findSeatPlayerMenuRootNode(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): UnknownRecord | null {
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  if (cached && cached.destroyed !== true) {
+    const text = collectSubtreeText(cached, 4);
+    if (mergedTextShowsSeatPlayerMenu(text)) return cached;
+  }
+  let best: UnknownRecord | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  const locator = createLayaObjectLocator(globalObject);
+  const layer = locator.layer('PromptLayer');
+  if (!layer) return null;
+  walkDisplayTree(layer, (node) => {
+    if (node.destroyed === true || !isVisibleLayaNode(node)) return;
+    const text = readNodeText(node);
+    if (!text || !SEAT_PLAYER_MENU_ITEM.test(text)) return;
+    // Prefer the nearest menu-sized ancestor. Do NOT always climb 6 levels
+    // (that often lands on PromptLayer; release used to visible=false it).
+    let root: UnknownRecord = node;
+    let parent = asRecord(node.parent);
+    for (let d = 0; parent && d < 4; d += 1) {
+      const text = collectSubtreeText(parent, 3);
+      if (mergedTextShowsSeatPlayerMenu(text)) root = parent;
+      // Stop before PromptLayer / stage-sized hosts
+      const pname = String(parent.name ?? '');
+      if (pname.includes('Prompt') || pname.includes('Layer')) break;
+      parent = asRecord(parent.parent);
+    }
+    const score = Number(root.width ?? 0) + Number(root.height ?? 0);
+    if (score < bestScore) {
+      bestScore = score;
+      best = root;
+    }
+  }, 320);
+  return best;
+}
+
+function showLayaNode(node: UnknownRecord): void {
+  try {
+    node.visible = true;
+    node._visible = true;
+    node.alpha = 1;
+  } catch {
+    // 忽略。
+  }
+}
+
+const seatMenuRestoreTimer = new WeakMap<LayaRuntimeWindow, number>();
+
+/** 特效 TipsHide 收掉座位菜单后，若并未打开资料页则尝试拉回菜单。 */
+export function scheduleSeatMenuRestoreAfterTipsHide(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  const prev = seatMenuRestoreTimer.get(globalObject);
+  if (prev) globalObject.clearTimeout(prev);
+  const timer = globalObject.setTimeout(() => {
+    seatMenuRestoreTimer.delete(globalObject);
+    if (isUserInfoDialogOpen(globalObject) || isUserInfoDismissGuardActive(globalObject)) return;
+    sustainVisibleSeatPlayerMenu(globalObject);
+  }, 1000) as unknown as number;
+  seatMenuRestoreTimer.set(globalObject, timer);
+}
+
+/** 打开资料页时停止拉回座位菜单，并藏起菜单根节点，避免与个人信息抢层。 */
+const lastSeatMenuReleaseAt = new WeakMap<LayaRuntimeWindow, number>();
+
+export function releaseSeatMenuForUserInfo(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  const now = Date.now();
+  const prevAt = lastSeatMenuReleaseAt.get(globalObject) ?? 0;
+  if (now - prevAt < 80) {
+    pushUserInfoGuardTrace('releaseSeatMenuForUserInfo-debounced', { dt: now - prevAt });
+    return;
+  }
+  lastSeatMenuReleaseAt.set(globalObject, now);
+  pushUserInfoGuardTrace('releaseSeatMenuForUserInfo');
+  const prev = seatMenuRestoreTimer.get(globalObject);
+  if (prev) {
+    globalObject.clearTimeout(prev);
+    seatMenuRestoreTimer.delete(globalObject);
+  }
+  // Profile page takes over: clear hold/grace and native Hide. Never visible=false the cached root
+  // (it may be PromptLayer). InteractProp must not call this — see armForUserInfoOpen.
+  clearSeatMenuTipsHold(globalObject);
+  try {
+    const host = locateShowUserOptMenuHost(globalObject);
+    if (host && typeof host.HideUserOptMenu === 'function') {
+      (host.HideUserOptMenu as (...a: unknown[]) => unknown).call(host);
+    }
+  } catch { /* ignore */ }
+  cachedSeatMenuRoot.delete(globalObject);
+  seatMenuWasOpen.set(globalObject, false);
+  seatMenuWasVisible.set(globalObject, false);
+}
+
+/** 菜单文案仍在屏上但被误关 visible 时，尝试拉回。 */
+function sustainVisibleSeatPlayerMenu(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  if (cached && cached.destroyed !== true) {
+    // 原生 HideUserOptMenu 已 removeChild：不要 addChild 拉回，只丢缓存
+    if (!cached.parent) {
+      cachedSeatMenuRoot.delete(globalObject);
+      return;
+    }
+    if (!isVisibleLayaNode(cached)) showLayaNode(cached);
+    return;
+  }
+  // 无缓存时才轻量找一次，禁止全 stage 扫；找不到就不造
+  const root = findSeatPlayerMenuRootNode(globalObject);
+  if (root && root.parent) {
+    cachedSeatMenuRoot.set(globalObject, root);
+    if (!isVisibleLayaNode(root)) showLayaNode(root);
+  }
+}
+
+/** 牌桌座位头像旁的玩家操作菜单是否正在显示。 */
+export function isSeatPlayerContextMenuOpen(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  if (cached && cached.destroyed !== true && cached.parent && isVisibleLayaNode(cached)) return true;
+  const merged = collectVisibleOverlayText(globalObject);
+  return mergedTextShowsSeatPlayerMenu(merged);
+}
+
+export function noteSeatPlayerMenuPresence(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  // 轻量：只看缓存根节点可见性，绝不在轮询里全树扫/拉回。
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  // parent 没了 = 原生 removeChild 已关，不要当还开着
+  const visibleOpen = Boolean(
+    cached
+    && cached.destroyed !== true
+    && cached.parent
+    && isVisibleLayaNode(cached)
+  );
+  const wasVisible = seatMenuWasVisible.get(globalObject) === true;
+  if (wasVisible && !visibleOpen) {
+    // 原生已关：清 tips-hold / seat-grace，别再 sustain / 拦 TipsHide
+    clearSeatMenuTipsHold(globalObject);
+    cachedSeatMenuRoot.delete(globalObject);
+    armUserInfoDismissGuard(globalObject, MENU_TO_USERINFO_GUARD_MS);
+    userInfoGuardLog('menu-native-closed');
+  }
+  seatMenuWasVisible.set(globalObject, visibleOpen);
+  seatMenuWasOpen.set(globalObject, visibleOpen);
+  if (visibleOpen) {
+    lastSeatMenuSeenAt.set(globalObject, Date.now());
+    refreshSeatPopupDismissPin(globalObject);
+  }
+}
+
+function sustainVisibleUserInfoWindow(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  if (!isUserInfoDismissGuardActive(globalObject)) return;
+  if (isUserInfoViewVisibleOnStage(globalObject)) return;
+  const win = findUserInfoManagedWindow(globalObject) ?? cachedUserInfoWindow.get(globalObject);
+  if (!win || win.destroyed === true) return;
+  cachedUserInfoWindow.set(globalObject, win);
+  if (!isVisibleLayaNode(win)) showLayaNode(win);
+}
+
+const userInfoWasOpen = new WeakMap<LayaRuntimeWindow, boolean>();
+
+function installUserInfoInstanceCloseGuard(win: UnknownRecord, globalObject: LayaRuntimeWindow): void {
+  const methods = ['Close', 'close', 'CloseWin', 'Hide', 'hide', 'laterClose', 'removeSelf', 'destroy'] as const;
+  let originals = asRecord(win.__xcUserInfoCloseOriginals);
+  if (!originals) {
+    originals = {};
+    for (const method of methods) {
+      if (typeof win[method] === 'function') originals[method] = win[method];
+    }
+    win.__xcUserInfoCloseOriginals = originals;
+  }
+  // 每次安装都重绑到当前模块的 isUserInfoDismissGuardActive（HMR 后旧闭包会读错状态）
+  for (const method of methods) {
+    const original = originals[method];
+    if (typeof original !== 'function') continue;
+    win[method] = function (this: unknown, ...args: unknown[]) {
+      if (isUserInfoDismissGuardActive(globalObject)) {
+        userInfoGuardLog('block-instance', method);
+        return undefined;
+      }
+      return (original as (...a: unknown[]) => unknown).apply(this, args);
+    };
+  }
+  win.__xcUserInfoCloseGuarded = true;
+}
+
+export function noteUserInfoWindowPresence(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): void {
+  const open = isUserInfoDialogOpen(globalObject);
+  const wasOpen = userInfoWasOpen.get(globalObject) === true;
+  if (open) {
+    const win = findUserInfoManagedWindow(globalObject);
+    if (win) {
+      cachedUserInfoWindow.set(globalObject, win);
+      installUserInfoInstanceCloseGuard(win, globalObject);
+    }
+    // Only arm dismiss guard here. Releasing the seat menu belongs to armForUserInfoOpen
+    // (real ShowWindow). Presence false-positives were killing the opt menu.
+    if (!wasOpen) {
+      armUserInfoDismissGuard(globalObject, USER_INFO_DISMISS_GUARD_MS);
+      userInfoGuardLog('presence-open-arm');
+    }
+  }
+  // 守卫期内若只被误设 visible=false，不要清守卫，交给 sustain 拉回。
+  userInfoWasOpen.set(globalObject, open);
+  sustainVisibleUserInfoWindow(globalObject);
+}
+
+/** 菜单刚收起、资料窗尚未挂上时仍算在流程里。 */
+export function isSeatPlayerMenuRecentlySeen(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  const seenAt = lastSeatMenuSeenAt.get(globalObject) ?? 0;
+  return Date.now() - seenAt < SEAT_MENU_TAIL_MS;
+}
+
+/** 座位点头像菜单 / 资料页流程进行中（仅廉价信号，供 tip-stay 50ms tick 调用）。 */
+export function isGameSeatUiFlowActive(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  if (isSeatUiInteractionGraceActive(globalObject)) return true;
+  if (isUserInfoDismissGuardActive(globalObject)) return true;
+  if (isSeatPlayerMenuRecentlySeen(globalObject)) return true;
+  if (isUserInfoManagedWindowOpenCheap(globalObject)) return true;
+  const cached = cachedSeatMenuRoot.get(globalObject);
+  if (cached && cached.destroyed !== true && isVisibleLayaNode(cached)) return true;
+  return false;
+}
+
+/** 暂停昵称轮询。 */
+export function shouldDeferSeatTopManagerSync(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  return isGameSeatUiFlowActive(globalObject);
+}
+
+/** 小抄 Esc 等：资料页或座位菜单流程中不抢键盘。 */
+export function isNativeGamePopupProtected(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  return isGameSeatUiFlowActive(globalObject);
+}
+
+const showProbeStamp = new Map<string, number>();
+
+/** 任意开窗都打一行，确认真实 windowName；同名 250ms 去重防刷屏 */
+function probeShowWindow(via: string, windowName: unknown): void {
+  let debug = false;
+  try { debug = (window as unknown as UnknownRecord)[USER_INFO_GUARD_DEBUG_KEY] === true; } catch { debug = false; }
+  if (!debug) return;
+  const name = String(windowName ?? '');
+  const key = via + '\0' + name;
+  const now = Date.now();
+  const prev = showProbeStamp.get(key) ?? 0;
+  if (now - prev < 1000) return;
+  showProbeStamp.set(key, now);
+  userInfoGuardLog('show-probe', via, name);
+}
+
+function armForUserInfoOpen(
+  globalObject: LayaRuntimeWindow,
+  windowName: unknown,
+  via: string
+): void {
+  probeShowWindow(via, windowName);
+  const primary = matchesUserInfoWindowArg(windowName);
+  const extra = matchesSeatFlowExtraWindowName(windowName)
+    || Boolean(asRecord(windowName) && SEAT_FLOW_EXTRA_WINDOW_MARKERS.some(
+      (marker) => matchesWindowMarkers(asRecord(windowName)!, [marker])
+    ));
+  if (!primary && !extra) return;
+  if (extra && !primary) {
+    const seatFlow = isUserInfoDismissGuardActive(globalObject)
+      || isSeatUiInteractionGraceActive(globalObject)
+      || isSeatPlayerMenuRecentlySeen(globalObject)
+      || isGameSeatUiFlowActive(globalObject);
+    if (!seatFlow) return;
+  }
+  // Arm before native Show same-frame TipsHide. Only profile page may Hide the opt menu;
+  // InteractPropWindow used to call releaseSeatMenu and spam-kill the seat menu.
+  const isProfile = matchesUserInfoProfileWindowArg(windowName);
+  pushUserInfoGuardTrace('armForUserInfoOpen', {
+    via,
+    windowName: String(windowName ?? ''),
+    isProfile,
+  });
+  if (isProfile) {
+    releaseSeatMenuForUserInfo(globalObject);
+  }
+  yieldSkillTipsForSeatUi(globalObject);
+  markSeatUiInteractionGrace(globalObject, 5000);
+  lastSeatMenuSeenAt.set(globalObject, Date.now());
+  refreshSeatPopupDismissPin(globalObject);
+  armUserInfoDismissGuard(globalObject, USER_INFO_DISMISS_GUARD_MS);
+  userInfoGuardLog(via, String(windowName ?? ''), 'armed');
+  // Show 同步返回后实例才进字典：微任务/下一帧立刻挂 Close 守卫并 sustain。
+  const kick = () => {
+    try { noteUserInfoWindowPresence(globalObject); } catch { /* 忽略 */ }
+  };
+  try {
+    if (typeof queueMicrotask === 'function') queueMicrotask(kick);
+    else Promise.resolve().then(kick);
+  } catch {
+    try { globalObject.setTimeout(kick, 0); } catch { /* 忽略 */ }
+  }
+  try { globalObject.setTimeout(kick, 16); } catch { /* 忽略 */ }
+}
+
+function resolveShowWindowMethodNames(
+  globalObject: LayaRuntimeWindow,
+  dispatcher: UnknownRecord
+): string[] {
+  const locator = createLayaObjectLocator(globalObject);
+  const resolved = locator.obfuscatedMethodName(dispatcher, 'GameEventDispatcher', 'ShowWindow');
+  const names: string[] = [];
+  for (const name of [resolved, '_', 'ShowWindow']) {
+    if (name && typeof dispatcher[name] === 'function' && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+function wrapShowWindowMethodsOnTarget(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  target: UnknownRecord,
+  label: string,
+  hookedNames: string[]
+): boolean {
+  let hooked = false;
+  for (const methodName of resolveShowWindowMethodNames(globalObject, target)) {
+    const via = label + '.ShowWindow:' + methodName;
+    const ok = patcher.wrap(target, methodName, (original) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
+      armForUserInfoOpen(globalObject, windowName, via);
+      return original.call(this, windowName, ...rest);
+    });
+    if (ok) {
+      hooked = true;
+      hookedNames.push(via);
+    }
+  }
+  if (typeof target.ShowWindowAfterCloseOther === 'function') {
+    const via = label + '.ShowWindowAfterCloseOther';
+    const ok = patcher.wrap(target, 'ShowWindowAfterCloseOther', (original) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
+      armForUserInfoOpen(globalObject, windowName, via);
+      return original.apply(this, [windowName, ...rest]);
+    });
+    if (ok) {
+      hooked = true;
+      hookedNames.push(via);
+    }
+  }
+  return hooked;
+}
+
+function installUserInfoShowWindowGrace(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  hookedNames: string[]
+): boolean {
+  const dispatcher = createLayaObjectLocator(globalObject).dispatcher();
+  if (!dispatcher) return false;
+  let hooked = wrapShowWindowMethodsOnTarget(globalObject, patcher, dispatcher, 'ged', hookedNames);
+  const proto = asRecord(Object.getPrototypeOf(dispatcher));
+  if (proto) {
+    if (wrapShowWindowMethodsOnTarget(globalObject, patcher, proto, 'gedProto', hookedNames)) hooked = true;
+  }
+  // 校验：包装后实例上的 _ 是否已带 patch 标记（用于确认钩子真的挂到了 ue.I()）
+  try {
+    const fn = dispatcher['_'] as { [k: symbol]: unknown } | undefined;
+    const tagged = Boolean(fn && typeof fn === 'function' && fn[Symbol.for('sgsxc.methodPatch.wrap')]);
+    userInfoGuardLog(
+      'hook-verify',
+      'hasOwn_=' + Object.prototype.hasOwnProperty.call(dispatcher, '_'),
+      'tagged_=' + tagged,
+      'typeof_=' + typeof dispatcher['_']
+    );
+  } catch {
+    // 忽略
+  }
+  return hooked;
+}
+
+/** WindowManager.showWindowHandler：OPEN_WINDOW 同步链路里最先处理开窗的地方之一 */
+function installWindowManagerShowHandlerGrace(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  hookedNames: string[]
+): boolean {
+  const wm = readWindowManager(globalObject);
+  if (!wm) return false;
+  let hooked = false;
+  const targets: UnknownRecord[] = [wm];
+  const proto = asRecord(Object.getPrototypeOf(wm));
+  if (proto) targets.push(proto);
+  for (const target of targets) {
+    for (const method of ['showWindowHandler', 'ShowWindowHandler'] as const) {
+      if (typeof target[method] !== 'function') continue;
+      const via = 'WM.' + method;
+      const ok = patcher.wrap(target, method, (original) => function (this: unknown, ...args: unknown[]) {
+        const evt = asRecord(args[0]);
+        const windowName = evt?.WindowName ?? evt?.windowName ?? args[0];
+        armForUserInfoOpen(globalObject, windowName, via);
+        return original.apply(this, args);
+      });
+      if (ok) {
+        hooked = true;
+        hookedNames.push(via);
+      }
+    }
+  }
+  return hooked;
+}
+
+/**
+ * 直接监听 OPEN_WINDOW：不依赖 method wrap 是否命中真实 _。
+ * 客户端 ue.I()._("UserInfoWindow") 内部同步 event(OPEN_WINDOW)，此监听与 WM 同栈。
+ */
+function installOpenWindowArmListener(
+  globalObject: LayaRuntimeWindow
+): (() => void) | null {
+  const dispatcher = createLayaObjectLocator(globalObject).dispatcher();
+  if (!dispatcher || typeof dispatcher.on !== 'function' || typeof dispatcher.off !== 'function') {
+    return null;
+  }
+  const bag = globalObject as UnknownRecord;
+  if (bag.__xcUserInfoOpenWindowArmBound === true) {
+    return typeof bag.__xcUserInfoOpenWindowArmDispose === 'function'
+      ? bag.__xcUserInfoOpenWindowArmDispose as () => void
+      : null;
+  }
+  const handler = (evt: unknown) => {
+    const rec = asRecord(evt);
+    const windowName = rec?.WindowName ?? rec?.windowName ?? evt;
+    armForUserInfoOpen(globalObject, windowName, 'OPEN_WINDOW');
+  };
+  try {
+    (dispatcher.on as (...args: unknown[]) => void).call(dispatcher, 'OPEN_WINDOW', null, handler);
+  } catch {
+    return null;
+  }
+  // Laya 按注册顺序回调；把我们的监听挪到队首，保证在 WM.showWindowHandler 之前武装。
+  try {
+    const events = asRecord(dispatcher._events);
+    const bucket = events?.['OPEN_WINDOW'];
+    if (Array.isArray(bucket) && bucket.length > 1) {
+      const pred = (item: unknown) => {
+        const rec = asRecord(item);
+        return rec?.method === handler || rec?.listener === handler || item === handler;
+      };
+      const idx = bucket.findIndex(pred);
+      if (idx > 0) {
+        const [entry] = bucket.splice(idx, 1);
+        bucket.unshift(entry);
+        userInfoGuardLog('open-evt-prepending', 'idx=' + idx, 'len=' + bucket.length);
+      }
+    }
+  } catch {
+    // 队列结构因引擎版本不同失败时，仍保留 on() 注册。
+  }
+  bag.__xcUserInfoOpenWindowArmBound = true;
+  const dispose = () => {
+    try {
+      (dispatcher.off as (...args: unknown[]) => void).call(dispatcher, 'OPEN_WINDOW', null, handler);
+    } catch {
+      // 忽略
+    }
+    if (bag.__xcUserInfoOpenWindowArmDispose === dispose) {
+      delete bag.__xcUserInfoOpenWindowArmDispose;
+      delete bag.__xcUserInfoOpenWindowArmBound;
+    }
+  };
+  bag.__xcUserInfoOpenWindowArmDispose = dispose;
+  return dispose;
+}
+
+
+/**
+ * 座位 seat_info_icon -> Zas.showInfoHanlder -> PromptLayer(hKi).ShowUserOptMenu（文字菜单，不经 ShowWindow）。
+ * 必须在这里武装，否则点 icon 只有菜单、没有 show-probe。
+ */
+function armFromSeatInfoMenuOpen(globalObject: LayaRuntimeWindow, via: string): void {
+  // Only block 小抄 TipsHide mis-dismiss. Leave native HideUserOptMenu / stageClick (once 20ms) alone.
+  pushUserInfoGuardTrace('armFromSeatInfoMenuOpen', { via });
+  yieldSkillTipsForSeatUi(globalObject);
+  markSeatUiInteractionGrace(globalObject, SEAT_MENU_TIPS_HOLD_MS);
+  lastSeatMenuSeenAt.set(globalObject, Date.now());
+  refreshSeatPopupDismissPin(globalObject);
+  armSeatMenuTipsHold(globalObject, SEAT_MENU_TIPS_HOLD_MS);
+  const cacheRoot = () => {
+    try {
+      const host = locateShowUserOptMenuHost(globalObject);
+      const opt = host ? asRecord(host.optMenu) : null;
+      if (opt && opt.parent && opt.destroyed !== true) {
+        cachedSeatMenuRoot.set(globalObject, opt);
+        return;
+      }
+      const root = findSeatPlayerMenuRootNode(globalObject);
+      if (root && root.parent) cachedSeatMenuRoot.set(globalObject, root);
+    } catch { /* ignore */ }
+  };
+  // Defer cache: sync walk during open click can be heavy; optMenu exists after native Show returns.
+  try { globalObject.setTimeout(cacheRoot, 0); } catch { /* ignore */ }
+  try { globalObject.setTimeout(cacheRoot, 32); } catch { /* ignore */ }
+  userInfoGuardLog(via, 'armed');
+}
+
+function locateShowUserOptMenuHost(globalObject: LayaRuntimeWindow): UnknownRecord | null {
+  const locator = createLayaObjectLocator(globalObject);
+  const prompt = locator.layer('PromptLayer');
+  if (prompt && typeof prompt.ShowUserOptMenu === 'function') return prompt;
+  const fromManagers = locator.findManagerByPredicate(
+    (manager) => typeof manager.ShowUserOptMenu === 'function'
+  );
+  if (fromManagers) return fromManagers;
+  const stage = asRecord(globalObject.Laya?.stage);
+  if (stage) {
+    const count = Number(stage.numChildren);
+    if (Number.isInteger(count) && typeof stage.getChildAt === 'function') {
+      for (let i = 0; i < count; i += 1) {
+        const child = asRecord(stage.getChildAt(i));
+        if (child && typeof child.ShowUserOptMenu === 'function') return child;
+      }
+    }
+  }
+  return null;
+}
+
+
+/** Trace-only: who calls HideUserOptMenu / stageClickHandler / addStageClick (no behavior change). */
+function installHideUserOptMenuTrace(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  hookedNames: string[]
+): boolean {
+  const host = locateShowUserOptMenuHost(globalObject);
+  if (!host) return false;
+  let hooked = false;
+  // Prefer host; skip proto when host already owns the method (avoids multi-wrap spam).
+  const targets: UnknownRecord[] = [host];
+  const proto = asRecord(Object.getPrototypeOf(host));
+  if (proto) targets.push(proto);
+  for (const target of targets) {
+    for (const method of ['HideUserOptMenu', 'stageClickHandler', 'addStageClick'] as const) {
+      if (typeof target[method] !== 'function') continue;
+      if (target !== host && Object.prototype.hasOwnProperty.call(host, method)) continue;
+      const via = method + (target === host ? '' : '.proto');
+      if (hookedNames.includes('trace:' + via)) continue;
+      const ok = patcher.wrap(target, method, (original) => function (this: unknown, ...args: unknown[]) {
+        const arg0 = args[0];
+        const arg0Type = arg0 == null ? '' : String((asRecord(arg0)?.type) ?? typeof arg0);
+        let stack = '';
+        try {
+          stack = String(new Error('hide-trace').stack ?? '')
+            .split('\n')
+            .slice(2, 14)
+            .map((line) => line.trim())
+            .join(' | ');
+        } catch { stack = ''; }
+        pushUserInfoGuardTrace(method, { via, arg0: arg0Type, stack });
+        try {
+          const bag = globalObject as UnknownRecord;
+          const now = Date.now();
+          const last = Number(bag.__xcHideTraceSummaryAt ?? 0);
+          const count = Number(bag.__xcHideTraceCount ?? 0) + 1;
+          bag.__xcHideTraceCount = count;
+          if (now - last > 1500) {
+            bag.__xcHideTraceSummaryAt = now;
+            bag.__xcHideTraceCount = 0;
+            console.warn('[userinfo-guard] Hide/stage summary count=' + count + ' last=' + method + ' via=' + via);
+          }
+        } catch { /* ignore */ }
+        return original.apply(this, args);
+      });
+      if (ok) {
+        hooked = true;
+        hookedNames.push('trace:' + via);
+      }
+    }
+  }
+  return hooked;
+}
+
+function installShowUserOptMenuArm(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  hookedNames: string[]
+): boolean {
+  const host = locateShowUserOptMenuHost(globalObject);
+  if (!host) return false;
+  let hooked = false;
+  const targets: UnknownRecord[] = [host];
+  const proto = asRecord(Object.getPrototypeOf(host));
+  if (proto && typeof proto.ShowUserOptMenu === 'function') targets.push(proto);
+  const ctorProto = asRecord(asRecord(host.constructor)?.prototype);
+  if (ctorProto && typeof ctorProto.ShowUserOptMenu === 'function' && !targets.includes(ctorProto)) {
+    targets.push(ctorProto);
+  }
+  for (const target of targets) {
+    if (typeof target.ShowUserOptMenu !== 'function') continue;
+    const via = target === host ? 'ShowUserOptMenu' : 'ShowUserOptMenu.proto';
+    if (hookedNames.includes(via)) continue;
+    const ok = patcher.wrap(target, 'ShowUserOptMenu', (original) => function (this: unknown, ...args: unknown[]) {
+      armFromSeatInfoMenuOpen(globalObject, via);
+      const result = original.apply(this, args);
+      // Re-arm tips-hold after native open; do not touch addStageClick / HideUserOptMenu.
+      armFromSeatInfoMenuOpen(globalObject, via + ':after');
+      return result;
+    });
+    if (ok) {
+      hooked = true;
+      hookedNames.push(via);
+    }
+  }
+  installHideUserOptMenuTrace(globalObject, patcher, hookedNames);
+  return hooked;
+}
+
+function collectSeatUiRoots(globalObject: LayaRuntimeWindow): UnknownRecord[] {
+  const locator = createLayaObjectLocator(globalObject);
+  const scene = locator.gameScene() ?? locator.scene();
+  const roots: UnknownRecord[] = [];
+  const push = (value: unknown) => {
+    const rec = asRecord(value);
+    if (rec) roots.push(rec);
+  };
+  if (scene) {
+    push(scene);
+    push(scene.SelfSeatUi);
+    push(scene.selfSeatUi);
+    push(scene.fuSeatUI);
+    push(scene.fuSeatUi);
+    const container = asRecord(scene.seatContainer);
+    if (container) {
+      push(container);
+      const list = container.seatUIs ?? container.seatUis;
+      if (Array.isArray(list)) {
+        for (const item of list) push(item);
+      }
+      if (typeof container.getSeatUIs === 'function') {
+        try {
+          const got = container.getSeatUIs.call(container);
+          if (Array.isArray(got)) for (const item of got) push(item);
+        } catch { /* 忽略 */ }
+      }
+    }
+  }
+  return roots;
+}
+
+function installShowInfoHandlerArm(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  hookedNames: string[]
+): boolean {
+  // 只查 seatUIs / SelfSeatUi 等已知根，绝不 BFS 显示树（曾导致内存飙升）。
+  const roots = collectSeatUiRoots(globalObject);
+  if (roots.length === 0) return false;
+  const candidates: UnknownRecord[] = [];
+  const seen = new Set<object>();
+  const pushCand = (rec: UnknownRecord | null) => {
+    if (!rec || seen.has(rec)) return;
+    seen.add(rec);
+    candidates.push(rec);
+  };
+  for (const root of roots) {
+    pushCand(root);
+    for (const key of ['SelfSeatUi', 'selfSeatUi', 'fuSeatUI', 'fuSeatUi', 'seatContainer']) {
+      pushCand(asRecord(root[key]));
+    }
+    const container = asRecord(root.seatContainer) ?? root;
+    const list = container.seatUIs ?? container.seatUis;
+    if (Array.isArray(list)) {
+      for (const item of list) pushCand(asRecord(item));
+    }
+  }
+  let hooked = false;
+  for (const node of candidates) {
+    if (typeof node.showInfoHanlder !== 'function') continue;
+    const targets: UnknownRecord[] = [];
+    const proto = asRecord(Object.getPrototypeOf(node));
+    if (proto && typeof proto.showInfoHanlder === 'function') targets.push(proto);
+    const ctorProto = asRecord(asRecord(node.constructor)?.prototype);
+    if (ctorProto && typeof ctorProto.showInfoHanlder === 'function' && !targets.includes(ctorProto)) {
+      targets.push(ctorProto);
+    }
+    // 原型优先：一类座位只挂一次
+    for (const target of targets) {
+      const via = 'showInfoHanlder.proto';
+      if (hookedNames.includes(via)) continue;
+      const ok = patcher.wrap(target, 'showInfoHanlder', (original) => function (this: unknown, ...args: unknown[]) {
+        armFromSeatInfoMenuOpen(globalObject, via);
+        return original.apply(this, args);
+      });
+      if (ok) {
+        hooked = true;
+        hookedNames.push(via);
+        return true;
+      }
+    }
+    const via = 'showInfoHanlder';
+    if (!hookedNames.includes(via)) {
+      const ok = patcher.wrap(node, 'showInfoHanlder', (original) => function (this: unknown, ...args: unknown[]) {
+        armFromSeatInfoMenuOpen(globalObject, via);
+        return original.apply(this, args);
+      });
+      if (ok) {
+        hooked = true;
+        hookedNames.push(via);
+        return true;
+      }
+    }
+  }
+  return hooked;
+}
+
+function installEventDispatcherOpenWindowEarlyArm(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>,
+  hookedNames: string[]
+): boolean {
+  // 底层 event()：即使 on(OPEN_WINDOW) 插队失败，也能在派发时先武装。
+  const dispatcher = createLayaObjectLocator(globalObject).dispatcher();
+  if (!dispatcher) return false;
+  let hooked = false;
+  const targets: UnknownRecord[] = [dispatcher];
+  const proto = asRecord(Object.getPrototypeOf(dispatcher));
+  if (proto) targets.push(proto);
+  for (const target of targets) {
+    for (const method of ['event', 'Event'] as const) {
+      if (typeof target[method] !== 'function') continue;
+      const via = 'GED.' + method;
+      if (hookedNames.includes(via)) continue;
+      const ok = patcher.wrap(target, method, (original) => function (this: unknown, type: unknown, ...rest: unknown[]) {
+        if (type === 'OPEN_WINDOW' && !(globalObject as UnknownRecord).__xcUserInfoArmReentry) {
+          (globalObject as UnknownRecord).__xcUserInfoArmReentry = true;
+          try {
+            const payload = rest.length === 1 ? rest[0] : rest[0];
+            const rec = asRecord(payload);
+            const windowName = rec?.WindowName ?? rec?.windowName ?? payload;
+            armForUserInfoOpen(globalObject, windowName, via);
+          } finally {
+            delete (globalObject as UnknownRecord).__xcUserInfoArmReentry;
+          }
+        }
+        return original.apply(this, [type, ...rest]);
+      });
+      if (ok) {
+        hooked = true;
+        hookedNames.push(via);
+      }
+    }
+  }
+  return hooked;
+}
+
+/** GameEventDispatcher.CloseWindow / HideWindow：CLOSE/HIDE 事件，WindowManager 才会关窗 */
+function installGedUserInfoCloseGuard(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>
+): boolean {
+  const dispatcher = createLayaObjectLocator(globalObject).dispatcher();
+  if (!dispatcher) return false;
+  let hooked = false;
+  const targets: UnknownRecord[] = [dispatcher];
+  const proto = asRecord(Object.getPrototypeOf(dispatcher));
+  if (proto) targets.push(proto);
+  for (const target of targets) {
+    for (const method of ['CloseWindow', 'HideWindow', 'closeWindow', 'hideWindow'] as const) {
+      if (typeof target[method] !== 'function') continue;
+      const ok = patcher.wrap(target, method, (original) => function (this: unknown, ...args: unknown[]) {
+        if (shouldBlockUserInfoManagedWindowHide(globalObject, args[0])) {
+          userInfoGuardLog('block-ged', method, String(args[0] ?? ''));
+          return undefined;
+        }
+        return original.apply(this, args);
+      });
+      if (ok) hooked = true;
+    }
+  }
+  return hooked;
+}
+
+function installWindowManagerUserInfoHideGuard(
+  globalObject: LayaRuntimeWindow,
+  patcher: ReturnType<typeof createMethodPatcher>
+): boolean {
+  const wm = readWindowManager(globalObject);
+  if (!wm) return false;
+  const targets: UnknownRecord[] = [wm];
+  const proto = asRecord(Object.getPrototypeOf(wm));
+  if (proto) targets.push(proto);
+  let hooked = false;
+  const methods = [
+    ...WM_USER_INFO_HIDE_METHODS,
+    'CloseWindowByName',
+    'closeWindowByName',
+    'CloseAllWindow',
+    'CloseCurrentGameWindow',
+  ] as const;
+  for (const target of targets) {
+    for (const method of methods) {
+      if (typeof target[method] !== 'function') continue;
+      const ok = patcher.wrap(target, method, (original) => function (this: unknown, ...args: unknown[]) {
+        // CloseAllWindow / CloseCurrentGameWindow 无窗名参数：交给实例 Close 守卫拦 UserInfo，这里放行。
+        if (method === 'CloseAllWindow' || method === 'CloseCurrentGameWindow') {
+          return original.apply(this, args);
+        }
+        if (shouldBlockUserInfoManagedWindowHide(globalObject, args[0])) {
+          userInfoGuardLog('block-wm', method, String(args[0] ?? ''));
+          return undefined;
+        }
+        return original.apply(this, args);
+      });
+      if (ok) hooked = true;
+    }
+  }
+  return hooked;
+}
+
+function bindStageInteractionGrace(globalObject: LayaRuntimeWindow): void {
+  const stage = asRecord(globalObject.Laya?.stage);
+  if (!stage || stage.__xcSeatUiGraceBound === true) return;
+  const laya = asRecord(globalObject.Laya);
+  const eventName = String(asRecord(laya?.Event)?.MOUSE_DOWN ?? 'mousedown');
+  const extendGrace = () => {
+    markSeatUiInteractionGrace(globalObject);
+  };
+  if (typeof stage.on === 'function') {
+    try {
+      (stage.on as (...args: unknown[]) => void).call(stage, eventName, null, extendGrace);
+      stage.__xcSeatUiGraceBound = true;
+    } catch {
+      // 舞台未就绪时下一轮再绑
+    }
+  }
+}
+
+/** 座位弹层守卫：供 shouldDeferSeatTopManagerSync 与轮询维持原版菜单用 */
+export function installGameNativePopupProtector(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): () => void {
+  const bag = globalObject as UnknownRecord;
+  const prevDispose = bag.__xcGameNativePopupProtectorDispose;
+  if (typeof prevDispose === 'function') {
+    try { (prevDispose as () => void)(); } catch { /* 上次 HMR 清理失败则忽略 */ }
+  }
+  const prevOpenArm = bag.__xcUserInfoOpenWindowArmDispose;
+  if (typeof prevOpenArm === 'function') {
+    try { (prevOpenArm as () => void)(); } catch { /* 忽略 */ }
+  }
+
+  const patcher = createMethodPatcher();
+  let showWindowHooked = false;
+  let wmShowHooked = false;
+  let openWindowListening = false;
+  let windowHideHooked = false;
+  let gedCloseHooked = false;
+  let optMenuHooked = false;
+  let infoHandlerHooked = false;
+  let eventOpenHooked = false;
+  let loggedReady = false;
+  let openWindowDispose: (() => void) | null = null;
+  let nextSeatHookAttemptAt = 0;
+  const hookedNames: string[] = [];
+
+  const logHooksReady = (tag: string): void => {
+    userInfoGuardLog(
+      tag,
+      'show=' + showWindowHooked,
+      'wmShow=' + wmShowHooked,
+      'openEvt=' + openWindowListening,
+      'evtOpen=' + eventOpenHooked,
+      'optMenu=' + optMenuHooked,
+      'infoIcon=' + infoHandlerHooked,
+      'wm=' + windowHideHooked,
+      'ged=' + gedCloseHooked,
+      'names=' + hookedNames.join(',')
+    );
+  };
+
+  const tryHook = (): void => {
+    const prevOpt = optMenuHooked;
+    const prevInfo = infoHandlerHooked;
+    if (!showWindowHooked) showWindowHooked = installUserInfoShowWindowGrace(globalObject, patcher, hookedNames);
+    if (!wmShowHooked) wmShowHooked = installWindowManagerShowHandlerGrace(globalObject, patcher, hookedNames);
+    if (!openWindowListening) {
+      openWindowDispose = installOpenWindowArmListener(globalObject);
+      openWindowListening = openWindowDispose !== null;
+      if (openWindowListening) hookedNames.push('OPEN_WINDOW.on');
+    }
+    if (!eventOpenHooked) eventOpenHooked = installEventDispatcherOpenWindowEarlyArm(globalObject, patcher, hookedNames);
+    // 座位相关钩子进对局后才有：最多每 2s 试一次，避免热路径狂扫
+    const now = Date.now();
+    const needSeat = !optMenuHooked || !infoHandlerHooked;
+    if (needSeat && now >= nextSeatHookAttemptAt) {
+      nextSeatHookAttemptAt = now + 2000;
+      if (!optMenuHooked) optMenuHooked = installShowUserOptMenuArm(globalObject, patcher, hookedNames);
+      else installHideUserOptMenuTrace(globalObject, patcher, hookedNames);
+      if (!infoHandlerHooked) infoHandlerHooked = installShowInfoHandlerArm(globalObject, patcher, hookedNames);
+    }
+    if (!windowHideHooked) windowHideHooked = installWindowManagerUserInfoHideGuard(globalObject, patcher);
+    if (!gedCloseHooked) gedCloseHooked = installGedUserInfoCloseGuard(globalObject, patcher);
+    if (!loggedReady && (showWindowHooked || wmShowHooked || openWindowListening || windowHideHooked || gedCloseHooked || optMenuHooked || infoHandlerHooked || eventOpenHooked)) {
+      loggedReady = true;
+      logHooksReady('hooks-ready');
+    } else if (loggedReady && ((optMenuHooked && !prevOpt) || (infoHandlerHooked && !prevInfo))) {
+      logHooksReady('hooks-ready-update');
+    }
+  };
+
+  // 2s 轮询；热路径保持廉价，避免拖垮页面 / DevTools
+  const poll = globalObject.setInterval(() => {
+    bindStageInteractionGrace(globalObject);
+    noteSeatPlayerMenuPresence(globalObject);
+    noteUserInfoWindowPresence(globalObject);
+    tryHook();
+  }, 2000);
+  bindStageInteractionGrace(globalObject);
+  noteSeatPlayerMenuPresence(globalObject);
+  noteUserInfoWindowPresence(globalObject);
+  tryHook();
+  try {
+    bag.__xcDumpUserInfoGuardTrace = dumpUserInfoGuardTrace;
+    if (!Array.isArray(bag[USER_INFO_GUARD_TRACE_KEY])) bag[USER_INFO_GUARD_TRACE_KEY] = [];
+    bag[USER_INFO_GUARD_TRACE_TEXT_KEY] = '[]';
+  } catch { /* ignore */ }
+  userInfoGuardLog(
+    'protector-start',
+    'show=' + showWindowHooked,
+    'wmShow=' + wmShowHooked,
+    'openEvt=' + openWindowListening,
+    'evtOpen=' + eventOpenHooked,
+    'optMenu=' + optMenuHooked,
+    'infoIcon=' + infoHandlerHooked,
+    'wm=' + windowHideHooked,
+    'ged=' + gedCloseHooked
+  );
+  const markGraceIfInGame = () => {
+    if (locateGameScene(globalObject) || createLayaObjectLocator(globalObject).gameScene()) {
+      markSeatUiInteractionGrace(globalObject);
+    }
+  };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('mousedown', markGraceIfInGame, true);
+    document.addEventListener('touchstart', markGraceIfInGame, true);
+  }
+  const dispose = () => {
+    globalObject.clearInterval(poll);
+    patcher.restoreAll();
+    try { openWindowDispose?.(); } catch { /* 忽略 */ }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('mousedown', markGraceIfInGame, true);
+      document.removeEventListener('touchstart', markGraceIfInGame, true);
+    }
+    if (bag.__xcGameNativePopupProtectorDispose === dispose) {
+      delete bag.__xcGameNativePopupProtectorDispose;
+    }
+  };
+  bag.__xcGameNativePopupProtectorDispose = dispose;
+  return dispose;
+}
+
+

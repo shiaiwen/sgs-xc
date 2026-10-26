@@ -113,24 +113,26 @@ function toggleClaims() {
           </button>
         </h4>
         <div class="xiaochao-block-group__grid">
-          <label
+          <div
             v-for="setting in AUTO_TASK_SKIP_SETTINGS"
             :key="setting.key"
-            class="xiaochao-block-check"
+            class="xiaochao-block-check xiaochao-auto-task-row"
             :class="{ 'xiaochao-block-check--disabled': !enabled }"
             :data-tooltip="setting.tooltip"
             :title="setting.tooltip"
           >
-            <input
-              type="checkbox"
-              :aria-label="setting.label"
-              :checked="claimValues[setting.key]"
-              :disabled="!enabled"
-              @change="updateClaim(setting.key, $event)"
-            >
-            <span class="xiaochao-block-check__box" />
+            <label class="xiaochao-block-check__hit">
+              <input
+                type="checkbox"
+                :aria-label="setting.label"
+                :checked="claimValues[setting.key]"
+                :disabled="!enabled"
+                @change="updateClaim(setting.key, $event)"
+              >
+              <span class="xiaochao-block-check__box" />
+            </label>
             <span class="xiaochao-block-check__label">{{ setting.label }}</span>
-          </label>
+          </div>
         </div>
       </section>
     </BaseDialog>

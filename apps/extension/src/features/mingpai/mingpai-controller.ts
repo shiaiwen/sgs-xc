@@ -497,16 +497,8 @@ export function installMingpaiController(
   }
 
 
-  /**
-   * 进手牌的来源短名写到这几张牌上。
-   * 只写协议里本来就带着牌号的牌。自己推出来的牌号别人看不见，不标。
-   * 火攻亮出后仍留在手里的牌由操作回报标记。
-   */
-  function rememberIncomingHandLabels(
-    event: MoveCardEvent,
-    cardIds: readonly number[],
-    publishedCardIds: readonly number[] = event.cardIds
-  ): void {
+  /** 进手牌的来源短名写到这几张牌上。火攻亮出后仍留在手里的牌由操作回报标记。 */
+  function rememberIncomingHandLabels(event: MoveCardEvent, cardIds: readonly number[]): void {
     const sourceLabel = buildIncomingHandSourceLabel({
       spellId: event.spellId,
       moveType: event.moveType,
@@ -518,8 +510,7 @@ export function installMingpaiController(
       seatLabel: readSeatLabel
     }) ?? bachaoGivenLabel(event);
     if (!sourceLabel) return;
-    const published = new Set(publishedCardIds.filter((cardId) => cardId > 0));
-    cardIds.filter((cardId) => cardId > 0 && published.has(cardId)).forEach((cardId) => {
+    cardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
       engine.rememberPersistentCardTag(cardId, sourceLabel);
       const persistentTags = engine.getPersistentTags(cardId);
       if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
@@ -630,7 +621,7 @@ export function installMingpaiController(
       }
     );
     if (corrected.ignore) {
-      // 移动类型 0 的展示不会改牌的位置。霸朝交来的牌仍要标来源。
+      // 移动类型 0 的展示不会改牌的位置。别人看得见的牌仍要标来源。
       rememberIncomingHandLabels(rawEvent, rawEvent.cardIds);
       return;
     }
@@ -641,7 +632,7 @@ export function installMingpaiController(
       toPosition: corrected.toPosition
     };
     if (isInPlaceCardShow({ ...event, srcSeatId: event.srcSeatId ?? null }) && applySameZoneShow(event)) {
-      rememberIncomingHandLabels(event, event.cardIds, rawEvent.cardIds);
+      rememberIncomingHandLabels(event, event.cardIds);
       return;
     }
 
@@ -734,7 +725,7 @@ export function installMingpaiController(
       engine.removeZoneCardIds(MINGPAI_ZONE.UNKNOWN, known);
     }
 
-    rememberIncomingHandLabels(event, appliedCardIds, rawEvent.cardIds);
+    rememberIncomingHandLabels(event, appliedCardIds);
     appliedCardIds.forEach((cardId) => {
       const persistentTags = engine.getPersistentTags(cardId);
       if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);

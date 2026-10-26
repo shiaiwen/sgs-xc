@@ -4,6 +4,14 @@
  */
 
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator.ts';
+import {
+  applySeatPopupSafeTipsDismiss,
+  isGameSeatUiFlowActive,
+  isSeatPlayerMenuProtected,
+  isSystemConfirmWindowOpen,
+  pushUserInfoGuardTrace,
+  shouldBlockGlobalTipsDismissForSeatPopup,
+} from './game-native-dialog.ts';
 import { GAME_TIP_LAYER_Z } from './game-tip-layer.ts';
 import { createMethodPatcher } from './method-patch.ts';
 
@@ -13,8 +21,6 @@ const TIP_CLASS = 'XWi';
 const TIPS_OUT_EVENT = 'TIPS_OUT_EVENT';
 const TIP_CLICK_BOUND = '__xcGeneralSkillTipClickBound';
 const CLOSE_BTN_BOUND = '__xcGeneralSkillTipCloseBtnBound';
-const BLOCKING_WINDOW_PATTERN = /退出游戏|LeaveTable|LeaveRoom|MessageBox|ConfirmBox|提示/i;
-
 let nativeCheckButtonMode: NativeFn | null = null;
 const wrappedCloseBtnHandlers = new WeakSet<NativeFn>();
 
@@ -125,39 +131,9 @@ function readPrototype(
   return null;
 }
 
-function windowIdentity(win: UnknownRecord): string {
-  const ctor = asRecord(win.constructor);
-  return [String(win.name ?? ''), String(win.sceneName ?? ''), String(ctor?.name ?? '')].join('|');
-}
-
-function isVisibleWindow(win: UnknownRecord): boolean {
-  if (win.destroyed) return false;
-  if (win.visible === false || win._visible === false) return false;
-  const alpha = Number(win.alpha);
-  if (Number.isFinite(alpha) && alpha <= 0.01) return false;
-  return true;
-}
-
 function isBlockingGameWindowOpen(globalObject: LayaRuntimeWindow): boolean {
-  const context = asRecord(globalObject.GameContext);
-  const windowManager = asRecord(context?.WindowManager)
-    ?? createLayaObjectLocator(globalObject).manager('WindowManager');
-  const dict = asRecord(windowManager?.WindowInstanceDict);
-  if (!dict) return false;
-  const stack: UnknownRecord[] = [dict];
-  const seen = new Set<object>();
-  while (stack.length > 0 && seen.size < 48) {
-    const record = stack.pop()!;
-    if (seen.has(record)) continue;
-    seen.add(record);
-    for (const value of Object.values(record)) {
-      const win = asRecord(value);
-      if (!win) continue;
-      if (isVisibleWindow(win) && BLOCKING_WINDOW_PATTERN.test(windowIdentity(win))) return true;
-      if (value !== null && typeof value === 'object' && !Array.isArray(value)) stack.push(win);
-    }
-  }
-  return false;
+  if (isGameSeatUiFlowActive(globalObject)) return false;
+  return isSystemConfirmWindowOpen(globalObject);
 }
 
 function ensureTipAboveExtension(tip: UnknownRecord): void {
@@ -235,7 +211,11 @@ function bindTipCloseClick(tip: UnknownRecord, userClosing: WeakSet<object>): vo
   bindCloseBtnHandlers(tip, userClosing);
 }
 
-function forceDismissStayTips(manager: UnknownRecord | null): void {
+function forceDismissStayTips(
+  globalObject: LayaRuntimeWindow,
+  manager: UnknownRecord | null,
+): void {
+  if (shouldBlockGlobalTipsDismissForSeatPopup(globalObject)) return;
   if (!manager || typeof manager.TipsHide !== 'function') return;
   try {
     (manager.TipsHide as NativeFn).call(manager);
@@ -244,9 +224,19 @@ function forceDismissStayTips(manager: UnknownRecord | null): void {
   }
 }
 
+/** 出牌等特效会调 TipsHide / TIPS_OUT，误关点头像菜单与资料页。 */
+function shouldSuppressGlobalTipsHide(globalObject: LayaRuntimeWindow): boolean {
+  return shouldBlockGlobalTipsDismissForSeatPopup(globalObject);
+}
+
 export function installGeneralSkillTipStayCoordinator(
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): () => void {
+  const bag = globalObject as Record<string, unknown>;
+  const prevDispose = bag.__xcGeneralSkillTipStayDispose;
+  if (typeof prevDispose === 'function') {
+    try { (prevDispose as () => void)(); } catch { /* ignore */ }
+  }
   const userClosing = new WeakSet<object>();
   const patcher = createMethodPatcher();
   let dispatcherReady = false;
@@ -254,6 +244,7 @@ export function installGeneralSkillTipStayCoordinator(
   let managerProtoReady = false;
 
   function shouldKeepStayOpen(manager: UnknownRecord | null): boolean {
+    if (isGameSeatUiFlowActive(globalObject)) return false;
     if (isBlockingGameWindowOpen(globalObject)) return false;
     if (hasReplacingHoverTip(manager)) return false;
     const stays = collectStayTips(manager);
@@ -267,36 +258,73 @@ export function installGeneralSkillTipStayCoordinator(
     const proto = ged ? Object.getPrototypeOf(ged) as UnknownRecord : null;
     if (!proto || typeof proto.event !== 'function') return;
     patcher.wrap(proto, 'event', (original) => function (this: unknown, ...args: unknown[]) {
-      if (args[0] === TIPS_OUT_EVENT && shouldKeepStayOpen(readManager(globalObject))) {
-        return true;
+      if (args[0] === TIPS_OUT_EVENT) {
+        if (shouldBlockGlobalTipsDismissForSeatPopup(globalObject)) {
+          pushUserInfoGuardTrace('block-TIPS_OUT', { reason: 'seat-popup' });
+          applySeatPopupSafeTipsDismiss(globalObject);
+          return true;
+        }
+        if (isSeatPlayerMenuProtected(globalObject)) {
+          // Menu open: swallow TIPS_OUT. Do not arm userinfo dismiss guard (false presence release).
+          pushUserInfoGuardTrace('block-TIPS_OUT', { reason: 'menu-protected' });
+          applySeatPopupSafeTipsDismiss(globalObject);
+          return true;
+        }
+        if (shouldKeepStayOpen(readManager(globalObject))) return true;
       }
       return original.apply(this, args);
     });
     dispatcherReady = true;
   }
 
+  function wrapTipsDismissMethod(
+    target: UnknownRecord,
+    name: string,
+    block: (self: UnknownRecord) => boolean,
+  ): void {
+    patcher.wrap(target, name, (original) => function (this: unknown, ...args: unknown[]) {
+      // 资料页打开/守卫期：拦住全局收起，只关技能 tip、保住资料页。
+      if (shouldSuppressGlobalTipsHide(globalObject)) {
+        pushUserInfoGuardTrace('block-' + name, { reason: 'suppress-global' });
+        if (name === 'HideTargetTips') {
+          const tipName = String(args[0] ?? '');
+          if (tipName === TIP_NAME) return original.apply(this, args);
+          applySeatPopupSafeTipsDismiss(globalObject);
+          return undefined;
+        }
+        applySeatPopupSafeTipsDismiss(globalObject);
+        return undefined;
+      }
+      // TipsHide does not close optMenu in vanilla. Allow it while only menu-protected
+      // (grace/recent). tips-hold / userinfo still blocked above via shouldSuppress.
+      if (isSeatPlayerMenuProtected(globalObject)) {
+        pushUserInfoGuardTrace('pass-' + name, { reason: 'menu-protected-allow' });
+        return original.apply(this, args);
+      }
+      const self = asRecord(this);
+      if (self && block(self)) return undefined;
+      return original.apply(this, args);
+    });
+  }
+
   function installManagerProto(manager: UnknownRecord): void {
+    const block = (self: UnknownRecord) => shouldKeepStayOpen(self);
+    const dismissNames = ['TipsHide', 'HideTargetTips', 'clearTips2'] as const;
+    for (const name of dismissNames) {
+      wrapTipsDismissMethod(manager, name, block);
+    }
     if (managerProtoReady) return;
     const proto = readPrototype(globalObject, MANAGER_CLASS, 'TipsHide', manager);
     if (!proto) return;
-    const block = (self: UnknownRecord) => shouldKeepStayOpen(self);
-
-    patcher.wrap(proto, 'TipsHide', (original) => function (this: unknown, ...args: unknown[]) {
-      const self = asRecord(this);
-      if (self && block(self)) return undefined;
-      return original.apply(this, args);
-    });
-    patcher.wrap(proto, 'HideTargetTips', (original) => function (this: unknown, ...args: unknown[]) {
-      const self = asRecord(this);
-      if (self && block(self)) return undefined;
-      return original.apply(this, args);
-    });
-    patcher.wrap(proto, 'clearTips2', (original) => function (this: unknown, ...args: unknown[]) {
-      const self = asRecord(this);
-      if (self && block(self)) return undefined;
-      return original.apply(this, args);
-    });
+    for (const name of dismissNames) {
+      wrapTipsDismissMethod(proto, name, block);
+    }
     patcher.wrap(proto, 'onCheckStaticTip2', (original) => function (this: unknown, ...args: unknown[]) {
+      if (args[0] === false && shouldBlockGlobalTipsDismissForSeatPopup(globalObject)) {
+        applySeatPopupSafeTipsDismiss(globalObject);
+        return undefined;
+      }
+      if (isGameSeatUiFlowActive(globalObject)) return original.apply(this, args);
       const self = asRecord(this);
       if (args[0] === false && self && block(self)) return undefined;
       return original.apply(this, args);
@@ -304,6 +332,12 @@ export function installGeneralSkillTipStayCoordinator(
     patcher.wrap(proto, 'checkButtonMode', (original) => {
       nativeCheckButtonMode = original as NativeFn;
       return function (this: unknown, ...args: unknown[]) {
+        // 资料页/座位菜单打开时不要跑原 checkButtonMode，否则会收起刚打开的个人信息窗。
+        if (shouldBlockGlobalTipsDismissForSeatPopup(globalObject)) {
+          applySeatPopupSafeTipsDismiss(globalObject);
+          return undefined;
+        }
+        if (isGameSeatUiFlowActive(globalObject)) return original.apply(this, args);
         const self = asRecord(this);
         if (self && block(self)) return undefined;
         return original.apply(this, args);
@@ -353,37 +387,38 @@ export function installGeneralSkillTipStayCoordinator(
   function tick(): void {
     installDispatcherGuard();
     const manager = readManager(globalObject);
+    if (manager) {
+      installManagerProto(manager);
+      installTipProto();
+    }
+    if (isGameSeatUiFlowActive(globalObject)) return;
     if (!manager) return;
     if (isBlockingGameWindowOpen(globalObject)) {
-      forceDismissStayTips(manager);
+      forceDismissStayTips(globalObject, manager);
       return;
     }
     if (collectStayTips(manager).length > 1) {
-      try {
-        if (typeof manager.onCheckStaticTip2 === 'function') {
-          (manager.onCheckStaticTip2 as NativeFn).call(manager, false);
-        }
-      } catch {
-        // 忽略。
-      }
       return;
     }
-    installManagerProto(manager);
-    installTipProto();
     scanStayTips(manager);
   }
 
-  const timer = globalObject.setInterval(tick, 50);
+  const timer = globalObject.setInterval(tick, 500); // 降频：开 DevTools 时少打热路径
   tick();
 
-  return () => {
+  const dispose = () => {
     globalObject.clearInterval(timer);
     patcher.restoreAll();
     dispatcherReady = false;
     tipProtoReady = false;
     managerProtoReady = false;
     nativeCheckButtonMode = null;
+    if (bag.__xcGeneralSkillTipStayDispose === dispose) {
+      delete bag.__xcGeneralSkillTipStayDispose;
+    }
   };
+  bag.__xcGeneralSkillTipStayDispose = dispose;
+  return dispose;
 }
 
 export const generalSkillTipStayCoordinatorTesting = {

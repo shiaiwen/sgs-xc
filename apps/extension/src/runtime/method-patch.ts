@@ -24,6 +24,29 @@ export interface MethodPatcher {
   restoreAll(): void;
 }
 
+/** 跨 patcher 识别包装函数；HMR 重装时剥到真实原方法再替换，禁止套娃 */
+const XC_METHOD_WRAP = Symbol.for('sgsxc.methodPatch.wrap');
+const XC_METHOD_ORIGINAL = Symbol.for('sgsxc.methodPatch.original');
+
+type TaggedFn = PatchableFunction & { [k: symbol]: unknown };
+
+/** 若已是本库包装，沿 ORIGINAL 链剥到游戏原方法，避免层层套娃导致栈溢出 */
+function unwrapToOriginal(fn: unknown): PatchableFunction | null {
+  if (typeof fn !== 'function') return null;
+  let cursor: unknown = fn;
+  const seen = new Set<unknown>();
+  while (
+    typeof cursor === 'function'
+    && (cursor as TaggedFn)[XC_METHOD_WRAP]
+    && typeof (cursor as TaggedFn)[XC_METHOD_ORIGINAL] === 'function'
+  ) {
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    cursor = (cursor as TaggedFn)[XC_METHOD_ORIGINAL];
+  }
+  return typeof cursor === 'function' ? cursor as PatchableFunction : null;
+}
+
 /**
  * 创建可撤销的方法包装器。
  *
@@ -56,17 +79,19 @@ export function createMethodPatcher(): MethodPatcher {
   return {
     wrap(target, name, createWrapper) {
       if (!isObjectLike(target)) return false;
-      const original = target[name];
-      if (typeof original !== 'function') return false;
+      const current = target[name];
+      if (typeof current !== 'function') return false;
+      const original = unwrapToOriginal(current);
+      if (!original) return false;
       if (!claim(target, name)) return false;
       const ownDescriptor = Object.getOwnPropertyDescriptor(target, name);
-      const active = createWrapper(original as PatchableFunction);
+      const active = createWrapper(original);
       let restored = false;
-      const wrapper: PatchableFunction = function (this: unknown, ...args: unknown[]) {
-        return restored
-          ? (original as PatchableFunction).apply(this, args)
-          : active.apply(this, args);
+      const wrapper: TaggedFn = function (this: unknown, ...args: unknown[]) {
+        return restored ? original.apply(this, args) : active.apply(this, args);
       };
+      wrapper[XC_METHOD_WRAP] = true;
+      wrapper[XC_METHOD_ORIGINAL] = original;
       try {
         Object.defineProperty(target, name, {
           value: wrapper,

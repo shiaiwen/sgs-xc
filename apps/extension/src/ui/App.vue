@@ -134,8 +134,13 @@ onMounted(() => {
   shell.style.fontFamily = props.layout.fontFamily;
   expandedHeight = `${initialHeight}px`;
   expandedWidth = props.layout.width;
-  if (isDockedRight.value) applyRightDock(shell);
-  else restoreSavedPosition(shell);
+  if (isDockedRight.value) {
+    applyRightDock(shell);
+    requestAnimationFrame(() => syncDockedGameLayout(shell));
+    for (const delay of [320, 1200, 3000]) {
+      window.setTimeout(() => syncDockedGameLayout(shell), delay);
+    }
+  } else restoreSavedPosition(shell);
   if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
   window.addEventListener('resize', keepPanelInsideViewport);
 });

@@ -1,7 +1,7 @@
 /**
  * 油猴平台适配。
- * 外链用浏览器新窗口打开，配置读写使用 localStorage。
- * 只依赖 grant none 下可用的标准接口。
+ * 外链用浏览器新窗口打开；配置读写走 browser-settings（无共享存储时即 localStorage）。
+ * 只依赖 grant none 下可用的标准接口，不调用 GM_*。
  */
 import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from './browser-settings.ts';
 import type { PlatformAdapter } from './platform';

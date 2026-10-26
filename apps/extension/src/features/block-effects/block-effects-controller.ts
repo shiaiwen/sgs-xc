@@ -125,8 +125,7 @@ export function installBlockEffectsController(
     sha: isOn('block.shaEffect'),
     shan: isOn('block.shanEffect'),
     heal: isOn('block.healEffect'),
-    shake: isOn('block.shakeEffect'),
-    interact: isOn('block.interactEffect')
+    shake: isOn('block.shakeEffect')
   });
   const KIND_SWITCH: Record<PlaybackKind, BlockSettingKey> = {
     sha: 'block.shaEffect',
@@ -999,12 +998,6 @@ export function installBlockEffectsController(
         }
       }
 
-      const seatContainer = await poll(() => {
-        const container = asRecord(locator.gameScene()?.seatContainer);
-        return typeof container?.ReadyInteractProp === 'function' ? container : null;
-      }, 60, 100);
-      patcher.wrap(seatContainer, 'ReadyInteractProp', createReadyInteractPropWrapper);
-
       const seatUiPrototype = await poll(() => {
         const selfSeatUi = asRecord(locator.gameScene()?.SelfSeatUi);
         const prototype = asRecord(asRecord(selfSeatUi?.constructor)?.prototype);
@@ -1153,18 +1146,6 @@ export function installBlockEffectsController(
       }
     }
     return null;
-  }
-
-  function createReadyInteractPropWrapper(original: PatchableFunction): PatchableFunction {
-    return function (this: unknown, ...args: unknown[]) {
-      if (!isOn('block.interactEffect')) return original.apply(this, args);
-      const dispatcher = locator.dispatcher();
-      later(() => {
-        callMethod(dispatcher, 'event', 'TABLEGAME_INTERACT_PROP_PLAY_DONE');
-        if (args[3]) callMethod(dispatcher, 'event', 'TABLEGAME_INTERACT_PROP_PLAY_EFF_DONE');
-      });
-      return undefined;
-    };
   }
 
   /** 屏蔽入场等 BaseEffect；大厅中实例可能尚未出现，随场景切换重试。 */

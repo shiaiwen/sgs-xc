@@ -32,6 +32,7 @@ import {
   type TaskManagerAccess,
   type TaskRuleContext
 } from './auto-task-rules.ts';
+import type { AutoTaskSkipKey } from './auto-task-settings.ts';
 import type { AutoTaskWindows } from './auto-task-windows.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -44,6 +45,7 @@ export interface AutoTaskOptions {
   skipDiJiaQuan: boolean;
   skipHuanLeDou: boolean;
   skipFreeBless: boolean;
+  skipFreeTreasureFlip: boolean;
 }
 
 export interface AutoTaskRunnerDeps {
@@ -65,6 +67,8 @@ export interface AutoTaskRunner {
   scheduleLowBeanFree(reason: string): void;
   /** 新周卡、新月卡：不等待福利与砍树，并短时重试。 */
   claimNewPrivilegeCards(): void;
+  /** 用户刚勾选某领取项时，只跑对应步骤。 */
+  runClaimForSkipKey(key: AutoTaskSkipKey): void;
 }
 
 const LOW_BEAN_THRESHOLD = 600;
@@ -1272,6 +1276,47 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       .forEach((id) => claims.throttled(`generalAtlas:${id}`, () => call(generalManager, 'GeneralAtlasRewardReq', id)));
   }
 
+  /** 皮肤册集齐后书上出红点。总开关开着就领，没有单独开关。 */
+  function claimSkinBooks(): Promise<void> {
+    const skin = manager('GeneralSkinManager');
+    if (!active() || !skin) return Promise.resolve();
+    if (has(skin, 'SendClientSkinCollectionReq')) {
+      try {
+        call(skin, 'SendClientSkinCollectionReq');
+      } catch (error) {
+        console.warn('[自动领取] 皮肤册同步失败:', error);
+      }
+    }
+    for (const id of listClaimableSkinBookIds(skin)) {
+      claims.throttled(`skinBook:${id}`, () => call(skin, 'SendClientSkinCollectionRewardReq', id));
+    }
+    return Promise.resolve();
+  }
+
+  /** 奇珍翻翻乐当天能免费翻时，翻一张没翻开的。花费固定为 0，不重置、不兑换。 */
+  function claimFreeTreasureFlip(): Promise<void> {
+    if (!active() || deps.options().skipFreeTreasureFlip) return Promise.resolve();
+    const activity = manager('ActivityManager');
+    if (!activity) return Promise.resolve();
+    if (has(activity, 'SendClientTreasureReq')) {
+      try {
+        call(activity, 'SendClientTreasureReq');
+      } catch (error) {
+        console.warn('[自动领取] 翻翻乐同步失败:', error);
+      }
+    }
+    if (activity.TreasureNewCardFreeCard !== true) return Promise.resolve();
+    const info = asRecord(activity.TreasureInfoVo ?? activity.treasureInfoVo);
+    const sessionId = Number(info?.SessionId ?? info?.SeaonId);
+    const index = freeTreasureFlipIndex(activity.TreasureCardVos ?? activity.treasureCardVos);
+    if (!sessionId || index < 0 || !has(activity, 'SendOpenTreasureCard')) return Promise.resolve();
+    claims.throttled(`treasure:free:${sessionId}`, () => {
+      if (activity.TreasureNewCardFreeCard !== true) return false;
+      return call(activity, 'SendOpenTreasureCard', sessionId, 0, 1, index);
+    });
+    return Promise.resolve();
+  }
+
   // ---------- 武将包 ----------
 
   function openDailyGeneralBag(): void {
@@ -1302,6 +1347,56 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     step().catch((error) => console.warn(`[自动领取] ${name}失败:`, error));
   }
 
+  function runRewardFilterClaims(includeLowBean: boolean): void {
+    runStep('任务', claimTasks);
+    runStep('活动', claimActivities);
+    runStep('邮件', claimMail);
+    runStep('福利', claimWelfare);
+    if (includeLowBean) {
+      LOW_BEAN_RETRY_DELAYS.slice(0, 1).forEach((wait) => {
+        tasks.later(() => {
+          if (active()) claimLowBeanFree(manager('ActivityGameDataManager'));
+        }, wait);
+      });
+    }
+  }
+
+  function runClaimForSkipKey(key: AutoTaskSkipKey): void {
+    if (!active()) return;
+    switch (key) {
+      case 'autoTask.skipTavern':
+        runStep('任务', claimTasks);
+        return;
+      case 'autoTask.skipMail':
+        runStep('邮件', claimMail);
+        return;
+      case 'autoTask.skipDailyGeneralBag':
+        try {
+          openDailyGeneralBag();
+        } catch (error) {
+          console.warn('[自动领取] 武将包失败:', error);
+        }
+        return;
+      case 'autoTask.skipFreeBless':
+        claimFreeBlessDraws(blessNewManager());
+        return;
+      case 'autoTask.skipSignTrialCard':
+        runStep('签到', claimSigns);
+        return;
+      case 'autoTask.skipDiJiaQuan':
+        runRewardFilterClaims(false);
+        return;
+      case 'autoTask.skipHuanLeDou':
+        runRewardFilterClaims(true);
+        return;
+      case 'autoTask.skipFreeTreasureFlip':
+        runStep('翻翻乐', claimFreeTreasureFlip);
+        return;
+      default:
+        return;
+    }
+  }
+
   return {
     runPass() {
       if (!active()) return;
@@ -1314,6 +1409,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       runStep('福利', claimWelfare);
       runStep('公会三敲', beatGuildDrums);
       runStep('签到', claimSigns);
+      runStep('皮肤册', claimSkinBooks);
+      runStep('翻翻乐', claimFreeTreasureFlip);
     },
     claimDailyGeneralBag() {
       try {
@@ -1336,6 +1433,9 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       } catch (error) {
         console.warn('[自动领取] 新周卡月卡失败:', error);
       }
+    },
+    runClaimForSkipKey(key) {
+      runClaimForSkipKey(key);
     }
   };
 }
@@ -1415,4 +1515,32 @@ function arrayLength(value: unknown): number {
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
+}
+
+/** 皮肤册里书上带红点、可以领的收藏编号。 */
+export function listClaimableSkinBookIds(skinManager: UnknownRecord | null): number[] {
+  const dic = asRecord(skinManager?.qycSkinCollectDic);
+  const maps = asRecord(dic?.Maps ?? dic?._maps);
+  if (!maps) return [];
+  const ids: number[] = [];
+  for (const page of Object.values(maps)) {
+    if (!Array.isArray(page)) continue;
+    for (const item of page) {
+      const record = asRecord(item);
+      if (!record?.CanReward) continue;
+      const id = Number(record.nId);
+      if (Number.isFinite(id) && id > 0) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/** 五张牌里第一张还没翻开的位置。没有空位时返回 -1。 */
+export function freeTreasureFlipIndex(cards: unknown): number {
+  if (!Array.isArray(cards)) return -1;
+  for (let index = 0; index < cards.length; index += 1) {
+    const card = asRecord(cards[index]);
+    if (!Number(card?.Card)) return index;
+  }
+  return -1;
 }

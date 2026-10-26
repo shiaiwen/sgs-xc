@@ -1,5 +1,9 @@
 /**
  * 游戏协议 → 业务事件翻译：从日志参数识别 ClassName，产出 GameEvent。
+ *
+ * 入口 translateGameMessages / findGameMessage；内部按 ClassName 分发到
+ * translate*。字段名在网页端与微端不一致（SeatID/seatId、ProtoObj/protoObj），
+ * 读取函数会按候选键列表兼容。牌堆顶/底的缺省位置依赖恃才、寸目等技能状态。
  */
 
 import type { GameEvent } from '../runtime/game-event-bus.ts';
@@ -143,6 +147,7 @@ export function parseGsCUpdateHpNotification(payload: UnknownRecord): HpUpdatePa
   return null;
 }
 
+/** GsCUpdateHpNtf → hp-updated。 */
 function translateHpUpdate(payload: UnknownRecord): GameEvent | null {
   const parsed = parseGsCUpdateHpNotification(payload);
   if (!parsed) return null;
@@ -166,6 +171,7 @@ function translateHpUpdate(payload: UnknownRecord): GameEvent | null {
   };
 }
 
+/** 技能伤害通知 → spell-damage。 */
 function translateSpellDamage(payload: UnknownRecord): GameEvent | null {
   const spellId = readNonNegativeInteger(payload, ['SpellID', 'SpellId', 'spellID', 'spellId']);
   const seatId = readSeatId(payload, ['SeatID', 'SeatId', 'seatID', 'seatId', 'DestSeatID', 'DestSeatId']);
@@ -174,6 +180,7 @@ function translateSpellDamage(payload: UnknownRecord): GameEvent | null {
   return { type: 'spell-damage-resolved', seatId, spellId, damage };
 }
 
+/** 好友手牌揭示 → friend-hand-revealed（明牌标签用）。 */
 function translateFriendHandTags(payload: UnknownRecord): GameEvent | null {
   const protocol = asRecord(payload.Protocol);
   const nested = protocol ? protocolBody(protocol) : payload;
@@ -186,6 +193,7 @@ function translateFriendHandTags(payload: UnknownRecord): GameEvent | null {
   return { type: 'friend-hand-tags-updated', seatId, cardIds };
 }
 
+/** 阶段通知 → phase-changed。 */
 function translatePhase(payload: UnknownRecord): GameEvent | null {
   const seatId = readSeatId(payload, [
     ...SEAT_ID_KEYS,
@@ -208,6 +216,7 @@ function translateShaCount(payload: UnknownRecord): GameEvent | null {
   return { type: 'sha-count-updated', seatId, used: Number.isFinite(used) ? used : 0, limit };
 }
 
+/** 心幽角色牌数据 → xinyou-role-cards。 */
 function translateXinyouRoleCards(payload: UnknownRecord): GameEvent | null {
   const dataId = readNonNegativeInteger(payload, ['DataID', 'DataId', 'dataID', 'dataId']);
   const datas = payload.Datas ?? payload.datas;
@@ -222,6 +231,7 @@ function translateXinyouRoleCards(payload: UnknownRecord): GameEvent | null {
   return { type: 'xinyou-cards-updated', seatId, cardIds };
 }
 
+/** 技能附加数据推送 → spell-data。 */
 function translateSpellData(payload: UnknownRecord): GameEvent | null {
   if (payload.IsSpell !== true && payload.isSpell !== true) return null;
   const dataId = readNonNegativeInteger(payload, ['DataID', 'DataId', 'dataID', 'dataId']);
@@ -231,6 +241,7 @@ function translateSpellData(payload: UnknownRecord): GameEvent | null {
   return { type: 'spell-data-updated', seatId, dataId, datas: datas.map(Number) };
 }
 
+/** 触发技询问/发动 → trigger-spell。 */
 function translateTriggerSpell(payload: UnknownRecord): GameEvent | null {
   const seatId = readSeatId(payload, ['TriggerSeatId', 'TriggerSeatID', 'triggerSeatId', 'triggerSeatID']);
   const data = payload.TriggerSpellData ?? payload.triggerSpellData;
@@ -245,6 +256,10 @@ function translateTriggerSpell(payload: UnknownRecord): GameEvent | null {
   return spellIds.length ? { type: 'spell-triggered', seatId, spellIds } : null;
 }
 
+/**
+ * 单条协议 → 至多一个业务事件。Turn/GameOver 等无座位协议必须先于座位校验。
+ * 出牌时顺带记下 lastPlayedCard，供后续进牌堆缺省位置判断。
+ */
 function translateSingleMessage(payload: UnknownRecord, className: string): GameEvent | null {
   if (className === CARD_MOVE_MESSAGE_NAME) return translateCardMovement(payload);
   // MsgGameTurnNtf 通常只有 TurnCnt，不携带 SeatID。必须在通用座位校验前
@@ -339,6 +354,10 @@ function translateSingleMessage(payload: UnknownRecord, className: string): Game
   };
 }
 
+/**
+ * PubGsCMoveCard → cards-moved。
+ * MoveType=0 仍可能合法；随后按恃才/寸目状态修正牌堆顶底。
+ */
 function translateCardMovement(payload: UnknownRecord): GameEvent | null {
   const body = payload;
   const cardCount = readNonNegativeInteger(body, ['CardCount', 'cardCount', 'card_count']);
@@ -380,6 +399,7 @@ function readPilePosition(body: UnknownRecord, keys: readonly string[], zone: nu
   return zone === DRAW_PILE_ZONE ? DRAW_PILE_UNSPECIFIED : 0;
 }
 
+/** 记录「之后从牌堆进手都按底摸」的座位（寸目等）。 */
 function noteBottomDrawSeat(seatId: number | null, spellId: number): void {
   if (spellId === SPELL_DRAW_BOTTOM_INSTEAD && seatId !== null && seatId >= 0 && seatId < 0xff) {
     bottomDrawSeats.add(seatId);
@@ -513,6 +533,9 @@ function translateOptTarget(payload: UnknownRecord): GameEvent | null {
   };
 }
 
+/**
+ * CGsRoleSpellOptRep 可能同时产出「看见的牌」与「临时区重排」两条事件。
+ */
 function translateSpellOptRep(payload: UnknownRecord): GameEvent[] {
   const seatId = readSeatId(payload, SEAT_ID_KEYS);
   const spellId = readNonNegativeInteger(payload, ['SpellID', 'SpellId', 'spellID', 'spellId']);
@@ -556,6 +579,7 @@ function normalizeZoneOwner(ownerId: number, zone: number): number {
   return ownerId === 0 && GLOBAL_ZONE_IDS.has(zone) ? 0xff : ownerId;
 }
 
+/** 读移动牌号；兼容只有单张 CardID、没有 CardIDs 数组的协议。 */
 function readMovementCardIds(payload: UnknownRecord): number[] {
   for (const key of CARD_IDS_KEYS) {
     const value = payload[key];

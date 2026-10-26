@@ -1,6 +1,10 @@
 /**
  * 游戏消息源：微端从 console.log 取协议，浏览器从 ServerProxy.event 取。
  * 同一条消息两边都会出现时只处理一次。
+ *
+ * 两路入口都汇入 deliver() → translateGameMessages → gameEvents.publish。
+ * 对象级去重（recentPayloads）挡同 tick 镜像；牌移动另有按签名的短窗口去重，
+ * 保留「同一来源真实连发」的多次移动。
  */
 
 import { installProtocolEventHooks } from './server-proxy-protocol-hook.ts';
@@ -47,6 +51,7 @@ export function installMicroClientMessageSource(
   globalObject: MicroClientMessageWindow = window,
   options: MicroClientMessageSourceOptions = {}
 ): () => void {
+  // 同一 payload 对象引用在同 tick 内只处理一次（console 与 proxy 常指向同一对象）。
   const recentPayloads = new Set<object>();
   let recentPayloadsClearPending = false;
   const recentCardMovements = new Map<string, {
@@ -89,6 +94,7 @@ export function installMicroClientMessageSource(
     }
   }
 
+  /** 统一投递：识别协议、改写、去重、翻译并发布。 */
   function deliver(
     rawArguments: unknown[],
     fallbackClassName = '',
@@ -197,7 +203,7 @@ export function installMicroClientMessageSource(
     return true;
   }
 
-  const consoleLogSource = installConsoleLogSource(listener);
+  const consoleLogSource = installConsoleLogSource(listener, globalObject);
   const protocolHook = installProtocolEventHooks(globalObject, {
     mutate: (className, payload) => mutateProtocolPayload(payload, className),
     shouldDrop: (className, payload) => options.shouldDropProtocolEvent?.(className, payload) ?? false,
@@ -223,16 +229,21 @@ export function installMicroClientMessageSource(
   };
 }
 
+/** console.log 钩子被拆掉后的自愈间隔（毫秒）。 */
+const CONSOLE_LOG_HOOK_HEAL_MS = 2000;
+
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
 }
 
+/** 粗判是否为游戏协议事件名，避免把 UI 自定义事件当协议转发。 */
 function isProtocolEvent(className: string, payload: UnknownRecord): boolean {
   if (readClassName(payload)) return true;
   return /^(decode|Msg|Client|GsC|PubGs|Smsg|CClient|CGs|SSC|SsC)/.test(className)
     || /chatmsg/i.test(className);
 }
 
+/** 无 findGameMessage 命中时，从参数末尾挑一个对象当 payload。 */
 function payloadFor(rawArguments: unknown[], fallbackClassName: string): UnknownRecord | null {
   if (!fallbackClassName) return null;
   for (let index = rawArguments.length - 1; index >= 0; index -= 1) {
@@ -252,29 +263,48 @@ interface ConsoleLogSource {
   restore(): void;
 }
 
-function installConsoleLogSource(listener: MessageListener): ConsoleLogSource {
+/**
+ * 劫持 console.log 作为微端协议入口。
+ * 用 getter/setter + 定时自愈：游戏加载会反复覆盖 console.log，
+ * setter 接住赋值只换下游；若 defineProperty 被拆掉则周期性重挂。
+ */
+function installConsoleLogSource(
+  listener: MessageListener,
+  globalObject: MicroClientMessageWindow = window
+): ConsoleLogSource {
   const descriptor = Object.getOwnPropertyDescriptor(console, 'log');
   let downstreamLog: unknown = console.log;
   const wrappedLog = (...rawArguments: unknown[]) => {
     listener(...rawArguments);
     return typeof downstreamLog === 'function' ? downstreamLog.apply(console, rawArguments) : undefined;
   };
-  try {
-    // 游戏加载过程中会给 console.log 重新赋值；用 setter 接住赋值，只替换下游函数，
-    // 否则包装被覆盖后协议消息会整局丢失。
-    Object.defineProperty(console, 'log', {
-      configurable: true,
-      enumerable: descriptor?.enumerable ?? true,
-      get: () => wrappedLog,
-      set: (value: unknown) => {
-        downstreamLog = value;
-      }
-    });
-  } catch {
+  let hookInstalled = false;
+  const assertHook = () => {
+    if (hookInstalled && console.log === wrappedLog) return;
+    try {
+      // 游戏加载过程中会给 console.log 重新赋值；用 setter 接住赋值，只替换下游函数，
+      // 否则包装被覆盖后协议消息会整局丢失。
+      Object.defineProperty(console, 'log', {
+        configurable: true,
+        enumerable: descriptor?.enumerable ?? true,
+        get: () => wrappedLog,
+        set: (value: unknown) => {
+          downstreamLog = value;
+        }
+      });
+      hookInstalled = true;
+    } catch {
+      hookInstalled = false;
+    }
+  };
+  assertHook();
+  if (!hookInstalled) {
     return { restore: () => undefined };
   }
+  const healTimer = globalObject.setInterval(assertHook, CONSOLE_LOG_HOOK_HEAL_MS);
   return {
     restore() {
+      globalObject.clearInterval(healTimer);
       if (console.log !== wrappedLog) return;
       try {
         if (descriptor) Object.defineProperty(console, 'log', descriptor);
@@ -286,6 +316,7 @@ function installConsoleLogSource(listener: MessageListener): ConsoleLogSource {
   };
 }
 
+/** 诊断快照：摊平多层 Protocol/Data 后摘牌移动关键字段。 */
 function snapshotMovementPayload(payload: UnknownRecord, className: string): UnknownRecord {
   const message = asRecord(payload.msg) ?? asRecord(payload.Msg);
   const data = asRecord(payload.Data) ?? asRecord(payload.data);
@@ -328,6 +359,7 @@ function snapshotMovementPayload(payload: UnknownRecord, className: string): Unk
   };
 }
 
+/** 诊断快照：只记键名与类名，避免把整包协议堆进监控环。 */
 function snapshotProtocolEvent(eventName: string, payload: UnknownRecord): UnknownRecord {
   const protocol = asRecord(payload.Protocol) ?? asRecord(payload.protocol);
   const data = asRecord(payload.Data) ?? asRecord(payload.data);

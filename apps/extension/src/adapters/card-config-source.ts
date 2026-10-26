@@ -1,5 +1,9 @@
 /**
  * 官方 Config_w.sgs 配置源：下载解密后提供卡牌字典、技能名、自动任务/山河/进阶辅助表。
+ *
+ * 流程：等页面出现 JSZip/CtrUtil/Zlib → 复用游戏已请求的 Config_w URL（或按
+ * resourceVersion 拼）→ 下载 → Gunzip/解密各表 → 建字典并挂到 window 供监控。
+ * 自动任务/山河/进阶表失败不影响卡牌字典本身。
  */
 
 import {
@@ -84,6 +88,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
   const timer = globalObject.setInterval(tryLoad, POLL_INTERVAL_MS);
   tryLoad();
 
+  /** 轮询等待解码库；登录页停留不计入超时。就绪后异步拉包，只触发一次。 */
   function tryLoad(): void {
     if (disposed || loading || dictionary) return;
     const codecs = readGameConfigCodecs(globalObject);
@@ -161,6 +166,10 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
   };
 }
 
+/**
+ * 解包 Config_w：卡牌与技能必做；自动任务/山河/进阶辅助表失败只打日志。
+ * 成功后写入 window.__XIAOCHAO_OFFICIAL_CARD_DICTIONARY__ 等只读挂载点。
+ */
 async function loadCardDictionary(
   globalObject: Window,
   codecs: GameConfigCodecs
@@ -363,10 +372,12 @@ export function buildCardDictionary(playCards: unknown, spells: unknown): CardCo
   return dictionary;
 }
 
+/** 去掉技能描述里的富文本标记，得到纯显示名。 */
 function stripSpellMarkup(text: string): string {
   return text.replace(/<[^<>]*>/g, '').replace(/#.*/g, '').replace(/[;\n]+$/g, '');
 }
 
+/** 从 zip 里按名取文件，经 CtrUtil 解密再 JSON 解析。 */
 async function readConfigFile(
   archive: ZipArchive,
   codecs: GameConfigCodecs,
@@ -394,6 +405,7 @@ function resolveConfigUrl(globalObject: Window): string {
   return `${CONFIG_ORIGIN}${CONFIG_PATH}?v=${version ?? ''}`;
 }
 
+/** 判断 performance 里看到的请求是否就是 Config_w 资源包。 */
 function isConfigArchiveUrl(url: string, globalObject: Window): boolean {
   try {
     const parsed = new URL(url, globalObject.location.href);
@@ -403,6 +415,7 @@ function isConfigArchiveUrl(url: string, globalObject: Window): boolean {
   }
 }
 
+/** 带超时的 fetch；中止后抛错，由上层决定是否重试。 */
 async function downloadArchive(url: string): Promise<ArrayBuffer> {
   let lastError: unknown;
   for (let attempt = 0; attempt < DOWNLOAD_ATTEMPTS; attempt += 1) {
@@ -435,6 +448,7 @@ function readGameGlobals(globalObject: Window): Record<'JSZip' | 'CtrUtil' | 'Zl
   };
 }
 
+/** 缺哪些解码库的可读描述，便于超时日志。 */
 function describeMissingCodecs(globalObject: Window): string {
   const globals = readGameGlobals(globalObject) as Record<string, any>;
   return JSON.stringify({
@@ -444,6 +458,7 @@ function describeMissingCodecs(globalObject: Window): string {
   });
 }
 
+/** 三件套齐全才返回；缺一不可（解压 + 解密 + zip）。 */
 function readGameConfigCodecs(globalObject: Window): GameConfigCodecs | null {
   const globals = readGameGlobals(globalObject);
   const jsZip = asObjectLike(globals.JSZip);

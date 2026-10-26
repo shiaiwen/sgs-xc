@@ -13,6 +13,27 @@ export const PANEL_SHELL_STYLE_ID = 'xiaochao-vue-panel-shell-style';
  * 表现为打包后开关退回原生 checkbox、滑块只剩白点。
  */
 const PANEL_SHELL_CSS_SOURCE = `
+#xiaochao-app {
+  pointer-events: none;
+}
+#xiaochao-dialog-host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2147483601;
+}
+#xiaochao-dialog-host > * {
+  pointer-events: auto;
+}
+html.xiaochao-game-viewport--docked #bgDiv {
+  width: var(--xc-game-viewport-width, calc(100% - var(--xc-docked-panel-width, 0px))) !important;
+  max-width: var(--xc-game-viewport-width, calc(100% - var(--xc-docked-panel-width, 0px))) !important;
+  box-sizing: border-box !important;
+}
 #createIframe.createIframe {
   --xc-font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
   position: fixed !important;
@@ -743,6 +764,16 @@ const PANEL_SHELL_CSS_SOURCE = `
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-gap: 8px 10px;
 }
+.xiaochao-auto-task-dialog .xiaochao-block-check__box {
+  margin-left: 0;
+}
+.xiaochao-auto-task-dialog .xiaochao-auto-task-row .xiaochao-block-check__hit {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin: 0;
+  cursor: pointer;
+}
 .xiaochao-block-dialog .xiaochao-dialog__content {
   padding: 12px 10px 14px;
 }
@@ -753,9 +784,6 @@ const PANEL_SHELL_CSS_SOURCE = `
   min-width: 0;
   padding: 12px 10px 14px;
   overflow-x: hidden;
-}
-.xiaochao-auto-task-dialog .xiaochao-block-check__box {
-  margin-left: 0;
 }
 .xiaochao-block-select-bar {
   display: flex;
@@ -925,6 +953,7 @@ const PANEL_SHELL_CSS_SOURCE = `
   content: "开";
 }
 .xiaochao-block-check {
+  position: relative;
   display: flex;
   align-items: center;
   box-sizing: border-box;
@@ -932,6 +961,9 @@ const PANEL_SHELL_CSS_SOURCE = `
   min-height: 24px;
   margin: 0;
   cursor: pointer;
+}
+.xiaochao-dialog .xiaochao-block-check {
+  font-size: 12px;
 }
 .xiaochao-block-check input {
   position: absolute;
@@ -981,16 +1013,13 @@ const PANEL_SHELL_CSS_SOURCE = `
   cursor: default;
 }
 .xiaochao-block-check__label {
-  flex: 1;
-  min-width: 0;
+  flex: 0 1 auto;
+  flex-shrink: 0;
   margin-left: 6px;
   color: #f2de9c;
   font-size: 12.5px;
   line-height: 16px;
-  overflow-wrap: anywhere;
-}
-.xiaochao-auto-task-dialog .xiaochao-block-check__label {
-  white-space: normal;
+  white-space: nowrap;
 }
 /* 快捷工具：屏蔽/红点/皮肤/领取 两行两列紧凑入口 */
 #createIframe .xiaochao-quick-tools {

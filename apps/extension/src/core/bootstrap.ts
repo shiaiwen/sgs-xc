@@ -29,6 +29,7 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
+import { installGameNativePopupProtector } from '../runtime/game-native-dialog';
 import { installGeneralSkillTipStayCoordinator } from '../runtime/general-skill-tip-stay-coordinator';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
@@ -75,8 +76,10 @@ import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-c
 import { installClassicRoomFilterController } from '../features/room-filter/classic-room-filter-controller';
 import { installCampChatRightPanelController } from '../features/in-game-chat/camp-chat-right-panel';
 
+/** 挂到 window.__XIAOCHAO_STARTUP__，方便控制台看 waiting/ready。 */
 const panelStartupStatus: Record<string, unknown> = {};
 
+/** 核心装好后对外暴露的面板挂载 / 会话同步句柄。 */
 interface XiaochaoCoreRuntime {
   mountPanelShell(layout?: XiaochaoPanelLayout): ReturnType<typeof mountXiaochaoApp> | undefined;
   teardownPanel(): void;
@@ -85,7 +88,18 @@ interface XiaochaoCoreRuntime {
 
 /** Electron 和油猴共用的启动边界；平台差异只能通过 adapter 注入。 */
 export function bootstrapXiaochao(platform: PlatformAdapter): void {
+  const bootBag = window as unknown as Record<string, unknown>;
+  const prevBootDispose = bootBag.__xcXiaochaoBootstrapDispose;
+  // Vite/monkey HMR 会再次执行入口；先拆掉上一轮生命周期，避免 ShowWindow/_ 重复包装栈溢出
+  if (typeof prevBootDispose === 'function') {
+    try { (prevBootDispose as () => void)(); } catch (error) {
+      console.error('[xiaochao] previous bootstrap dispose failed', error);
+    }
+    delete bootBag.__xcXiaochaoBootstrapDispose;
+  }
   const lifecycle = createLifecycle();
+  bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
+  lifecycle.register(installGameNativePopupProtector(window));
   lifecycle.register(installGeneralSkillTipStayCoordinator(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
@@ -94,24 +108,25 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
 
   const probeRuntimeReady = () => getMissingGameRuntimeDependencies({ globalObject: window });
 
+  /**
+   * 每秒轮询：同步登录账号配置。
+   * 官网和登录页没有游戏运行时，先不启动功能、也不挂面板。进了游戏再挂。
+   */
   const syncAccountSession = () => {
     configStore.syncAccount();
     const missing = probeRuntimeReady();
     panelStartupStatus.missing = missing;
-    if (!document.body) {
+    if (!document.body || missing.length > 0) {
       if (!core) panelStartupStatus.state = 'waiting';
       return;
     }
     if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
     core.mountPanelShell();
-    if (missing.length > 0) {
-      panelStartupStatus.state = 'degraded';
-      return;
-    }
     core.syncRuntimeSession();
     panelStartupStatus.state = 'ready';
   };
 
+  // 先装瘦桥，供注入早期调试；core 就绪后会再装一次带完整 getter 的桥
   installRuntimeBridge(window, {
     lifecycle,
     platform,
@@ -135,6 +150,10 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   }).catch((error: unknown) => console.error('[xiaochao] 启动失败', error));
 }
 
+/**
+ * 一次性装齐各功能控制器与消息过滤器；返回面板挂载句柄。
+ * 调用方保证 document.body 已存在；失败项（如自动任务）降级为 no-op，不拖垮面板。
+ */
 function startXiaochaoCore(
   platform: PlatformAdapter,
   lifecycle: ReturnType<typeof createLifecycle>,
@@ -216,6 +235,7 @@ function startXiaochaoCore(
   lifecycle.register(blockEffects.dispose);
   const skinChange = installSkinChangeController(configStore, { gameEvents });
   lifecycle.register(skinChange.dispose);
+  // skinPaper 与 officialBackground 互相引用菜单扩展，先占位再回填
   let officialBackground: OfficialBackgroundController | undefined;
   const skinPaper = installSkinPaperController(configStore, {
     selfSeatId: () => seatStateStore.getSnapshot().selfSeatId,
@@ -274,6 +294,7 @@ function startXiaochaoCore(
     selfSeatId: () => seatStateStore.getSnapshot().selfSeatId
   });
   lifecycle.register(shanhetu.dispose);
+  // 入站协议改写链：任一过滤器抛错只打日志，不阻断后续过滤器
   const messageFilters = [
     blockEffects.filterMessage,
     skinChange.filterMessage,
@@ -349,6 +370,7 @@ function startXiaochaoCore(
     mountedApp.unmount();
     mountedApp = undefined;
   }
+  // 用完整调试 getter 覆盖启动早期的瘦桥
   installRuntimeBridge(window, {
     lifecycle,
     platform,
@@ -369,11 +391,13 @@ function startXiaochaoCore(
     mountPanelShell,
     teardownPanel,
     syncRuntimeSession() {
+      // 运行时齐备后再武装公告屏蔽，避免登录前误拦
       blockEffects.armNoticeBlock();
     }
   };
 }
 
+/** 面板初始几何；height 读账号作用域存储，0 表示内容自适应。 */
 const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
   top: 31,
   right: 155,
@@ -382,6 +406,7 @@ const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
   fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Noto Sans SC",Arial,sans-serif'
 };
 
+/** 读面板展开高度；顺带把旧全局键迁到账号作用域键。 */
 function readSavedPanelHeight(): number {
   try {
     const key = accountScopedStorageKey('XC::panelExpandedHeight');

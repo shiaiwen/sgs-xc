@@ -55,11 +55,18 @@ import {
   registerNativeHudPostGameTeardown
 } from '../../runtime/native-hud-post-game-guard.ts';
 import { mingpaiPerf, now, recordNativeSync } from './mingpai-perf.ts';
+import { isGameSeatUiFlowActive } from '../../runtime/game-native-dialog.ts';
 import {
   clampExtensionZOrder,
   EXTENSION_Z_BELOW_GAME_TIP,
   isGeneralSkillTipManualCloseVisible
 } from '../../runtime/game-tip-layer.ts';
+import {
+  layoutPopupSection,
+  POPUP_PADDING,
+  POPUP_TITLE_HEIGHT,
+  popupCardPosition
+} from './popup-section-layout.ts';
 
 type UnknownRecord = Record<string, unknown>;
 interface Rect { x: number; y: number; width: number; height: number }
@@ -79,89 +86,7 @@ const STRIP_OFFSET_X = 2;
 const STRIP_OFFSET_Y = 10;
 const POPUP_OFFSET = 14;
 const POPUP_CARD_SCALE = 0.85;
-const POPUP_PADDING = 8;
-const POPUP_CARD_GAP = 8;
-const POPUP_MIN_OVERLAP_GAP = 5;
-const POPUP_TITLE_HEIGHT = 26;
 const HIDE_DELAY_MS = 120;
-
-interface PopupSectionLayout {
-  columns: number;
-  rows: number;
-  stepX: number;
-  stepY: number;
-  width: number;
-  height: number;
-  overlap: boolean;
-}
-
-/** 弹层牌区：先正常间距单行，再压间距，仍超出可用宽则换行网格。 */
-function layoutPopupSection(
-  count: number,
-  cardWidth: number,
-  cardHeight: number,
-  availableWidth: number
-): PopupSectionLayout {
-  const inner = Math.max(cardWidth, availableWidth - POPUP_PADDING * 2);
-  const gap = POPUP_CARD_GAP;
-  const safeCount = Math.max(1, count);
-
-  const fullRowInner = safeCount * cardWidth + Math.max(0, safeCount - 1) * gap;
-  if (safeCount <= 1 || fullRowInner <= inner) {
-    return {
-      columns: safeCount,
-      rows: 1,
-      stepX: safeCount <= 1 ? 0 : cardWidth + gap,
-      stepY: cardHeight + gap,
-      width: POPUP_PADDING * 2 + (safeCount <= 1 ? cardWidth : fullRowInner),
-      height: POPUP_TITLE_HEIGHT + cardHeight,
-      overlap: false
-    };
-  }
-
-  const overlapStep = Math.max(
-    POPUP_MIN_OVERLAP_GAP,
-    (inner - cardWidth) / Math.max(1, safeCount - 1)
-  );
-  const overlapInner = cardWidth + overlapStep * (safeCount - 1);
-  if (overlapInner <= inner + 0.5) {
-    return {
-      columns: safeCount,
-      rows: 1,
-      stepX: overlapStep,
-      stepY: cardHeight + gap,
-      width: POPUP_PADDING * 2 + overlapInner,
-      height: POPUP_TITLE_HEIGHT + cardHeight,
-      overlap: true
-    };
-  }
-
-  const columns = Math.max(1, Math.floor((inner + gap) / (cardWidth + gap)));
-  const rows = Math.ceil(safeCount / columns);
-  const gridInner = columns * cardWidth + Math.max(0, columns - 1) * gap;
-  return {
-    columns,
-    rows,
-    stepX: cardWidth + gap,
-    stepY: cardHeight + gap,
-    width: POPUP_PADDING * 2 + gridInner,
-    height: POPUP_TITLE_HEIGHT + rows * cardHeight + Math.max(0, rows - 1) * gap,
-    overlap: false
-  };
-}
-
-function popupCardPosition(
-  index: number,
-  layout: PopupSectionLayout,
-  sectionTop: number
-): { x: number; y: number } {
-  const col = layout.columns > 0 ? index % layout.columns : 0;
-  const row = layout.columns > 0 ? Math.floor(index / layout.columns) : 0;
-  return {
-    x: POPUP_PADDING + col * layout.stepX,
-    y: sectionTop + POPUP_TITLE_HEIGHT + row * layout.stepY
-  };
-}
 const POLL_INTERVAL_MS = 500;
 const POLL_INTERVAL_OUT_OF_GAME_MS = 2000;
 /** 同一次事件链可能同时触发座位状态、明牌引擎和游戏事件订阅；
@@ -401,7 +326,7 @@ export function installNativeMingpaiPreviewController(
         const truncated = row.items.length > MAX_VISIBLE_TILES;
         const visible = truncated ? row.items.slice(0, MAX_VISIBLE_TILES - 1) : row.items;
         visible.forEach((item, index) => {
-          // strip tiles: card face only; no source/tag label text (native labels use refreshNativeCardTags)
+          // 小牌条只画牌面。来源短名写在游戏自己的手牌标签上。
           const tile = createTile(item.cardId, row.possible);
           if (!tile) return;
           call(tile, 'pos', (TILE_WIDTH + TILE_GAP) * index, y);
@@ -556,10 +481,11 @@ export function installNativeMingpaiPreviewController(
     const cardWidth = Math.max(1, Math.round(OFFICIAL_CARD_BASE_WIDTH * POPUP_CARD_SCALE));
     const cardHeight = Math.max(1, Math.floor(OFFICIAL_CARD_BASE_HEIGHT * POPUP_CARD_SCALE));
     const viewportSpan = Math.max(1, viewport.width - VIEWPORT_MARGIN * 2);
-    const availableWidth = Math.max(
+    const anchorSideWidth = Math.max(
       cardWidth + POPUP_PADDING * 2,
       Math.min(maxWidth, viewportSpan)
     );
+    const zone4Sections = zone4PopupSections(entry.zone4Rows);
     const sections = [
       ...(entry.cardIds.length ? [{
         label: `确定牌（${entry.cardIds.length}）`,
@@ -573,9 +499,14 @@ export function installNativeMingpaiPreviewController(
         cardIds: possibleGroupPopupCardIds(group),
         possible: true
       })),
-      ...zone4PopupSections(entry.zone4Rows)
+      ...zone4Sections
     ].filter((section) => section.cardIds.length).map((section) => {
-      const layout = layoutPopupSection(section.cardIds.length, cardWidth, cardHeight, availableWidth);
+      const layout = layoutPopupSection(
+        section.cardIds.length,
+        cardWidth,
+        cardHeight,
+        anchorSideWidth
+      );
       return { ...section, ...layout };
     });
     const width = Math.max(...sections.map((section) => section.width));
@@ -728,6 +659,10 @@ export function installNativeMingpaiPreviewController(
       if (popup) destroyPopup();
       if (root) root.mouseEnabled = false;
       return;
+    }
+    if (isGameSeatUiFlowActive(window)) {
+      clearHideTimer();
+      if (popup) destroyPopup();
     }
     if (root) root.mouseEnabled = true;
     if (!configStore.get('display.seatUiEnabled')) {
@@ -1180,7 +1115,12 @@ export function installNativeMingpaiPreviewController(
   let sessionInGame = seatStateStore.getSnapshot().inGame;
   const stopSession = seatStateStore.subscribe((snapshot) => {
     if (snapshot.inGame) {
+      const reentered = !sessionInGame;
       sessionInGame = true;
+      if (reentered || previewSuspended) {
+        previewSuspended = false;
+        cancelMingpaiPostGameCleanup();
+      }
       return;
     }
     if (!sessionInGame) return;

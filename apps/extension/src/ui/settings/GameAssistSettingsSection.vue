@@ -103,7 +103,6 @@ function updateSetting(key, event) {
           </label>
         </div>
       </div>
-      <p v-if="hoverTip" class="xiaochao-game-assist-tip">{{ hoverTip }}</p>
     </div>
   </section>
 </template>

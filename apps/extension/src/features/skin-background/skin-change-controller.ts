@@ -8,6 +8,7 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
+import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
 import { isGeneralSkillTipManualCloseVisible } from '../../runtime/game-tip-layer.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
@@ -1018,6 +1019,9 @@ export function installSkinChangeController(
     patcher.wrap(prototype, 'OnSomeTextureOver', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       const seat = asRecord(this.seat);
       if (!seat || seat.IsSelf) return original.apply(this, args);
+      if (shouldDeferSeatTopManagerSync(window as LayaRuntimeWindow)) {
+        return original.apply(this, args);
+      }
       const result = original.apply(this, args);
       if (!otherOn()) {
         const button = asRecord(this.skinBtn);
@@ -1027,6 +1031,7 @@ export function installSkinChangeController(
       const manager = this;
       const isZhu = hoveredIsZhu(manager);
       tasks.later(() => {
+        if (shouldDeferSeatTopManagerSync(window as LayaRuntimeWindow)) return;
         if (shouldYieldToGeneralSkillTip()) return;
         if (!otherOn()) return;
         const liveSeat = asRecord(manager.seat);

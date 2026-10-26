@@ -2,6 +2,8 @@
  * 顶部跑马灯可见性接管：屏蔽时强制不绘制，解除时恢复游戏期望的 visible。
  */
 
+import { isXiaochaoOverlayElement } from '../../ui/display-layer.ts';
+
 type UnknownRecord = Record<string, unknown>;
 
 interface VisibilityGuard {
@@ -353,6 +355,7 @@ function sweepDogTuoTextInDom(): void {
     const nodes = root.querySelectorAll('div, span, p, label');
     for (const element of nodes) {
       if (!(element instanceof HTMLElement)) continue;
+      if (isXiaochaoOverlayElement(element)) continue;
       // 含输入控件或自身是可编辑节点时不能藏，否则排位/斗地主等对局打不了字。
       if (element.closest('input, textarea, [contenteditable="true"]')) continue;
       if (element.querySelector('input, textarea, [contenteditable="true"]')) continue;

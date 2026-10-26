@@ -1,0 +1,7 @@
+{
+  "vue.editor.focusMode": false,
+  "typescript.tsdk": "apps/extension/node_modules/typescript/lib",
+  "[vue]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
+}

@@ -5,14 +5,18 @@
 
 import type { XiaochaoPanelTabId } from '../ui/panel/panel-model';
 
+/** 持久化文档版本号；读写时不一致会整份按 schema 回写。 */
 export const CONFIG_DOCUMENT_VERSION = 1;
+/** 账号无关的旧共享键；新数据落在 `XC::config::<accountId>`。 */
 export const CONFIG_STORAGE_KEY = 'XC::config';
 
+/** 主面板自由拖拽时的视口坐标（相对左上）。 */
 export interface PanelPositionConfig {
   left: number;
   top: number;
 }
 
+/** 运行时配置形状；键名与 CONFIG_SCHEMA 一一对应。 */
 export interface XiaochaoConfig {
   'panel.activeTab': XiaochaoPanelTabId;
   'panel.collapsed': boolean;
@@ -48,7 +52,6 @@ export interface XiaochaoConfig {
   'block.entranceEffect': boolean;
   'block.otherSkinState': boolean;
   'block.taskRedDot': boolean;
-  'block.interactEffect': boolean;
   'block.factionSlogan': boolean;
   'skin.localSkin': boolean;
   'skin.otherLocalSkin': boolean;
@@ -63,6 +66,7 @@ export interface XiaochaoConfig {
   'autoTask.skipDiJiaQuan': boolean;
   'autoTask.skipHuanLeDou': boolean;
   'autoTask.skipFreeBless': boolean;
+  'autoTask.skipFreeTreasureFlip': boolean;
   'shanhetu.mapEnabled': boolean;
   'shanhetu.hideStory': boolean;
   'assist.extraEnabled': boolean;
@@ -77,12 +81,18 @@ export interface XiaochaoConfig {
 
 export type XiaochaoConfigKey = keyof XiaochaoConfig;
 
+/** 单键定义：默认值、可选的旧独立存储键、以及宽松 parse（失败返回 undefined）。 */
 interface ConfigDefinition<Value> {
   defaultValue: Value;
+  /** 迁移前各自独立的 localStorage/设置键；仅在无账号文档时读取一次。 */
   previousStorageKey?: string;
   parse(value: unknown): Value | undefined;
 }
 
+/**
+ * 布尔开关工厂。兼容历史里存成字符串/数字的 true/false、'1'/'0'。
+ * parse 失败返回 undefined，由存储层回退 defaultValue 并标记需回写。
+ */
 const booleanDefinition = (
   defaultValue: boolean,
   previousStorageKey?: string
@@ -97,6 +107,10 @@ const booleanDefinition = (
   }
 });
 
+/**
+ * 历史 Tab 标识 → 当前两 Tab（cards / others）。
+ * 含旧英文 id、已合并的 shanhetu/tools/settings，以及中文标签。
+ */
 const PANEL_TAB_LABELS: Record<string, XiaochaoPanelTabId> = {
   cards: 'cards',
   others: 'others',
@@ -121,7 +135,8 @@ export const CONFIG_SCHEMA: {
     parse: (value) => typeof value === 'string' ? PANEL_TAB_LABELS[value] : undefined
   },
   'panel.collapsed': booleanDefinition(false, 'XC::mainPanelCollapsed'),
-  'panel.dockedRight': booleanDefinition(false, 'XC::mainPanelDockedRight'),
+  'panel.dockedRight': booleanDefinition(true, 'XC::mainPanelDockedRight'),
+  // null = 未自由拖拽，走默认 dock 布局
   'panel.position': {
     defaultValue: null,
     previousStorageKey: 'XC::mainPanelPosition',
@@ -134,6 +149,7 @@ export const CONFIG_SCHEMA: {
         : undefined;
     }
   },
+  // —— 局内显示 ——
   'display.seatUiEnabled': booleanDefinition(true, 'SEAT_UI_SWITCH'),
   'display.deckHudEnabled': booleanDefinition(true),
   'display.recentCardMode': {
@@ -158,7 +174,9 @@ export const CONFIG_SCHEMA: {
   'display.cardLabelsEnabled': booleanDefinition(true, 'CARD_LABEL_SWITCH'),
   'display.countdownEnabled': booleanDefinition(true, 'COUNT_DOWN_SWITCH'),
   'rooms.hidePassword': booleanDefinition(false, 'onlyNoPasswordRoomSwitch'),
+  // —— 手牌整理 ——
   'cards.handSortEnabled': booleanDefinition(true, 'HAND_SORT_SWITCH'),
+  // 兼容旧弃牌排序模式字符串与新 CardType/CardFlower/CardNumber 枚举
   'cards.handSortLockedMode': {
     defaultValue: '',
     previousStorageKey: 'XC::handSortLockedMode',
@@ -180,9 +198,11 @@ export const CONFIG_SCHEMA: {
       const right = Number(position.right);
       const top = Number(position.top);
       if (!Number.isFinite(right) || !Number.isFinite(top) || right < 0 || top < 0) return undefined;
+      // 上限防异常大坐标把按钮拖出可视区后难找回
       return { right: Math.min(10000, right), top: Math.min(10000, top) };
     }
   },
+  // —— 弹窗 / 特效屏蔽（默认关，由用户显式打开）——
   'block.adWindow': booleanDefinition(false, 'SKIP_AD_WINDOW_SWITCH'),
   'block.mvpWindow': booleanDefinition(false, 'SKIP_MVP_WINDOW_SWITCH'),
   'block.packageWindow': booleanDefinition(false, 'SKIP_PACKAGE_WINDOW_SWITCH'),
@@ -202,13 +222,14 @@ export const CONFIG_SCHEMA: {
   'block.entranceEffect': booleanDefinition(false, 'BLOCK_ENTRANCE_EFFECT_SWITCH'),
   'block.otherSkinState': booleanDefinition(false, 'BLOCK_SKIN_STATE_SWITCH'),
   'block.taskRedDot': booleanDefinition(false, 'RED_DOT_BLOCK_SWITCH'),
-  'block.interactEffect': booleanDefinition(false, 'BLOCK_INTERACT_EFFECT_SWITCH'),
   'block.factionSlogan': booleanDefinition(false, 'BLOCK_FACTION_SLOGAN_SWITCH'),
+  // —— 皮肤 / 壁纸 ——
   'skin.localSkin': booleanDefinition(true, 'LOCAL_SKIN_SWITCH'),
   'skin.otherLocalSkin': booleanDefinition(false, 'OTHER_LOCAL_SKIN_SWITCH'),
   'skin.officialBackground': booleanDefinition(true, 'OFFICIAL_BACKGROUND_SWITCH'),
   'skin.skinPaper': booleanDefinition(true, 'SKIN_PAPER_SWITCH'),
   'skin.allPaper': booleanDefinition(false, 'ALL_PAPER_SWITCH'),
+  // —— 自动任务（skip* 为 true 表示跳过该项）——
   'autoTask.enabled': booleanDefinition(false, 'AUTO_TASK_SWITCH'),
   'autoTask.skipTavern': booleanDefinition(true, 'AUTO_TASK_TAVERN'),
   'autoTask.skipMail': booleanDefinition(true, 'AUTO_TASK_SKIP_MAIL'),
@@ -217,8 +238,11 @@ export const CONFIG_SCHEMA: {
   'autoTask.skipDiJiaQuan': booleanDefinition(true, 'AUTO_TASK_SKIP_DI_JIA_QUAN'),
   'autoTask.skipHuanLeDou': booleanDefinition(true, 'AUTO_TASK_SKIP_HUAN_LE_DOU'),
   'autoTask.skipFreeBless': booleanDefinition(true),
+  'autoTask.skipFreeTreasureFlip': booleanDefinition(true),
+  // —— 山河图（旧键名 rogue.*，存储层会改名迁移）——
   'shanhetu.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
   'shanhetu.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
+  // —— 技能 / 挂机辅助 ——
   'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),
   'assist.sunquanEnabled': booleanDefinition(true),
   'assist.peixiuEnabled': booleanDefinition(true),

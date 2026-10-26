@@ -6,12 +6,14 @@ import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import { AI_CLIENT_ID_MIN, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
 import { drawRealPlayerNameOnInit } from './real-player-name-init.ts';
+import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
 import { clampExtensionZOrder, EXTENSION_Z_BELOW_GAME_TIP } from '../../runtime/game-tip-layer.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
-const PLAYER_INFO_PUSH_METHODS = ['SetPlayerInfo', 'UpdatePlayerInfo', 'RefreshPlayerInfo'] as const;
 const PLAY_NAME_FALLBACK_KEY = '__xcPlayNameLabel';
+const PLAY_NAME_VISIBLE_APPLIED_KEY = '__xcPlayNameVisibleApplied';
+const PLAY_NAME_RANK_SIGNATURE_KEY = '__xcPlayNameRankSignature';
 const PLAY_NAME_MOUNT_KEY = '__xcPlayNameMount';
 const PLAY_NAME_PUSHED_KEY = '__xcPlayNamePushed';
 const PLAY_NAME_NATIVE_DRAW_KEY = '__xcPlayNameNativeDraw';
@@ -238,6 +240,7 @@ export function syncSeatPlayName(
   seatListIndex: number | null = null
 ): void {
   if (isPlayNameSyncPaused(globalObject)) return;
+  if (shouldDeferSeatTopManagerSync(globalObject)) return;
 
   const seat = asRecord(seatUi.seat);
   const clientId = readSeatClientId(seat);
@@ -270,12 +273,7 @@ export function syncSeatPlayName(
     if (playerInfo) pushPlayerInfoToManagerOnce(manager, playerInfo, name);
   }
 
-  try {
-    manager.SetPlayNameVisible.call(manager, visible);
-  } catch {
-    try { manager.SetPlayNameVisible(visible); } catch { /* 下轮再试 */ }
-  }
-
+  applySetPlayNameVisible(manager, visible);
   applyPlayNameDisplay(seatUi, manager, visible, name, globalObject);
 }
 
@@ -297,13 +295,16 @@ function revealRankPlayName(
   if (!Number.isFinite(id) || !(id < AI_CLIENT_ID_MIN)) return;
   const nick = resolveDisplayName(seatUi, seat, clientId, manager, globalObject, seatListIndex);
   const displayText = nick || playerIdLabel(id, true);
+  const signature = `${id}:${displayText}`;
+  if (manager[PLAY_NAME_RANK_SIGNATURE_KEY] === signature) return;
   if (displayText) {
     const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, displayText);
     if (info) pushPlayerInfoToManagerOnce(manager, info, displayText);
   }
   hookPlayNameInit(manager, globalObject);
   ensureNativePlayNameDrawn(manager, displayText);
-  callManagerMethod(manager, 'SetPlayNameVisible', true);
+  applySetPlayNameVisible(manager, true);
+  manager[PLAY_NAME_RANK_SIGNATURE_KEY] = signature;
 }
 
 function ensureNativePlayNameDrawn(manager: UnknownRecord, displayText: string): void {
@@ -346,6 +347,17 @@ function callManagerMethod(manager: UnknownRecord, name: string, ...args: unknow
   }
 }
 
+/** 重复 SetPlayNameVisible 会重建 otherTopManager，点头像菜单会立刻被关掉。 */
+function applySetPlayNameVisible(manager: UnknownRecord, visible: boolean): void {
+  if (manager[PLAY_NAME_VISIBLE_APPLIED_KEY] === visible) return;
+  try {
+    manager.SetPlayNameVisible.call(manager, visible);
+  } catch {
+    try { manager.SetPlayNameVisible(visible); } catch { /* 下轮再试 */ }
+  }
+  manager[PLAY_NAME_VISIBLE_APPLIED_KEY] = visible;
+}
+
 function isOwnSeat(
   seatUi: UnknownRecord,
   seat: UnknownRecord | null,
@@ -374,11 +386,7 @@ function syncSeatPlayNameMinimal(
   globalObject: GameRuntimeWindow,
   seatListIndex: number | null
 ): void {
-  try {
-    manager.SetPlayNameVisible.call(manager, visible);
-  } catch {
-    try { manager.SetPlayNameVisible(visible); } catch { /* 下轮再试 */ }
-  }
+  applySetPlayNameVisible(manager, visible);
   teardownPlayNameFallback(seatUi, manager);
   if (!visible) {
     manager[PLAY_NAME_MOUNT_KEY] = 'none';
@@ -1033,17 +1041,11 @@ function hydrateSeatPlayerInfo(
 }
 
 function pushPlayerInfoToManagerOnce(manager: UnknownRecord, playerInfo: UnknownRecord, name: string): void {
-  const pushed = String(manager[PLAY_NAME_PUSHED_KEY] ?? '');
-  if (pushed === name.trim()) return;
-  for (const method of PLAYER_INFO_PUSH_METHODS) {
-    const fn = manager[method];
-    if (typeof fn !== 'function') continue;
-    try {
-      fn.call(manager, playerInfo);
-      manager[PLAY_NAME_PUSHED_KEY] = name.trim();
-      return;
-    } catch { /* 试下一个 */ }
-  }
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  if (String(manager[PLAY_NAME_PUSHED_KEY] ?? '') === trimmed) return;
+  // 不调 otherTopManager.SetPlayerInfo：会刷新顶部 UI，点头像菜单会闪没。
+  manager[PLAY_NAME_PUSHED_KEY] = trimmed;
 }
 
 function readSeatIndex(seat: UnknownRecord | null): number | null {

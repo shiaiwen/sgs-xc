@@ -20,7 +20,12 @@ import {
 } from '../skin-background/skin-runtime.ts';
 import { beijingDayIndex, createAutoTaskClaims } from './auto-task-claims.ts';
 import { createAutoTaskRunner, type AutoTaskOptions } from './auto-task-runner.ts';
-import { ALL_AUTO_TASK_KEYS, AUTO_TASK_ENABLED_KEY } from './auto-task-settings.ts';
+import {
+  ALL_AUTO_TASK_KEYS,
+  AUTO_TASK_ENABLED_KEY,
+  AUTO_TASK_SKIP_SETTINGS,
+  type AutoTaskSkipKey
+} from './auto-task-settings.ts';
 import { mountAutoTaskProbe, probeAutoTaskRuntime } from './auto-task-probe.ts';
 import type { TaskRuleContext } from './auto-task-rules.ts';
 import { createAutoTaskWindows } from './auto-task-windows.ts';
@@ -65,6 +70,7 @@ const POST_GAME_THROTTLE_MS = 30000;
 const MANAGER_WAIT_ATTEMPTS = 30;
 const MANAGER_WAIT_INTERVAL = 1000;
 const SCHEDULE_DELAY_MS = 2000;
+const IMMEDIATE_CLAIM_DELAY_MS = 400;
 const ACCOUNT_POLL_MS = 1000;
 const PERIODIC_AUTO_TASK_MS = 10 * 60 * 1000;
 const PERIODIC_AUTO_TASK_FIRST_MS = 90 * 1000;
@@ -146,7 +152,8 @@ export function installAutoTaskController(
       skipSignTrialCard: configStore.get('autoTask.skipSignTrialCard'),
       skipDiJiaQuan: configStore.get('autoTask.skipDiJiaQuan'),
       skipHuanLeDou: configStore.get('autoTask.skipHuanLeDou'),
-      skipFreeBless: configStore.get('autoTask.skipFreeBless')
+      skipFreeBless: configStore.get('autoTask.skipFreeBless'),
+      skipFreeTreasureFlip: configStore.get('autoTask.skipFreeTreasureFlip')
     };
   }
 
@@ -257,6 +264,18 @@ export function installAutoTaskController(
     });
   }
 
+  const skipKeySet = new Set<string>(AUTO_TASK_SKIP_SETTINGS.map(({ key }) => key));
+
+  function runImmediateClaimForSkipKey(key: AutoTaskSkipKey): void {
+    if (!configStore.get(AUTO_TASK_ENABLED_KEY) || tasks.disposed) return;
+    tasks.later(async () => {
+      if (!configStore.get(AUTO_TASK_ENABLED_KEY) || tasks.disposed) return;
+      const ready = await tasks.poll(() => (managersReady() ? true : null), MANAGER_WAIT_ATTEMPTS, MANAGER_WAIT_INTERVAL);
+      if (!ready || tasks.disposed) return;
+      runner.runClaimForSkipKey(key);
+    }, IMMEDIATE_CLAIM_DELAY_MS);
+  }
+
   function schedule(reason: AutoTaskReason = 'auto', force = false): boolean {
     if (!configStore.get(AUTO_TASK_ENABLED_KEY)) return false;
     const payload = buildPayload(reason);
@@ -355,12 +374,10 @@ export function installAutoTaskController(
     unsubscribes.push(configStore.subscribe(key, ({ value, previousValue }) => {
       if (key === AUTO_TASK_ENABLED_KEY && value === true && value !== previousValue) {
         schedule('switch', true);
+        return;
       }
-      if (key === 'autoTask.skipTavern' && value === false && configStore.get(AUTO_TASK_ENABLED_KEY)) {
-        schedule('tavern', true);
-      }
-      if (key === 'autoTask.skipFreeBless' && value === false && configStore.get(AUTO_TASK_ENABLED_KEY)) {
-        schedule('switch', true);
+      if (skipKeySet.has(key) && value === false && configStore.get(AUTO_TASK_ENABLED_KEY)) {
+        runImmediateClaimForSkipKey(key as AutoTaskSkipKey);
       }
     }));
   });

@@ -7,6 +7,7 @@ import { createApp, type App as VueApp } from 'vue';
 import XiaochaoApp from './App.vue';
 import type { XiaochaoPlatform } from '../adapters/platform';
 import { installPanelShellStyles } from './panel/panel-shell-styles';
+import { XIAOCHAO_APP_ROOT_ID, XIAOCHAO_DIALOG_HOST_ID } from './display-layer.ts';
 import type { XiaochaoConfigStore } from '../config/config-store';
 import type { RecentCardStore } from '../features/recent-cards/recent-card-store';
 import type { GameCardCatalog } from '../features/cards/game-card-catalog';
@@ -51,8 +52,14 @@ export function mountXiaochaoApp(
   updateNoticeController: UpdateNoticeController | null = null
 ): MountedXiaochaoApp {
   const removePanelShellStyles = installPanelShellStyles();
+  let dialogHost = document.getElementById(XIAOCHAO_DIALOG_HOST_ID);
+  if (!dialogHost) {
+    dialogHost = document.createElement('div');
+    dialogHost.id = XIAOCHAO_DIALOG_HOST_ID;
+    document.body.appendChild(dialogHost);
+  }
   const rootElement = document.createElement('div');
-  rootElement.id = 'xiaochao-app';
+  rootElement.id = XIAOCHAO_APP_ROOT_ID;
   document.body.appendChild(rootElement);
   const app = createApp(XiaochaoApp, {
     platform,

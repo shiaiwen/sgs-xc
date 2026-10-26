@@ -1,5 +1,9 @@
 /**
  * Laya 运行时对象定位：从事件监听者与方法特征字符串找回管理器单例及混淆方法。
+ *
+ * 游戏管理器不进 Laya 类表，只作为事件监听者的 caller 活着。
+ * ServerProxy 比较特殊：挂在 WindowManager.proxy 上，不走普通 MANAGER_LOOKUPS。
+ * 混淆方法名靠 METHOD_SIGNATURES 里的源码片段在原型上比对还原。
  */
 
 import {
@@ -59,6 +63,7 @@ const METHOD_SIGNATURES: Record<string, Record<string, string | readonly string[
   }
 };
 
+/** 舞台子节点 layerOrder 与语义层名的对应；用于按层找窗口。 */
 const LAYER_ORDER = [
   'BottomLayer',
   'BackgroundLayer',
@@ -100,6 +105,10 @@ export function createLayaObjectLocator(
     return locateGameEventDispatcher(globalObject);
   }
 
+  /**
+   * 按名取管理器单例。ServerProxy 从 WindowManager.proxy 取；
+   * 其余按 MANAGER_LOOKUPS 从分发器监听者 caller 找回，结果缓存。
+   */
   function manager(name: string): UnknownRecord | null {
     if (name === 'ServerProxy') {
       const windowManager = managers.get('WindowManager') ?? findManagerByCaller('WindowManager');
@@ -125,6 +134,10 @@ export function createLayaObjectLocator(
     return asRecord(asRecord(listener)?.caller);
   }
 
+  /**
+   * 穷举 ServerProxy / ActivityManager / 分发器上的监听者 caller。
+   * listenerScanDepth 防止 manager() 内部再扫时形成递归；预算 120 个事件键。
+   */
   function findManagerByListenerScan(predicate: (caller: UnknownRecord) => boolean): UnknownRecord | null {
     if (listenerScanDepth > 0) return managerFromList(predicate);
     listenerScanDepth += 1;
@@ -152,6 +165,7 @@ export function createLayaObjectLocator(
     }
   }
 
+  /** 按查找表事件名取 caller；NewFuLiManager 另有字段特征兜底。 */
   function findManagerByCaller(name: string): UnknownRecord | null {
     const lookup = MANAGER_LOOKUPS[name];
     if (!lookup) return null;
@@ -173,6 +187,7 @@ export function createLayaObjectLocator(
     return null;
   }
 
+  /** WindowManager 上的 managerList（构造器 / 实例 / 原型三处都试）。 */
   function managerListEntries(): UnknownRecord[] {
     const windowManager = manager('WindowManager');
     if (!windowManager) return [];
@@ -208,6 +223,7 @@ export function createLayaObjectLocator(
     return locateSceneManager(globalObject)?.IsGameScene ? scene() : null;
   }
 
+  /** GameContext 可能在 window 或 Laya.Browser.window；用特征方法辨认。 */
   function gameContext(): UnknownRecord | null {
     const candidates = [
       globalObject.GameContext,
@@ -286,6 +302,7 @@ export function createLayaObjectLocator(
     return findInLayer('WindowLayer', name);
   }
 
+  /** 先查 WindowInstanceDict，没有再扫 WindowLayer 显示树。 */
   function findWindow(name: string): UnknownRecord | null {
     const dict = asRecord(manager('WindowManager')?.WindowInstanceDict);
     const get = dict?.get;
@@ -296,6 +313,10 @@ export function createLayaObjectLocator(
     return findWindows(name)[0] ?? null;
   }
 
+  /**
+   * 在原型上找源码包含签名片段的方法，返回混淆后的真实键名。
+   * 实例上可能已被补丁包装，故同时查原型描述符与实例/备份键。
+   */
   function obfuscatedMethodName(target: unknown, owner: string, method: string): string | null {
     const signature = METHOD_SIGNATURES[owner]?.[method];
     const record = asRecord(target);
@@ -344,6 +365,7 @@ export function createLayaObjectLocator(
   };
 }
 
+/** 大厅无座位 UI 时，显示树扫描特效节点的上限，避免卡死。 */
 const BASE_EFFECT_SCAN_LIMIT = 3000;
 
 /** 返回原型链上自有 InitEffect/playEffect 的那一层，即 BaseEffect.prototype。 */

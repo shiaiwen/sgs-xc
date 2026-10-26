@@ -10,6 +10,7 @@ import {
 } from './config-schema.ts';
 import { currentConfigAccount, type ConfigStorage } from './config-storage.ts';
 
+/** DOM 自定义事件名；detail 为 ConfigChangeDetail，供非模块订阅方监听。 */
 export const CONFIG_CHANGE_EVENT = 'xc:config-change';
 
 export interface ConfigChangeDetail<Key extends XiaochaoConfigKey = XiaochaoConfigKey> {
@@ -26,12 +27,14 @@ export interface XiaochaoConfigStore {
   get<Key extends XiaochaoConfigKey>(key: Key): XiaochaoConfig[Key];
   set<Key extends XiaochaoConfigKey>(key: Key, value: XiaochaoConfig[Key]): void;
   reset<Key extends XiaochaoConfigKey>(key: Key): void;
+  /** 按键订阅；返回取消函数。 */
   subscribe<Key extends XiaochaoConfigKey>(
     key: Key,
     subscriber: ConfigSubscriber<Key>
   ): () => void;
   snapshot(): XiaochaoConfig;
   resetAll(): void;
+  /** 登录态变化时切换账号配置桶；default→新账号且尚无文档时先落盘当前值。 */
   syncAccount(): void;
 }
 
@@ -44,6 +47,7 @@ export function createConfigStore(
   let accountId = currentConfigAccount();
   const subscribers = new Map<XiaochaoConfigKey, Set<ConfigSubscriber<any>>>();
 
+  /** 只对实际变化的键通知订阅者并派发 DOM 事件（批量重置/换账号时用）。 */
   function publish(previousValues: XiaochaoConfig, nextValues: XiaochaoConfig): void {
     for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
       if (isSameValue(previousValues[key], nextValues[key])) continue;
@@ -64,6 +68,7 @@ export function createConfigStore(
     if (nextAccount === accountId) return;
     const previousAccount = accountId;
     accountId = nextAccount;
+    // 未登录阶段改过的开关，首次登录且该账号尚无文档时一并带过去
     if (previousAccount === 'default' && !storage.hasAccount(nextAccount)) {
       storage.write(values);
     }
@@ -80,6 +85,7 @@ export function createConfigStore(
     const parsedValue = CONFIG_SCHEMA[key].parse(value) as XiaochaoConfig[Key] | undefined;
     if (parsedValue === undefined) throw new TypeError(`无效的小抄配置：${key}`);
     const previousValue = values[key];
+    // 同值短路，避免无意义写盘与事件风暴
     if (isSameValue(previousValue, parsedValue)) return;
     values = { ...values, [key]: parsedValue };
     storage.write(values);
@@ -126,6 +132,7 @@ export function createConfigStore(
   };
 }
 
+/** 配置值均为 JSON 可序列化；用 stringify 比较对象/数组，避免引用相等误判。 */
 function isSameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

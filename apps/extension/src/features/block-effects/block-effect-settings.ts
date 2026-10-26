@@ -77,11 +77,6 @@ export const BLOCK_EFFECT_SETTINGS: readonly BlockSetting[] = [
     tooltip: '屏蔽武将、皮肤及山河首领进场动画'
   },
   {
-    key: 'block.interactEffect',
-    label: '牌局互动',
-    tooltip: '屏蔽鲜花、鸡蛋等牌局互动动画'
-  },
-  {
     key: 'block.mvpWindow',
     label: 'MVP结算',
     tooltip: '跳过牌局结束后的MVP展示'
