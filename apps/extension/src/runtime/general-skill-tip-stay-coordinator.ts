@@ -325,8 +325,10 @@ export function installGeneralSkillTipStayCoordinator(
         return undefined;
       }
       if (isGameSeatUiFlowActive(globalObject)) return original.apply(this, args);
+      // false = 玩家点关或空白确认，必须走原生关闭，不能走 stay 拦截
+      if (args[0] === false) return original.apply(this, args);
       const self = asRecord(this);
-      if (args[0] === false && self && block(self)) return undefined;
+      if (self && block(self)) return undefined;
       return original.apply(this, args);
     });
     patcher.wrap(proto, 'checkButtonMode', (original) => {

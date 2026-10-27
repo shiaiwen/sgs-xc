@@ -837,8 +837,9 @@ function installUserInfoInstanceCloseGuard(win: UnknownRecord, globalObject: Lay
     if (typeof original !== 'function') continue;
     win[method] = function (this: unknown, ...args: unknown[]) {
       if (isUserInfoDismissGuardActive(globalObject)) {
-        userInfoGuardLog('block-instance', method);
-        return undefined;
+        clearUserInfoDismissGuard(globalObject);
+        clearSeatMenuTipsHold(globalObject);
+        userInfoGuardLog('user-close-instance', method);
       }
       return (original as (...a: unknown[]) => unknown).apply(this, args);
     };
