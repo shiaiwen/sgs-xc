@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 生成 content/releases/<版本号>.md。
- * 用法：npm run new-release -- --version 1.0.3 --today --note "修复xxx" --recent "优化yyy"
+ * 用法：npm run new-release -- --version 1.0.4 --today --note "修复xxx" --recent "优化yyy"
  */
 "use strict";
 
@@ -23,7 +23,7 @@ class CliError extends Error {
 const helpText = `生成 content/releases/<版本号>.md
 
 用法：
-  npm run new-release -- --version 1.0.3 --today --note "修复xxx" --recent "优化yyy"
+  npm run new-release -- --version 1.0.4 --today --note "修复xxx" --recent "优化yyy"
 
 选项：
   --version <版本号>   指定版本，三段数字，例如 1.0.3

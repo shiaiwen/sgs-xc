@@ -17,16 +17,16 @@ npm run dev:log
 在 `apps/log` 目录执行：
 
 ```bash
-npm run new-release -- --version 1.0.3 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
+npm run new-release -- --version 1.0.4 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
 ```
 
 仓库根目录用下面这条，参数相同：
 
 ```bash
-npm run log:new -- --version 1.0.3 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
+npm run log:new -- --version 1.0.4 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
 ```
 
-不写 `--version` 时，按 `content/releases` 里最高的版本号把最后一段加一。现有最高是 `1.0.2` 时，会生成 `1.0.3`。`--bump minor` 升中间那段，`--bump major` 升第一段。
+不写 `--version` 时，按 `content/releases` 里最高的版本号把最后一段加一。现有最高是 `1.0.3` 时，会生成 `1.0.4`。`--bump minor` 升中间那段，`--bump major` 升第一段。
 
 `--note` 是本次更新，`--recent` 是近期更新，都可以重复，一次一条。不写 `--recent`，文件里就没有近期更新这一节。日期不写就是上海当天，也可以用 `--date 2026-10-27`。
 
@@ -57,8 +57,6 @@ date: "2026-10-27"
 `version` 和 `date` 必填，并且都要加引号。`title` 不写时，页面标题用「小抄」加版本号。
 
 列表按日期从新到旧排。同一天再按版本号从高到低排。版本号不要重复，重复时构建会失败。
-
-仓库里自带的 `1.0.2.md`、`1.0.1.md`、`1.0.0.md` 是示例，发布前改成真实记录或删掉。
 
 ## 部署
 

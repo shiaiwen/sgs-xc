@@ -282,12 +282,18 @@ test("非法日期、非法版本、版本和 bump 同时出现都会拒绝", as
 });
 
 test("命令行直接跑：重复版本失败，试运行不落盘", () => {
-  const sample = path.join(logRoot, "content", "releases", "1.0.2.md");
+  const releasesDir = path.join(logRoot, "content", "releases");
+  assert.deepEqual(
+    fs.readdirSync(releasesDir).filter((name) => name.endsWith(".md")).sort(),
+    ["1.0.3.md"],
+  );
+  const sample = path.join(releasesDir, "1.0.3.md");
   const before = fs.readFileSync(sample);
+  assert.match(before.toString("utf8"), /修复山河图换将透视hook/);
   const rejected = spawnSync(process.execPath, [
     scriptPath,
     "--version",
-    "1.0.2",
+    "1.0.3",
     "--note",
     "不要写入",
     "--date",
