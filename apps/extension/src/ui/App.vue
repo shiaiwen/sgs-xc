@@ -109,11 +109,19 @@ const stopUpdateNotice = props.updateNoticeController?.subscribe((snapshot) => {
 });
 const isResetDialogOpen = ref(false);
 
-function openXiaochaoSite(): void {
+function openExternalPage(url: string): void {
   const adapter = props.platform === 'electron'
     ? createElectronPlatform()
     : createUserscriptPlatform();
-  void adapter.openExternal('https://xc.95chong.cn/');
+  void adapter.openExternal(url);
+}
+
+function openXiaochaoSite(): void {
+  openExternalPage('https://xc.95chong.cn/');
+}
+
+function openChangelog(): void {
+  openExternalPage('https://log.95chong.cn/');
 }
 let expandedHeight = '';
 let expandedWidth = '';
@@ -549,6 +557,14 @@ function handleResizeStart(event: PointerEvent): void {
             @click="openXiaochaoSite"
           >
             <span>小抄主页</span>
+          </button>
+          <button
+            type="button"
+            class="xiaochao-block-entry xiaochao-block-entry--center"
+            data-tooltip="在浏览器新页面打开更新日志"
+            @click="openChangelog"
+          >
+            <span>更新日志</span>
           </button>
           <button
             type="button"

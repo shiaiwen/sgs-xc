@@ -4,6 +4,7 @@ import { site } from "@/lib/site";
 const links: { href: string; label: string; external?: boolean }[] = [
   { href: "/", label: "首页" },
   { href: "/downloads", label: "下载" },
+  { href: "https://log.95chong.cn", label: "更新日志", external: true },
   {
     href: "https://my.feishu.cn/wiki/SkOKwhsYUiQGrWkFTyPcNpMDnwd?from=from_copylink",
     label: "开源",

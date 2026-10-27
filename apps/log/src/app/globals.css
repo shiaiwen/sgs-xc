@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+body {
+  background: #fff;
+  color: #1a1a1a;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+
+.notes {
+  color: #222;
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.notes > * + * {
+  margin-top: 0.85rem;
+}
+
+.notes h2,
+.notes h3 {
+  margin-top: 1.75rem;
+  margin-bottom: 0.55rem;
+  color: #1a1a1a;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.notes h2:first-child,
+.notes h3:first-child {
+  margin-top: 0;
+}
+
+.notes ul,
+.notes ol {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.notes ul {
+  list-style: disc;
+}
+
+.notes ol {
+  list-style: decimal;
+}
+
+.notes li + li {
+  margin-top: 0.35rem;
+}
+
+.notes a {
+  color: #1677ff;
+  text-underline-offset: 3px;
+}
+
+.notes code {
+  border-radius: 4px;
+  background: #f5f6f7;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.92em;
+}
+
+.notes pre {
+  overflow-x: auto;
+  border-radius: 6px;
+  background: #f5f6f7;
+  padding: 0.85rem 1rem;
+}
+
+.notes pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.notes table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.notes th,
+.notes td {
+  border-bottom: 1px solid #eee;
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
