@@ -4,7 +4,6 @@
 
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator.ts';
 import { locateGameScene } from '../features/seat-display/game-scene-locator.ts';
-import { yieldGeneralSkillTipsToSeatUi } from './general-skill-tip-state.ts';
 import { createMethodPatcher } from './method-patch.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -329,11 +328,7 @@ const WM_USER_INFO_HIDE_METHODS = [
   'closeWindow',
 ] as const;
 
-function yieldSkillTipsForSeatUi(globalObject: LayaRuntimeWindow): void {
-  yieldGeneralSkillTipsToSeatUi(globalObject);
-}
-
-/** 点击牌桌后短时内不要刷新座位 UI 或 TipsHide，避免操作菜单一闪就关。 */
+/** 点击牌桌后短时内不要刷新座位 UI，避免操作菜单一闪就关。 */
 export function markSeatUiInteractionGrace(
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow,
   durationMs: number = SEAT_UI_GRACE_MS
@@ -622,32 +617,6 @@ export function isSeatPlayerMenuProtected(
   const cached = cachedSeatMenuRoot.get(globalObject);
   if (cached && cached.destroyed !== true && isVisibleLayaNode(cached)) return true;
   return lightSeatMenuVisible(globalObject);
-}
-
-/** 点头像菜单、资料页或资料页打开过渡期：改用局部收起，不跑全局 TipsHide。 */
-export function shouldBlockGlobalTipsDismissForSeatPopup(
-  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
-): boolean {
-  // 资料页 / 座位菜单 tips-hold：拦全局 TipsHide，避免菜单秒关。
-  // 点菜单项走 ShowWindow + releaseSeatMenuForUserInfo，不依赖放行 TipsHide。
-  if (isUserInfoDialogOpen(globalObject)) return true;
-  if (isSeatMenuTipsHoldActive(globalObject)) return true;
-  if (isUserInfoDismissGuardActive(globalObject)) return true;
-  return false;
-}
-
-/** 效果触发的全局收起：只关武将技能详情，并拉回座位菜单/资料页可见性。 */
-export function applySeatPopupSafeTipsDismiss(
-  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
-): void {
-  yieldSkillTipsForSeatUi(globalObject);
-  // 资料页已开：不要拉回座位菜单。菜单 hold 期间即使 dismiss 守卫在也要 sustain。
-  if (!isUserInfoDialogOpen(globalObject)) {
-    if (isSeatMenuTipsHoldActive(globalObject) || !isUserInfoDismissGuardActive(globalObject)) {
-      sustainVisibleSeatPlayerMenu(globalObject);
-    }
-  }
-  sustainVisibleUserInfoWindow(globalObject);
 }
 
 /** 找当前座位操作菜单根节点；仅 PromptLayer + 小预算，避免内存飙升。 */
@@ -951,7 +920,6 @@ function armForUserInfoOpen(
   if (isProfile) {
     releaseSeatMenuForUserInfo(globalObject);
   }
-  yieldSkillTipsForSeatUi(globalObject);
   markSeatUiInteractionGrace(globalObject, 5000);
   lastSeatMenuSeenAt.set(globalObject, Date.now());
   refreshSeatPopupDismissPin(globalObject);
@@ -1155,7 +1123,6 @@ function armFromSeatInfoMenuOpen(globalObject: LayaRuntimeWindow, via: string): 
   try { seatMenuWasOpen.set(globalObject, false); } catch { /* ignore */ }
   try { seatMenuWasVisible.set(globalObject, false); } catch { /* ignore */ }
   noteSeatMenuOpenViewport(globalObject);
-  yieldSkillTipsForSeatUi(globalObject);
   markSeatUiInteractionGrace(globalObject, SEAT_MENU_TIPS_HOLD_MS);
   lastSeatMenuSeenAt.set(globalObject, Date.now());
   refreshSeatPopupDismissPin(globalObject);
