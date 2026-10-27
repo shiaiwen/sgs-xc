@@ -24,9 +24,16 @@ let dockWindowListenersInstalled = false;
 /** 正在把尺寸变化告诉游戏。这段时间里不再跟着重算，否则会自己套自己。 */
 let notifyingResize = false;
 
+/** 小抄主动派发 resize 期间为 true；面板 resize 监听应跳过，避免与 requestGameResize 互锁死循环。 */
+export function isXiaochaoDockResizeNotify(): boolean {
+  return notifyingResize;
+}
+
 /** 缩小游戏视口，并让 Laya 使用扣除侧栏后的宽度重新排版。 */
 export function reserveGameAreaForDockedPanel(panelWidth: number): void {
-  reservedPanelWidth = Math.max(0, Math.round(panelWidth));
+  const nextPanelWidth = Math.max(0, Math.round(panelWidth));
+  const panelWidthChanged = nextPanelWidth !== reservedPanelWidth;
+  reservedPanelWidth = nextPanelWidth;
   const gameBackground = document.getElementById('bgDiv');
 
   if (!dockingSnapshot) {
@@ -35,7 +42,7 @@ export function reserveGameAreaForDockedPanel(panelWidth: number): void {
       ? Object.getOwnPropertyDescriptor(layaBrowser, 'clientWidth')
       : undefined;
     const originalGet =
-      descriptor && typeof descriptor.get === 'function'
+      descriptor && typeof descriptor.get === 'function' && descriptor.get !== getAvailableGameWidth
         ? (descriptor.get as () => number).bind(layaBrowser)
         : undefined;
     dockingSnapshot = {
@@ -53,7 +60,7 @@ export function reserveGameAreaForDockedPanel(panelWidth: number): void {
     ensureLayaClientWidthOverride();
   }
 
-  applyDockedViewportLayout(true);
+  applyDockedViewportLayout(panelWidthChanged || lastNotifiedGameWidth < 0);
   watchGameBackground(gameBackground);
   scheduleDockLayoutRetry();
   startDockKeepalive();
@@ -250,27 +257,36 @@ function ensureLayaClientWidthOverride(): void {
     dockingSnapshot.layaBrowser = layaBrowser;
     dockingSnapshot.layaClientWidthDescriptor = current;
     dockingSnapshot.originalClientWidthGet =
-      current && typeof current.get === 'function'
+      current && typeof current.get === 'function' && current.get !== getAvailableGameWidth
         ? (current.get as () => number).bind(layaBrowser)
         : dockingSnapshot.originalClientWidthGet;
   }
   installLayaClientWidthOverride(layaBrowser);
 }
 
+let resolvingAvailableGameWidth = false;
+
 function getAvailableGameWidth(): number {
-  const original = dockingSnapshot?.originalClientWidthGet;
-  let base = 0;
-  if (original) {
-    try {
-      base = Number(original()) || 0;
-    } catch {
-      base = 0;
+  const fallbackBase = document.documentElement.clientWidth || window.innerWidth || 0;
+  if (resolvingAvailableGameWidth) {
+    return Math.max(320, fallbackBase - reservedPanelWidth);
+  }
+  resolvingAvailableGameWidth = true;
+  try {
+    const original = dockingSnapshot?.originalClientWidthGet;
+    let base = 0;
+    if (original && original !== getAvailableGameWidth) {
+      try {
+        base = Number(original()) || 0;
+      } catch {
+        base = 0;
+      }
     }
+    if (!(base > 0)) base = fallbackBase;
+    return Math.max(320, base - reservedPanelWidth);
+  } finally {
+    resolvingAvailableGameWidth = false;
   }
-  if (!(base > 0)) {
-    base = document.documentElement.clientWidth || window.innerWidth || 0;
-  }
-  return Math.max(320, base - reservedPanelWidth);
 }
 
 function installLayaClientWidthOverride(layaBrowser: object | undefined): void {

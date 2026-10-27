@@ -260,7 +260,12 @@ async function createWindow() {
         screen,
         getMainWindow: () => mainWindow,
         logMessage,
-        getScriptPath: () => scriptPath
+        getScriptPath: () => scriptPath,
+        clearLocalScriptCache,
+        reloadScriptInjection: () => {
+            if (!mainWindow || mainWindow.isDestroyed()) return;
+            mainWindow.webContents.send('xiaochao-script-hot-updated');
+        }
     });
     if (config.get('firstTime', true) === true || config.get('firstTimeAnnouncementSeen', false) !== true) {
         firstTimeAnnouncement(mainWindow);
@@ -1087,8 +1092,8 @@ function bundledScriptPath() {
 
 async function syncBundledScriptIfNewer() {
     // 正式微端注入的是 userData 下的脚本，不是 app/xiaochao.js。
-    // 本地打包版本号常低于官网缓存（如 1.1.47 < 1.5.91），若仍按“仅更新更高版本”
-    // 同步，开发产物永远进不了运行时。这里以 app 内置脚本内容为准：哈希不同就覆盖。
+    // 未打包：哈希不同就用内置覆盖，方便本地打包产物进运行时。
+    // 已打包：仅当内置版本 >= userData 时覆盖；userData 更新（脚本热更）则保留。
     const bundledPath = bundledScriptPath();
     if (!fs.existsSync(bundledPath)) {
         logMessage('bundled script not found, skip sync');
@@ -1117,6 +1122,18 @@ async function syncBundledScriptIfNewer() {
         } catch (error) {
             logMessage(`bundled script comparison failed: ${error.message}`);
         }
+        const bundledNewerOrSame = compareVersions(bundledVersion, currentVersion) >= 0;
+        if (app.isPackaged && !bundledNewerOrSame) {
+            logMessage(`keep hot-updated userData script v${currentVersion} (bundled v${bundledVersion})`);
+            return false;
+        }
+        if (app.isPackaged && bundledNewerOrSame && compareVersions(bundledVersion, currentVersion) === 0) {
+            // same version, different hash: refresh from install
+        } else if (!app.isPackaged) {
+            // unpackaged: force bundled for local pack testing
+        } else if (!bundledNewerOrSame) {
+            return false;
+        }
     }
 
     try {
@@ -1138,6 +1155,7 @@ async function syncBundledScriptIfNewer() {
         return false;
     }
 }
+
 
 function initializeWritablePaths() {
     dataDirectory = path.join(instanceProfile.sharedUserData, 'xiaochao');

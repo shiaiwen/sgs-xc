@@ -30,9 +30,11 @@ const portalManifest = path.join(portalDownloads, 'manifest.json');
 const userscriptName = 'sgs-xc.user.js';
 const releaseUserscript = path.join(root, 'dist', 'userscript', 'xiaochao.user.js');
 const portalUserscript = path.join(portalDownloads, userscriptName);
+const releaseScript = path.join(root, 'release', 'xiaochao.js');
+const portalScript = path.join(portalDownloads, 'xiaochao.js');
 
-if (!existsSync(releaseZip) || !existsSync(releaseAppZip) || !existsSync(releaseManifest) || !existsSync(releaseUserscript)) {
-  console.error(`[portal] 缺少安装包、清单或 ${releaseUserscript}`);
+if (!existsSync(releaseZip) || !existsSync(releaseAppZip) || !existsSync(releaseManifest) || !existsSync(releaseUserscript) || !existsSync(releaseScript)) {
+  console.error(`[portal] 缺少安装包、清单、脚本或 ${releaseUserscript}`);
   console.error('[portal] 请先执行 npm run pack，或直接 npm run pack:portal');
   process.exitCode = 1;
   process.exit();
@@ -56,11 +58,13 @@ copyFileSync(releaseZip, portalZip);
 copyFileSync(releaseAppZip, portalAppZip);
 copyFileSync(releaseManifest, portalManifest);
 copyFileSync(releaseUserscript, portalUserscript);
+copyFileSync(releaseScript, portalScript);
 
 const kb = (statSync(portalZip).size / 1024).toFixed(1);
 console.log(`[portal] 已拷贝到 ${portalZip}`);
 console.log(`[portal] 已拷贝到 ${portalAppZip}`);
 console.log(`[portal] 已拷贝到 ${portalManifest}`);
 console.log(`[portal] 已拷贝到 ${portalUserscript}`);
+console.log(`[portal] 已拷贝到 ${portalScript}`);
 console.log(`[portal] ${kb} KB`);
 console.log('[portal] 整站发布执行 npm run deploy -w apps/portal；发版用根目录 npm run release 一条命令完成');

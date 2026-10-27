@@ -164,16 +164,25 @@ async function main() {
   console.log(`[pack] 生成 ${releaseZipName(scriptVersion)}…`);
   await createZip(releaseZipPath, RELEASE_ASSET_FILES.concat('app.zip'), packDir);
 
+  const stagedScript = path.join(appDir, 'xiaochao.js');
+  const releaseScriptPath = path.join(root, 'release', 'xiaochao.js');
+  if (!existsSync(stagedScript)) throw new Error('缺少组装后的 xiaochao.js');
+  mkdirSync(path.join(root, 'release'), { recursive: true });
+  copyFileSync(stagedScript, releaseScriptPath);
+
   rmSync(stagingRoot, { recursive: true, force: true });
 
   const zipSize = statSync(releaseZipPath).size;
   const appSha256 = createHash('sha256').update(readFileSync(releaseAppZipPath)).digest('hex');
+  const scriptSha256 = createHash('sha256').update(readFileSync(path.join(root, 'release', 'xiaochao.js'))).digest('hex');
   const manifest = {
     version: scriptVersion,
     notes: '',
     pageUrl: 'https://xc.95chong.cn/downloads',
     appUrl: 'https://xc.95chong.cn/downloads/app.zip',
-    appSha256
+    appSha256,
+    scriptUrl: 'https://xc.95chong.cn/downloads/xiaochao.js',
+    scriptSha256
   };
   const manifestPath = path.join(root, 'release', 'xiaochao-manifest.json');
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);

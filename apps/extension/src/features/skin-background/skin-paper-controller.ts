@@ -17,6 +17,7 @@ import { createSkinBackgroundStore, type BackgroundFavorite, type BackgroundReso
 import {
   bindCustomBackgroundActions,
   getCustomBackgroundStore,
+  isCustomBackgroundVideo,
   type CustomBackgroundRecord
 } from './custom-background-store.ts';
 import {
@@ -751,12 +752,19 @@ export function installSkinPaperController(
       resource: renderer.resource,
       layerFound: Boolean(locator.layer('BackgroundLayer'))
     });
-    await renderer.setEnabled(show);
-    if (show && useCustom && customResource) await renderer.setBackground(customResource, false);
+    if (show && useCustom && customResource) {
+      await renderer.setEnabled(true);
+      await renderer.setBackground(customResource, false);
+    } else {
+      await renderer.setEnabled(show);
+    }
   }
 
-  async function measureUpload(file: Blob): Promise<BackgroundResource> {
+  async function measureUpload(file: Blob, preferVideo = false): Promise<BackgroundResource> {
     const url = URL.createObjectURL(file);
+    if (preferVideo || isCustomBackgroundVideo(file)) {
+      return { url, type: 1, width: 1920, height: 1080 };
+    }
     if (typeof createImageBitmap !== 'function') return { url, type: 0, width: 1920, height: 1080 };
     try {
       const bitmap = await createImageBitmap(file);
@@ -770,11 +778,14 @@ export function installSkinPaperController(
 
   async function applyCustom(record: CustomBackgroundRecord): Promise<void> {
     if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
-    customResource = await measureUpload(record.blob);
+    customResource = await measureUpload(record.blob, isCustomBackgroundVideo(record.blob));
     useCustom = true;
     await syncVisibility();
     if (!shouldShow()) showToast('已保存，进局后会换成这张背景', 'success');
-    else showToast('背景已换成上传的图片', 'success');
+    else showToast(
+      isCustomBackgroundVideo(record.blob) ? '背景已换成上传的视频' : '背景已换成上传的图片',
+      'success'
+    );
   }
 
   async function clearCustom(): Promise<void> {
@@ -791,7 +802,7 @@ export function installSkinPaperController(
     const saved = await customStore.load();
     if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
     if (saved?.active) {
-      customResource = await measureUpload(saved.blob);
+      customResource = await measureUpload(saved.blob, saved.isVideo === true);
       useCustom = true;
     } else {
       customResource = null;

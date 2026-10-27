@@ -68,13 +68,13 @@ export function installShanhetuController(
     cardConfigSource: options.cardConfigSource
   });
   const names = options.cardConfigSource;
-  const stopChangeGeneral = names
+  const changeGeneral = names
     ? installShanhetuChangeGeneral({
       globalObject,
       locator,
       names
     })
-    : () => undefined;
+    : null;
   const stopZhanfa = options.gameEvents
     ? installShanhetuZhanfaCount({
       locator,
@@ -90,10 +90,11 @@ export function installShanhetuController(
     filterMessage: (payload, className) => {
       map.filterMessage(payload, className);
       shop.filterMessage(payload, className);
+      changeGeneral?.filterMessage(payload, className);
     },
     dispose() {
       stopZhanfa();
-      stopChangeGeneral();
+      changeGeneral?.dispose();
       map.dispose();
       story.dispose();
       shop.dispose();

@@ -40,6 +40,12 @@ import {
   hasMountedCityOverlay,
   mountCityOverlays
 } from './shanhetu-map-view.ts';
+import {
+  extractRogueCitySpots,
+  extractRogueMapRuntime
+} from './shanhetu-rogue-sync.ts';
+
+const MAP_SCENE_NAMES = ['RogueSmallMapScene', 'RogueLikeBigMapScene'] as const;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -63,64 +69,6 @@ function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
-}
-
-/**
- * 业务在 ProtoObj.allData；外层只有 ClassName。
- * 兼容直接传入 allData / manager 缓存的测试与回填路径。
- */
-function readAllData(payload: UnknownRecord): UnknownRecord | null {
-  const body = asRecord(payload.ProtoObj)
-    ?? asRecord(payload.protoObj)
-    ?? payload;
-  return asRecord(body.allData)
-    ?? asRecord(body.AllData)
-    ?? asRecord(body.data)
-    ?? asRecord(body.Data)
-    ?? body;
-}
-
-function extractCities(payload: UnknownRecord): RogueCitySpot[] | null {
-  const allData = readAllData(payload);
-  if (!allData) return null;
-  const chapterData = asRecord(allData.chapterData) ?? asRecord(allData.ChapterData);
-  const locations = chapterData?.locations ?? chapterData?.Locations;
-  if (!Array.isArray(locations)) return null;
-  return locations.map((entry) => {
-    const record = asRecord(entry) ?? {};
-    return {
-      id: record.location ?? record.Location ?? record.id ?? record.ID,
-      event: record.event ?? record.Event
-    };
-  }).filter((spot) => spot.id != null && spot.event != null) as RogueCitySpot[];
-}
-
-function extractRuntime(payload: UnknownRecord, previous: RogueMapRuntime): RogueMapRuntime {
-  const allData = readAllData(payload) ?? {};
-  const seasonData = asRecord(allData.seasonData) ?? asRecord(allData.SeasonData) ?? {};
-  const chapterData = asRecord(allData.chapterData) ?? asRecord(allData.ChapterData) ?? {};
-  const gameData = asRecord(allData.gameData) ?? asRecord(allData.GameData) ?? {};
-  const seedData = asRecord(gameData.seedData) ?? asRecord(gameData.SeedData) ?? {};
-  const difficulty = Number(seasonData.difficulty ?? seasonData.Difficulty);
-  const seasonId = Number(seasonData.seasonId ?? seasonData.SeasonId ?? seasonData.seasonID);
-  const accday = Number(chapterData.accday ?? chapterData.Accday);
-  const chapterId = Number(chapterData.chapterId ?? chapterData.ChapterId);
-  const passChapter = Array.isArray(gameData.passChapter)
-    ? gameData.passChapter.length
-    : Number(gameData.passChapter ?? previous.passChapter);
-  const seedItem = Array.isArray(seedData.seedItem)
-    ? seedData.seedItem
-    : Array.isArray(gameData.seedItem)
-      ? gameData.seedItem
-      : previous.seedItem;
-  return {
-    difficulty: Number.isFinite(difficulty) ? difficulty : previous.difficulty,
-    seasonId: Number.isFinite(seasonId) && seasonId > 0 ? seasonId : previous.seasonId,
-    accday: Number.isFinite(accday) ? accday : previous.accday,
-    passChapter: Number.isFinite(passChapter) ? passChapter : previous.passChapter,
-    chapterId: Number.isFinite(chapterId) ? chapterId : previous.chapterId,
-    seedItem
-  };
 }
 
 /**
@@ -162,12 +110,31 @@ export function installShanhetuMapController(
     return node.visible !== false;
   }
 
-  /** 只认地图场景，不回落到当前战斗场景。 */
+  function sceneNameOf(scene: UnknownRecord | null): string {
+    return String(scene?.SceneName ?? scene?.sceneName ?? '');
+  }
+
+  /** 只认地图场景；层里找不到时用当前场景名兜底。 */
   function findMapScene(): UnknownRecord | null {
-    for (const sceneName of ['RogueSmallMapScene', 'RogueLikeBigMapScene']) {
+    for (const sceneName of MAP_SCENE_NAMES) {
       const scenes = locator.findInLayer('SceneLayer', sceneName);
       const scene = asRecord(scenes[0]);
       if (scene && !scene.destroyed) return scene;
+    }
+    const current = asRecord(locator.scene());
+    if (current && !current.destroyed && MAP_SCENE_NAMES.includes(sceneNameOf(current) as typeof MAP_SCENE_NAMES[number])) {
+      return current;
+    }
+    return null;
+  }
+
+  function readCityViewFromScene(scene: UnknownRecord | null): UnknownRecord | null {
+    if (!scene || scene.destroyed) return null;
+    for (const key of ['cityView', 'CityView', 'm_cityView']) {
+      const cityView = asRecord(scene[key]);
+      if (cityView && !cityView.destroyed && typeof cityView.GetCityItemById === 'function') {
+        return cityView;
+      }
     }
     return null;
   }
@@ -175,11 +142,7 @@ export function installShanhetuMapController(
   function findCityView(): UnknownRecord | null {
     const scene = findMapScene();
     if (!scene || !isNodeVisible(scene)) return null;
-    const cityView = asRecord(scene?.cityView);
-    if (cityView && !cityView.destroyed && typeof cityView.GetCityItemById === 'function') {
-      return cityView;
-    }
-    return null;
+    return readCityViewFromScene(scene);
   }
 
   /** 漏接同步包时，从 PveManager / 地图场景缓存回填或对齐 cities。 */
@@ -201,12 +164,12 @@ export function installShanhetuMapController(
     ];
     for (const candidate of candidates) {
       if (!candidate) continue;
-      const next = extractCities(candidate);
+      const next = extractRogueCitySpots(candidate);
       if (next == null) continue;
       if (mode === 'fill-empty' && !next.length) continue;
       cities = next;
       citiesSynced = true;
-      runtime = extractRuntime(candidate, runtime);
+      runtime = extractRogueMapRuntime(candidate, runtime);
       return;
     }
   }

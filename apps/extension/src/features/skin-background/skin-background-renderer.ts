@@ -47,9 +47,18 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   let actionEffects: UnknownRecord[] = [];
   let actionToken = 0;
   let resizeBound = false;
+  let videoElement: HTMLVideoElement | null = null;
+  let videoBitmap: UnknownRecord | null = null;
+  let videoDisplaySprite: UnknownRecord | null = null;
+  let videoTexture: UnknownRecord | null = null;
+  let videoDrawSize = { width: 0, height: 0 };
+  let videoFrameLoop = false;
+  let videoFrameRaf = 0;
+  let lastVideoFrameTime = -1;
 
   const laya = () => asRecord(globalObject.Laya);
   const layaEvent = () => asRecord(laya()?.Event);
+  const layaTimer = () => asRecord(laya()?.timer);
 
   function gameSize(): { width: number; height: number } {
     const context = asRecord((globalObject as unknown as { SystemContext?: unknown }).SystemContext);
@@ -154,7 +163,122 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     });
   }
 
+  function mountVideoToDom(video: HTMLVideoElement): void {
+    const body = globalObject.document?.body;
+    if (!body || video.isConnected) return;
+    video.style.cssText =
+      'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none';
+    body.appendChild(video);
+  }
+
+  function clearVideoFrameLoop(): void {
+    videoFrameLoop = false;
+    if (videoFrameRaf) {
+      const cancel = globalObject.cancelAnimationFrame?.bind(globalObject) ?? globalThis.cancelAnimationFrame;
+      cancel(videoFrameRaf);
+      videoFrameRaf = 0;
+    }
+    const timer = layaTimer();
+    const clear = timer?.clear;
+    if (typeof clear === 'function') clear.call(timer, resizeOwner, drawVideoFrame);
+  }
+
+  function startVideoFrameLoop(): void {
+    clearVideoFrameLoop();
+    videoFrameLoop = true;
+    const timer = layaTimer();
+    const frameLoop = timer?.frameLoop;
+    const loop = timer?.loop;
+    if (typeof frameLoop === 'function') frameLoop.call(timer, 1, resizeOwner, drawVideoFrame);
+    else if (typeof loop === 'function') loop.call(timer, 1, resizeOwner, drawVideoFrame);
+    const raf = globalObject.requestAnimationFrame?.bind(globalObject) ?? globalThis.requestAnimationFrame;
+    if (typeof raf !== 'function') return;
+    const tick = (): void => {
+      if (!videoFrameLoop || !videoElement) {
+        videoFrameRaf = 0;
+        return;
+      }
+      drawVideoFrame();
+      videoFrameRaf = raf(tick);
+    };
+    videoFrameRaf = raf(tick);
+  }
+
+  function pauseVideoPlayback(): void {
+    clearVideoFrameLoop();
+    try {
+      videoElement?.pause();
+    } catch {
+      // 忽略暂停失败。
+    }
+  }
+
+  function stopVideoPlayback(): void {
+    clearVideoFrameLoop();
+    lastVideoFrameTime = -1;
+    videoDisplaySprite = null;
+    videoTexture = null;
+    videoDrawSize = { width: 0, height: 0 };
+    if (videoElement) {
+      try {
+        videoElement.pause();
+        videoElement.removeAttribute('src');
+        videoElement.load();
+        videoElement.remove();
+      } catch {
+        // 忽略销毁失败。
+      }
+      videoElement = null;
+    }
+    if (videoBitmap) {
+      try {
+        callMethod(videoBitmap, 'destroy', false);
+      } catch {
+        // 忽略纹理销毁失败。
+      }
+      videoBitmap = null;
+    }
+  }
+
+  function redrawVideoTexture(): void {
+    const texture = videoTexture;
+    const panel = videoDisplaySprite;
+    const graphics = panel ? asRecord(panel.graphics) : null;
+    if (!texture || !graphics) return;
+    const { width, height } = videoDrawSize;
+    callMethod(graphics, 'clear');
+    callMethod(graphics, 'drawTexture', texture, -width / 2, -height / 2, width, height);
+  }
+
+  function drawVideoFrame(): void {
+    const video = videoElement;
+    const bitmap = videoBitmap;
+    if (!video || !bitmap || video.readyState < 2) return;
+    if (video.currentTime === lastVideoFrameTime) return;
+    lastVideoFrameTime = video.currentTime;
+    callMethod(bitmap, '_updateVideoData');
+    redrawVideoTexture();
+    if (videoDisplaySprite) callMethod(videoDisplaySprite, 'repaint');
+    callMethod(sprite, 'repaint');
+  }
+
+  async function resumeVideoPlayback(): Promise<void> {
+    if (Number(resource.type) !== 1 || !videoElement || !videoBitmap) return;
+    if (!sprite?._parent && !(await tasks.poll(() => init(), 20, 500))) return;
+    layout();
+    try {
+      await videoElement.play();
+    } catch {
+      return;
+    }
+    videoBitmap.updatable = true;
+    lastVideoFrameTime = -1;
+    drawVideoFrame();
+    startVideoFrameLoop();
+  }
+
   function clearContent(): void {
+    stopVideoPlayback();
     clearAction();
     idleEffects = {};
     while (Number(sprite?.numChildren) > 0) {
@@ -170,6 +294,80 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     callMethod(image, 'loadImage', url);
     callMethod(image, 'pos', -width / 2, -height / 2);
     callMethod(sprite, 'addChild', image);
+  }
+
+  async function waitVideoMetadata(video: HTMLVideoElement): Promise<void> {
+    if (video.readyState >= 1) return;
+    await new Promise<void>((resolve, reject) => {
+      const onReady = () => {
+        video.removeEventListener('loadedmetadata', onReady);
+        video.removeEventListener('error', onError);
+        resolve();
+      };
+      const onError = () => {
+        video.removeEventListener('loadedmetadata', onReady);
+        video.removeEventListener('error', onError);
+        reject(new Error('video metadata load failed'));
+      };
+      video.addEventListener('loadedmetadata', onReady);
+      video.addEventListener('error', onError);
+    });
+  }
+
+  async function drawVideo(url: string, width: number, height: number): Promise<void> {
+    const documentObject = globalObject.document;
+    const VideoTextureClass = laya()?.VideoTexture as (new () => UnknownRecord) | undefined;
+    const TextureClass = laya()?.Texture as (new (source: unknown) => UnknownRecord) | undefined;
+    const SpriteClass = laya()?.Sprite as (new () => UnknownRecord) | undefined;
+    if (!documentObject || !VideoTextureClass || !TextureClass || !SpriteClass || !sprite) return;
+
+    stopVideoPlayback();
+    const video = documentObject.createElement('video');
+    video.muted = true;
+    video.loop = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', 'true');
+    video.setAttribute('webkit-playsinline', 'true');
+    video.src = url;
+    videoElement = video;
+    mountVideoToDom(video);
+
+    try {
+      await waitVideoMetadata(video);
+    } catch {
+      stopVideoPlayback();
+      return;
+    }
+    if (videoElement !== video) return;
+
+    const drawWidth = video.videoWidth > 0 ? video.videoWidth : width;
+    const drawHeight = video.videoHeight > 0 ? video.videoHeight : height;
+    spriteSize = { width: drawWidth, height: drawHeight };
+    videoDrawSize = { width: drawWidth, height: drawHeight };
+
+    const bitmap = new VideoTextureClass();
+    bitmap.video = video;
+    videoBitmap = bitmap;
+    const texture = new TextureClass(bitmap);
+    videoTexture = texture;
+    const panel = new SpriteClass();
+    videoDisplaySprite = panel;
+    redrawVideoTexture();
+    callMethod(sprite, 'addChild', panel);
+
+    try {
+      await video.play();
+    } catch {
+      stopVideoPlayback();
+      return;
+    }
+    if (videoElement !== video) return;
+
+    bitmap.updatable = true;
+    lastVideoFrameTime = -1;
+    drawVideoFrame();
+    startVideoFrameLoop();
   }
 
   function drawEffects(url: string, type: number, width: number, height: number): void {
@@ -194,15 +392,20 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     const { url, type = 0, width = 0, height = 0 } = next;
     if (!url) return false;
     if (!sprite?._parent && !(await tasks.poll(() => init(), 20, 500))) return false;
-    if (spriteUrl !== url) {
+    const typeNum = Number(type);
+    const urlChanged = spriteUrl !== url;
+    if (urlChanged) {
       clearContent();
       spriteSize = { width: Number(width), height: Number(height) };
-      if (Number(type) === 0) drawStatic(url, Number(width), Number(height));
-      else if (Number(type) !== 1) drawEffects(url, Number(type), Number(width), Number(height));
+      if (typeNum === 0) drawStatic(url, Number(width), Number(height));
+      else if (typeNum === 1) await drawVideo(url, Number(width), Number(height));
+      else drawEffects(url, typeNum, Number(width), Number(height));
       layout();
       spriteUrl = url;
-      resource = { url, type: Number(type), width: Number(width), height: Number(height) };
+      resource = { url, type: typeNum, width: Number(width), height: Number(height) };
       if (persist) store.saveResource(resource as BackgroundResource);
+    } else if (typeNum === 1) {
+      await resumeVideoPlayback();
     }
     return true;
   }
@@ -269,8 +472,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
         const saved = store.loadResource();
         if (saved.url) resource = saved;
         await setBackground();
+        if (Number(resource.type) === 1) await resumeVideoPlayback();
         return;
       }
+      pauseVideoPlayback();
       clearAction();
       callMethod(sprite, 'removeSelf');
     },

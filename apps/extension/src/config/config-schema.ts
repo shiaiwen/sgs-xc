@@ -77,6 +77,8 @@ export interface XiaochaoConfig {
   'assist.autoHGEnabled': boolean;
   'assist.baiShengEnabled': boolean;
   'assist.autoBotTavernTarget': 'none' | 'dailyGame' | 'dailyWin' | 'weeklyWin';
+  /** 为 false 时不拉远程版本；油猴为 true 时检测到新版会自动打开脚本安装页。 */
+  'update.autoUpdateEnabled': boolean;
 }
 
 export type XiaochaoConfigKey = keyof XiaochaoConfig;
@@ -259,6 +261,7 @@ export const CONFIG_SCHEMA: {
         : undefined;
     }
   },
+  'update.autoUpdateEnabled': booleanDefinition(true),
 };
 
 /** 按 schema 生成一份默认配置。 */

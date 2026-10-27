@@ -8,13 +8,13 @@ const DB_NAME = 'xiaochao-custom-background';
 const STORE = 'background';
 const LEGACY_KEY = 'current';
 const DB_VERSION = 1;
-export const CUSTOM_BACKGROUND_MAX_BYTES = 3 * 1024 * 1024;
-const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export interface CustomBackgroundRecord {
   blob: Blob;
   active: boolean;
   updatedAt: number;
+  /** IndexedDB 里 blob 可能没有 mime，恢复时用此标记区分视频。 */
+  isVideo?: boolean;
 }
 
 export interface CustomBackgroundActions {
@@ -30,9 +30,15 @@ export interface CustomBackgroundStore {
   subscribe(listener: () => void): () => void;
 }
 
+export function isCustomBackgroundVideo(file: Blob): boolean {
+  const mime = String(file.type || '').toLowerCase();
+  if (mime.startsWith('video/')) return true;
+  if (file instanceof File) return file.name.toLowerCase().endsWith('.mp4');
+  return false;
+}
+
 export function assertCustomBackgroundFile(file: Blob): void {
-  if (!ALLOWED_TYPES.has(file.type)) throw new Error('只支持 png、jpg、webp');
-  if (file.size <= 0 || file.size > CUSTOM_BACKGROUND_MAX_BYTES) throw new Error('图片需小于 3MB');
+  if (file.size <= 0) throw new Error('文件不能为空');
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -100,14 +106,25 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
     const store = (await db()).transaction(STORE, 'readonly').objectStore(STORE);
     const row = await requestToPromise(store.get(account));
     if (!row || typeof row !== 'object' || !(row.blob instanceof Blob)) return null;
-    return { blob: row.blob, active: row.active !== false, updatedAt: Number(row.updatedAt) || 0 };
+    const record = row as Partial<CustomBackgroundRecord>;
+    return {
+      blob: row.blob,
+      active: row.active !== false,
+      updatedAt: Number(row.updatedAt) || 0,
+      isVideo: record.isVideo === true || isCustomBackgroundVideo(row.blob)
+    };
   }
 
   return {
     load,
     async save(file) {
       assertCustomBackgroundFile(file);
-      const record: CustomBackgroundRecord = { blob: file, active: true, updatedAt: Date.now() };
+      const record: CustomBackgroundRecord = {
+        blob: file,
+        active: true,
+        updatedAt: Date.now(),
+        isVideo: isCustomBackgroundVideo(file)
+      };
       await migrateLegacy();
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
       await requestToPromise(store.put(record, currentAccountKey()));

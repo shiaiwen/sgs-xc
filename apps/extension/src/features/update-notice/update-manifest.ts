@@ -1,6 +1,8 @@
 /** 版本清单由 95chong.cn 接口返回。游戏页直接 GET 这份 JSON。 */
 export const XIAOCHAO_UPDATE_MANIFEST_URL = 'https://95chong.cn/api/xiaochao-version';
 export const XIAOCHAO_UPDATE_PAGE_URL = 'https://xc.95chong.cn/downloads';
+/** 与油猴脚本头 downloadURL / updateURL 一致。 */
+export const XIAOCHAO_USERSCRIPT_DOWNLOAD_URL = 'https://xc.95chong.cn/downloads/sgs-xc.user.js';
 
 export interface XiaochaoUpdateManifest {
   version: string;
@@ -66,6 +68,13 @@ export function parseUpdateManifest(raw: unknown, fallbackPageUrl = XIAOCHAO_UPD
   const pageUrlRaw = String(data.pageUrl ?? data.url ?? fallbackPageUrl).trim();
   const pageUrl = isHttpUrl(pageUrlRaw) ? pageUrlRaw : fallbackPageUrl;
   return { version, notes, pageUrl };
+}
+
+/** 从完整油猴脚本文本解析 @version。 */
+export function readUserscriptHeaderVersion(source: string): string {
+  const match = String(source || '').match(/@version\s+(\d+(?:\.\d+)*)/);
+  const version = match?.[1]?.trim() ?? '';
+  return /^\d+(?:\.\d+)*$/.test(version) ? version : '';
 }
 
 /** 构建时写进脚本的版本。缺失时回退 0.0.0。 */

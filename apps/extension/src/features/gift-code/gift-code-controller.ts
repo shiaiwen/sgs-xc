@@ -153,8 +153,6 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   let runningId = '';
   let missingAccountLogged = false;
   let cachedUserDataSelf: UnknownRecord | null = null;
-  console.info('[礼包码] 控制器已启动');
-
   function currentAccountId(): string {
     const cachedId = cachedUserDataSelf?.clientId ?? cachedUserDataSelf?.ClientId ?? cachedUserDataSelf?.ClientID;
     if (isValidGameAccountId(cachedId)) {
@@ -198,11 +196,9 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
     const attempts = readAttempts(storage, id);
     const pending = codes.filter((code) => !attempts.has(code));
     if (!pending.length) {
-      console.info(`[礼包码] 账号 ${id} 的礼包码都已尝试过`);
       return 'done';
     }
     const notice = `发现 ${pending.length} 个新礼包码，开始自动兑换`;
-    console.info(`[礼包码] ${notice}`);
     showToast(notice);
     for (const code of pending) {
       if (tasks.disposed || currentAccountId() !== id) return 'retry';
@@ -224,7 +220,6 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
         controls.submit.call(exchange);
         attempts.add(code);
         writeAttempts(storage, id, attempts);
-        console.info('[礼包码] 已尝试兑换:', code);
       } catch (error) {
         console.warn('[礼包码] 兑换失败:', code, error);
       } finally {
@@ -253,7 +248,6 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
     const firstSeen = seenAt.get(id);
     if (firstSeen == null) {
       seenAt.set(id, now);
-      console.info(`[礼包码] 读到账号 ${id}，${loginDelayMs}ms 后自动兑换`);
       return;
     }
     // 账号切走后重登要重新等待。

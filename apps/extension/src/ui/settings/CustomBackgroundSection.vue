@@ -6,7 +6,8 @@ import { showToast } from '../toast/show-toast';
 import {
   applySavedCustomBackground,
   clearSavedCustomBackground,
-  getCustomBackgroundStore
+  getCustomBackgroundStore,
+  isCustomBackgroundVideo
 } from '../../features/skin-background/custom-background-store';
 
 const store = getCustomBackgroundStore();
@@ -16,12 +17,14 @@ const current = ref(null);
 const inputRef = ref(null);
 let previewUrl = '';
 
-const fileLabel = computed(() => file.value?.name || '未选择图片');
+const fileLabel = computed(() => file.value?.name || '未选择文件');
 
 function showPreview(record) {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = record ? URL.createObjectURL(record.blob) : '';
-  current.value = record ? { active: record.active, url: previewUrl } : null;
+  current.value = record
+    ? { active: record.active, url: previewUrl, isVideo: isCustomBackgroundVideo(record.blob) }
+    : null;
 }
 
 async function reload() {
@@ -58,7 +61,7 @@ function resetFile() {
 
 async function save() {
   if (!file.value) {
-    showToast('先选择一张图片', 'warning');
+    showToast('先选择一个背景文件', 'warning');
     return;
   }
   try {
@@ -83,7 +86,7 @@ async function clearBackground() {
   <button
     type="button"
     class="xiaochao-block-entry xiaochao-block-entry--center xiaochao-custom-bg-entry"
-    data-tooltip="上传一张图片当作牌桌背景，只在自己屏幕上显示"
+    data-tooltip="上传图片或 MP4 当作牌桌背景，只在自己屏幕上显示"
     @click="openDialog"
   >
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -103,16 +106,16 @@ async function clearBackground() {
       <input
         ref="inputRef"
         type="file"
-        accept="image/png,image/jpeg,image/webp"
-        aria-label="选择背景图"
+        accept="image/png,image/jpeg,image/webp,video/mp4,.mp4"
+        aria-label="选择背景文件"
         @change="onFile"
       >
       <button type="button" class="xiaochao-custom-bg__choose" @click="openPicker">
-        选择图片
+        选择文件
       </button>
       <span class="xiaochao-custom-bg__name" :title="fileLabel">{{ fileLabel }}</span>
     </div>
-    <p class="xiaochao-custom-bg__hint">PNG、JPG、WEBP，只显示在自己的屏幕上</p>
+    <p class="xiaochao-custom-bg__hint">PNG、JPG、WEBP、MP4，只显示在自己的屏幕上</p>
     <button
       type="button"
       class="xiaochao-custom-bg__apply"
@@ -122,9 +125,21 @@ async function clearBackground() {
       设为背景
     </button>
     <div v-if="current" class="xiaochao-custom-bg__current">
-      <img :src="current.url" alt="当前自定义背景">
+      <video
+        v-if="current.isVideo"
+        :src="current.url"
+        muted
+        loop
+        autoplay
+        playsinline
+      />
+      <img v-else :src="current.url" alt="当前自定义背景">
       <div class="xiaochao-custom-bg__meta">
-        <span>{{ current.active ? '正在使用这张图' : '已保存，当前让给了官方背景' }}</span>
+        <span>{{
+          current.active
+            ? (current.isVideo ? '正在使用这个视频' : '正在使用这张图')
+            : '已保存，当前让给了官方背景'
+        }}</span>
         <button type="button" class="xiaochao-custom-bg__clear" @click="clearBackground">清除</button>
       </div>
     </div>
@@ -225,7 +240,8 @@ async function clearBackground() {
   border-radius: 4px;
   background: rgba(26, 22, 19, .45);
 }
-.xiaochao-custom-bg__current img {
+.xiaochao-custom-bg__current img,
+.xiaochao-custom-bg__current video {
   display: block;
   width: 100%;
   height: 96px;

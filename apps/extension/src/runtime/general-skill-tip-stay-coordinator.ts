@@ -78,11 +78,6 @@ function recordLastClose(globalObject: LayaRuntimeWindow, reason: string, detail
   arr.push(entry);
   while (arr.length > 20) arr.shift();
   bag.__xcTipStayCloseLog = arr;
-  try {
-    if (bag.__xcTipStayDebug === true) {
-      (console.log as (...args: unknown[]) => void)('[xcTipStay] close:' + reason, detail ?? '');
-    }
-  } catch { /* ignore */ }
 }
 
 function tipStayStats(globalObject: LayaRuntimeWindow): UnknownRecord {
@@ -720,8 +715,6 @@ function tipStayDebug(globalObject: LayaRuntimeWindow, tag: string, detail?: str
   tipStayDebugOnce.add(key);
   if (tipStayDebugOnce.size > 200) tipStayDebugOnce.clear();
   try {
-    const line = '[xcTipStay] ' + tag + (detail ? (' ' + detail) : '');
-    (console.log as (...args: unknown[]) => void)(line);
     const arr = Array.isArray(bag.__xcTipStayDebugLog) ? bag.__xcTipStayDebugLog as unknown[] : [];
     arr.push({ t: Date.now(), tag, detail: detail ?? '' });
     while (arr.length > 40) arr.shift();

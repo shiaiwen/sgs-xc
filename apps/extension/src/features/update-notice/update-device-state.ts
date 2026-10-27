@@ -12,10 +12,12 @@ const UPDATE_DEVICE_STATE_KEY = 'XC::update-device-state';
 export interface UpdateDeviceState {
   dismissedVersion: string;
   installedVersion: string;
+  /** 已对某远程版本触发过油猴自动安装页，避免重复开 tab。 */
+  lastAutoUpdateVersion: string;
 }
 
 function emptyState(): UpdateDeviceState {
-  return { dismissedVersion: '', installedVersion: '' };
+  return { dismissedVersion: '', installedVersion: '', lastAutoUpdateVersion: '' };
 }
 
 export function readUpdateDeviceState(): UpdateDeviceState {
@@ -25,7 +27,10 @@ export function readUpdateDeviceState(): UpdateDeviceState {
     const parsed = JSON.parse(raw) as Partial<UpdateDeviceState>;
     return {
       dismissedVersion: typeof parsed.dismissedVersion === 'string' ? parsed.dismissedVersion : '',
-      installedVersion: typeof parsed.installedVersion === 'string' ? parsed.installedVersion : ''
+      installedVersion: typeof parsed.installedVersion === 'string' ? parsed.installedVersion : '',
+      lastAutoUpdateVersion: typeof parsed.lastAutoUpdateVersion === 'string'
+        ? parsed.lastAutoUpdateVersion
+        : ''
     };
   } catch {
     return emptyState();
@@ -36,7 +41,8 @@ export function writeUpdateDeviceState(patch: Partial<UpdateDeviceState>): Updat
   const current = readUpdateDeviceState();
   const next: UpdateDeviceState = {
     dismissedVersion: patch.dismissedVersion ?? current.dismissedVersion,
-    installedVersion: patch.installedVersion ?? current.installedVersion
+    installedVersion: patch.installedVersion ?? current.installedVersion,
+    lastAutoUpdateVersion: patch.lastAutoUpdateVersion ?? current.lastAutoUpdateVersion
   };
   writeBrowserSetting(UPDATE_DEVICE_STATE_KEY, JSON.stringify(next));
   return next;

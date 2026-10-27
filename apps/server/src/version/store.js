@@ -11,6 +11,8 @@ export function readVersionManifest() {
     notes: String(parsed.notes || ''),
     pageUrl: String(parsed.pageUrl || ''),
     appUrl: String(parsed.appUrl || ''),
-    appSha256: String(parsed.appSha256 || '')
+    appSha256: String(parsed.appSha256 || ''),
+    scriptUrl: String(parsed.scriptUrl || ''),
+    scriptSha256: String(parsed.scriptSha256 || '')
   };
 }

@@ -203,6 +203,18 @@ async function loadElectronFrame() {
 
 window.loadElectronFrame = loadElectronFrame;
 
+ipcRenderer.on('xiaochao-script-hot-updated', () => {
+    localScriptResponseCache = null;
+    localScriptInjectCache = null;
+    const webview = document.getElementById('wb');
+    if (!webview) return;
+    try {
+        webview.reload();
+    } catch (error) {
+        console.error('xiaochao script hot reload failed:', error);
+    }
+});
+
 ipcRenderer.on('payment-authorized', (event, message) => {
     const webview = document.getElementById('wb');
     if (webview) webview.send('payment-authorized', message);
@@ -737,6 +749,19 @@ function execute(webview) {
     return '••••••••';
   }
 
+  function requestWebviewKeyboardFocus() {
+    try {
+      if (window.electron && typeof window.electron.focusWebview === 'function') {
+        window.electron.focusWebview();
+      }
+    } catch (error) {}
+  }
+
+  function isCredentialPanelInput(target) {
+    if (!target || typeof target.closest !== 'function') return false;
+    return !!target.closest('#sgsol-credential-panel .sgsol-remark-input, #sgsol-save-current, .sgsol-save-remark-input');
+  }
+
   function bindRememberCheckbox() {
     const remember = query(['#SGS_login-remember', 'input[type="checkbox"][name*="remember"]']);
     if (!remember || remember.__sgsolBound) return;
@@ -796,6 +821,7 @@ function execute(webview) {
       '.sgsol-credential-empty{padding:12px 10px;color:#9f9381;font-size:13px}',
       '.sgsol-credential-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:8px 10px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05)}',
       '.sgsol-credential-row:hover,.sgsol-credential-row.sgsol-active{background:rgba(145,96,40,.36)}',
+      '.sgsol-credential-row.sgsol-remark-editing{cursor:default}',
       '.sgsol-account-line{display:flex;align-items:baseline;gap:6px;min-width:0}',
       '.sgsol-account-remark{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;color:#f0c987;font-size:13px;line-height:20px}',
       '.sgsol-account-name{flex:1 1 auto;min-width:0;font-size:15px;line-height:20px;color:#f3ead5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -806,12 +832,15 @@ function execute(webview) {
       '.sgsol-remark-input{flex:1 1 auto;min-width:0;box-sizing:border-box;border:1px solid rgba(226,199,137,.6);border-radius:3px;background:#1b1712;color:#f3ead5;padding:1px 6px;font-size:14px;line-height:20px;outline:none}',
       '.sgsol-delete{width:22px;height:22px;border:0;background:transparent;color:#b6aa96;font-size:18px;line-height:20px;cursor:pointer}',
       '.sgsol-delete:hover{color:#ffcf8a}',
-      '.sgsol-save-line{position:fixed;z-index:2147483599;display:inline-flex;align-items:center;gap:6px;margin-left:0;color:#cfc4b2;font-size:15px;line-height:20px;cursor:pointer;vertical-align:middle;user-select:none;white-space:nowrap}',
-      '.login_vertical .login_hor .sgsol-save-line.sgsol-save-line--4399{position:absolute;float:none;width:auto;margin-left:0;padding:0}',
-      '.login_vertical .login_hor .sgsol-save-line.sgsol-save-line--4399>span{float:none;width:auto;overflow:visible;line-height:20px}',
-      '.sgsol-save-line input{width:14px;height:14px;margin:0;accent-color:#c9984d;cursor:pointer}',
+      '.sgsol-save-wrap{position:fixed;z-index:2147483599;display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:0;color:#cfc4b2;font-size:15px;line-height:20px;vertical-align:middle;max-width:min(320px,calc(100vw - 16px))}',
+      '.login_vertical .login_hor .sgsol-save-wrap.sgsol-save-wrap--4399{position:absolute;float:none;width:auto;margin-left:0;padding:0}',
+      '.sgsol-save-line{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;white-space:nowrap}',
+      '.login_vertical .login_hor .sgsol-save-wrap.sgsol-save-wrap--4399 .sgsol-save-line>span{float:none;width:auto;overflow:visible;line-height:20px}',
+      '.sgsol-save-line input[type="checkbox"]{width:14px;height:14px;margin:0;accent-color:#c9984d;cursor:pointer}',
       '.sgsol-save-line:hover{color:#ead8b8}',
-      '.sgsol-save-hint{margin-left:6px;color:#9f9381;font-size:12px}'
+      '.sgsol-save-hint{margin-left:6px;color:#9f9381;font-size:12px}',
+      '.sgsol-save-remark-input{display:none;box-sizing:border-box;width:132px;border:1px solid rgba(226,199,137,.45);border-radius:3px;background:#1b1712;color:#f3ead5;padding:2px 6px;font-size:13px;line-height:18px;outline:none;cursor:text}',
+      '.sgsol-save-wrap.sgsol-save-expanded .sgsol-save-remark-input{display:inline-block}'
     ].join('');
     (loginDocument.head || loginDocument.documentElement).appendChild(style);
   }
@@ -825,6 +854,17 @@ function execute(webview) {
 
     const loginDocument = parts.loginDocument || document;
     const loginWindow = loginDocument.defaultView || window;
+
+    if (!loginDocument.__sgsolCredentialFocusBound) {
+      loginDocument.__sgsolCredentialFocusBound = true;
+      const handCredentialFocus = (event) => {
+        const target = event.target;
+        if (!target || typeof target.tagName !== 'string') return;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') requestWebviewKeyboardFocus();
+      };
+      loginDocument.addEventListener('focusin', handCredentialFocus, true);
+      loginDocument.addEventListener('pointerdown', handCredentialFocus, true);
+    }
 
     ensureStyle(loginDocument);
     enableLogin(parts.proto, parts.loginButton);
@@ -843,18 +883,37 @@ function execute(webview) {
     panel.className = 'sgsol-hidden';
     loginDocument.body.appendChild(panel);
 
+    const saveWrap = loginDocument.createElement('div');
+    saveWrap.className = 'sgsol-save-wrap';
     const saveLine = loginDocument.createElement('label');
     saveLine.className = 'sgsol-save-line';
     saveLine.innerHTML = '<input id="sgsol-save-current" type="checkbox"><span>记住账号密码</span><span class="sgsol-save-hint"></span>';
     const saveCheckbox = saveLine.querySelector('input');
     const saveHint = saveLine.querySelector('.sgsol-save-hint');
+    const saveRemarkInput = loginDocument.createElement('input');
+    saveRemarkInput.className = 'sgsol-save-remark-input';
+    saveRemarkInput.type = 'text';
+    saveRemarkInput.maxLength = 24;
+    saveRemarkInput.placeholder = '备注，选填';
+    saveRemarkInput.setAttribute('autocomplete', 'off');
+    saveRemarkInput.setAttribute('spellcheck', 'false');
+    saveWrap.appendChild(saveLine);
+    saveWrap.appendChild(saveRemarkInput);
 
     const rememberAnchor = parts.nativeRemember && (parts.nativeRemember.closest('label') || parts.nativeRemember.parentElement || parts.nativeRemember);
     if (parts.is4399 && parts.loginButton && parts.loginButton.parentElement) {
-      saveLine.classList.add('sgsol-save-line--4399');
-      parts.loginButton.parentElement.insertBefore(saveLine, parts.loginButton.nextSibling);
+      saveWrap.classList.add('sgsol-save-wrap--4399');
+      parts.loginButton.parentElement.insertBefore(saveWrap, parts.loginButton.nextSibling);
     } else {
-      loginDocument.body.appendChild(saveLine);
+      loginDocument.body.appendChild(saveWrap);
+    }
+
+    function setSaveExpanded(expanded) {
+      saveWrap.classList.toggle('sgsol-save-expanded', !!expanded);
+    }
+
+    function readSaveRemarkDraft() {
+      return String(saveRemarkInput.value || '').trim().slice(0, 24);
     }
 
     function setSaveHint(text) {
@@ -868,8 +927,14 @@ function execute(webview) {
       if (found) {
         saveCheckbox.checked = true;
         userWantsSave = false;
+        saveRemarkInput.value = found.remark || '';
+        setSaveExpanded(true);
       } else if (!userWantsSave) {
         saveCheckbox.checked = false;
+        saveRemarkInput.value = '';
+        setSaveExpanded(false);
+      } else {
+        setSaveExpanded(true);
       }
     }
 
@@ -877,14 +942,15 @@ function execute(webview) {
       const account = parts.account.value.trim();
       const password = parts.password.value;
       if (!account || !password) return false;
-      const item = { account, password, updatedAt: Date.now() };
+      const remark = readSaveRemarkDraft();
+      const item = { account, password, updatedAt: Date.now(), remark };
       const existing = userlist.findIndex((entry) => entry.account === account);
-      // 重新保存同一个账号时保留原来写好的备注。
-      if (existing >= 0) userlist[existing] = { ...item, remark: userlist[existing].remark || '' };
+      if (existing >= 0) userlist[existing] = { ...item, remark };
       else userlist.unshift(item);
       saveList(userlist);
       renderPanel();
       saveCheckbox.checked = true;
+      setSaveExpanded(true);
       setSaveHint('已保存');
       return true;
     }
@@ -920,6 +986,8 @@ function execute(webview) {
       setNativeValue(parts.password, item.password || '');
       saveCheckbox.checked = true;
       userWantsSave = false;
+      saveRemarkInput.value = item.remark || '';
+      setSaveExpanded(true);
       enableLogin(parts.proto, parts.loginButton);
       hidePanel();
     }
@@ -932,30 +1000,41 @@ function execute(webview) {
         || String(item.remark || '').toLowerCase().includes(keyword));
     }
 
-    /** 备注改成行内输入框：回车保存，Esc 取消，失焦按保存处理。 */
+    /** 备注行内编辑：回车保存，Esc 取消，失焦保存。 */
     let remarkEditing = false;
     function startRemarkEdit(row, index) {
       if (remarkEditing) return;
       const item = userlist[index];
-      const line = row.querySelector('.sgsol-account-line');
-      const nameNode = row.querySelector('.sgsol-account-name');
-      if (!item || !line || !nameNode) return;
+      const remarkNode = row.querySelector('.sgsol-account-remark');
+      if (!item || !remarkNode) return;
       remarkEditing = true;
+      row.classList.add('sgsol-remark-editing');
       const input = loginDocument.createElement('input');
       input.className = 'sgsol-remark-input';
       input.type = 'text';
       input.maxLength = 24;
       input.placeholder = '备注，留空即清除';
       input.value = item.remark || '';
-      line.replaceChild(input, nameNode);
-      input.focus();
-      input.select();
+      input.setAttribute('autocomplete', 'off');
+      input.setAttribute('spellcheck', 'false');
+      remarkNode.hidden = false;
+      remarkNode.textContent = '';
+      remarkNode.appendChild(input);
+      const focusInput = () => {
+        input.focus({ preventScroll: true });
+        input.select();
+        requestWebviewKeyboardFocus();
+      };
+      loginWindow.requestAnimationFrame(() => loginWindow.setTimeout(focusInput, 0));
       let finished = false;
       const finish = (save) => {
         if (finished) return;
         finished = true;
         remarkEditing = false;
-        if (save) setRemark(index, input.value);
+        row.classList.remove('sgsol-remark-editing');
+        const value = input.value;
+        try { input.remove(); } catch (error) {}
+        if (save) setRemark(index, value);
         else renderPanel();
       };
       input.addEventListener('keydown', (event) => {
@@ -971,6 +1050,7 @@ function execute(webview) {
       input.addEventListener('blur', () => finish(true));
       input.addEventListener('mousedown', (event) => event.stopPropagation());
       input.addEventListener('click', (event) => event.stopPropagation());
+      input.addEventListener('focus', () => requestWebviewKeyboardFocus());
     }
 
     let positionFrame = 0;
@@ -992,20 +1072,20 @@ function execute(webview) {
     }
 
     function positionSaveLine() {
-      const lineWidth = saveLine.offsetWidth || 120;
-      const lineHeight = saveLine.offsetHeight || 20;
+      const lineWidth = saveWrap.offsetWidth || 120;
+      const lineHeight = saveWrap.offsetHeight || 20;
       const gap = 18;
       let left;
       let top;
 
       if (parts.is4399 && parts.loginButton) {
         const buttonRect = parts.loginButton.getBoundingClientRect();
-        const offsetParent = saveLine.offsetParent || parts.loginButton.parentElement;
+        const offsetParent = saveWrap.offsetParent || parts.loginButton.parentElement;
         const parentRect = offsetParent.getBoundingClientRect();
         left = buttonRect.right - parentRect.left + 10;
         top = buttonRect.top - parentRect.top + Math.max(0, (buttonRect.height - lineHeight) / 2);
-        saveLine.style.left = Math.round(left) + 'px';
-        saveLine.style.top = Math.round(top) + 'px';
+        saveWrap.style.left = Math.round(left) + 'px';
+        saveWrap.style.top = Math.round(top) + 'px';
         return;
       } else if (parts.nativeRemember) {
         const nativeRect = parts.nativeRemember.getBoundingClientRect();
@@ -1023,11 +1103,12 @@ function execute(webview) {
 
       left = Math.max(8, Math.min(left, loginWindow.innerWidth - lineWidth - 8));
       top = Math.max(8, Math.min(top, loginWindow.innerHeight - lineHeight - 8));
-      saveLine.style.left = Math.round(left) + 'px';
-      saveLine.style.top = Math.round(top) + 'px';
+      saveWrap.style.left = Math.round(left) + 'px';
+      saveWrap.style.top = Math.round(top) + 'px';
     }
 
     function renderPanel() {
+      if (remarkEditing) return;
       const list = getFilteredList();
       panel.innerHTML = '';
       const header = loginDocument.createElement('div');
@@ -1059,6 +1140,7 @@ function execute(webview) {
     }
 
     function showPanel(filterByInput = false, anchor = parts.account) {
+      if (remarkEditing) return;
       userlist = getList();
       panelAnchor = anchor;
       accountFilterKeyword = filterByInput ? parts.account.value.trim().toLowerCase() : '';
@@ -1069,6 +1151,8 @@ function execute(webview) {
     }
 
     function hidePanel() {
+      const editingInput = panel.querySelector('.sgsol-remark-input');
+      if (editingInput && typeof editingInput.blur === 'function') editingInput.blur();
       panel.classList.add('sgsol-hidden');
       activeIndex = -1;
     }
@@ -1089,6 +1173,7 @@ function execute(webview) {
     }
 
     function handlePanelKeydown(event) {
+      if (remarkEditing || isCredentialPanelInput(loginDocument.activeElement)) return false;
       const rows = Array.from(panel.querySelectorAll('.sgsol-credential-row'));
       if (panel.classList.contains('sgsol-hidden') || !rows.length) return false;
       if (event.key === 'ArrowDown') {
@@ -1107,11 +1192,14 @@ function execute(webview) {
     }
 
     panel.addEventListener('mousedown', (event) => {
-      // 备注输入框要拿到焦点，不能拦掉默认行为。
-      if (event.target.closest('.sgsol-remark-input')) return;
+      if (event.target.closest('.sgsol-remark-input, .sgsol-row-actions, .sgsol-remark, .sgsol-delete, input, textarea')) return;
       event.preventDefault();
     });
     panel.addEventListener('click', (event) => {
+      if (remarkEditing && !event.target.closest('.sgsol-remark, .sgsol-delete, .sgsol-remark-input')) {
+        event.stopPropagation();
+        return;
+      }
       const deleteButton = event.target.closest('.sgsol-delete');
       const remarkButton = event.target.closest('.sgsol-remark');
       const row = event.target.closest('.sgsol-credential-row');
@@ -1134,7 +1222,7 @@ function execute(webview) {
     parts.account.addEventListener('click', () => showPanel(false, parts.account));
     parts.account.addEventListener('input', () => {
       refreshRememberState();
-      showPanel(true, parts.account);
+      if (!remarkEditing) showPanel(true, parts.account);
     });
     parts.account.addEventListener('keydown', handlePanelKeydown);
 
@@ -1148,8 +1236,14 @@ function execute(webview) {
 
     saveCheckbox.addEventListener('change', () => {
       userWantsSave = saveCheckbox.checked;
-      if (saveCheckbox.checked) setSaveHint('登录时保存');
+      setSaveExpanded(saveCheckbox.checked);
+      if (!saveCheckbox.checked) saveRemarkInput.value = '';
+      if (saveCheckbox.checked) setSaveHint('登录时保存，可填备注');
     });
+
+    saveRemarkInput.addEventListener('mousedown', (event) => event.stopPropagation());
+    saveRemarkInput.addEventListener('click', (event) => event.stopPropagation());
+    saveRemarkInput.addEventListener('keydown', (event) => event.stopPropagation());
 
     if (parts.loginButton) {
       parts.loginButton.addEventListener('click', () => {
@@ -1159,6 +1253,7 @@ function execute(webview) {
 
     loginDocument.addEventListener('mousedown', (event) => {
       if (event.target === parts.account || event.target === parts.password || panel.contains(event.target)) return;
+      if (saveWrap.contains(event.target)) return;
       hidePanel();
     });
     loginWindow.addEventListener('resize', schedulePosition);

@@ -247,7 +247,18 @@ const USER_INFO_GUARD_TRACE_MAX = 60;
 /** 默认关：开 F12 时 console 格式化探针会卡死；需要时设 window.__xcUserInfoGuardDebug = true */
 const USER_INFO_GUARD_DEBUG_KEY = '__xcUserInfoGuardDebug';
 
+function isUserInfoGuardDebug(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): boolean {
+  try {
+    return (globalObject as UnknownRecord)[USER_INFO_GUARD_DEBUG_KEY] === true;
+  } catch {
+    return false;
+  }
+}
+
 export function pushUserInfoGuardTrace(via: string, extra?: UnknownRecord): void {
+  if (!isUserInfoGuardDebug()) return;
   try {
     const bag = window as unknown as UnknownRecord;
     let buf = bag[USER_INFO_GUARD_TRACE_KEY] as UnknownRecord[] | undefined;
@@ -291,20 +302,17 @@ export function dumpUserInfoGuardTrace(
   }
   bag[USER_INFO_GUARD_TRACE_TEXT_KEY] = text;
   bag.__xcDumpUserInfoGuardTrace = dumpUserInfoGuardTrace;
-  try { if ((globalObject as UnknownRecord).__xcUserInfoGuardDebug === true) console.log('[userinfo-guard] dump length=' + text.length); } catch { /* ignore */ }
   return text;
 }
 
 function userInfoGuardLog(...parts: unknown[]): void {
+  if (!isUserInfoGuardDebug()) return;
   const line = parts.map((part) => {
     if (part === null || part === undefined) return String(part);
     if (typeof part === 'string' || typeof part === 'number' || typeof part === 'boolean') return String(part);
     try { return JSON.stringify(part); } catch { return Object.prototype.toString.call(part); }
   }).join(' ');
   pushUserInfoGuardTrace('log', { line });
-  let debug = false;
-  try { debug = (window as unknown as UnknownRecord)[USER_INFO_GUARD_DEBUG_KEY] === true; } catch { debug = false; }
-  if (!debug) return;
   try {
     const bag = window as unknown as UnknownRecord;
     let buf = bag[USER_INFO_GUARD_LOG_KEY] as string[] | undefined;
@@ -317,7 +325,6 @@ function userInfoGuardLog(...parts: unknown[]): void {
   } catch {
     // 忽略环形缓冲失败
   }
-  try { console.log('[userinfo-guard]', line); } catch { /* 忽略 */ }
 }
 
 const WM_USER_INFO_HIDE_METHODS = [
@@ -1199,20 +1206,25 @@ function installHideUserOptMenuTrace(
       const ok = patcher.wrap(target, method, (original) => function (this: unknown, ...args: unknown[]) {
         const arg0 = args[0];
         const arg0Type = arg0 == null ? '' : String((asRecord(arg0)?.type) ?? typeof arg0);
+        const traceDebug = isUserInfoGuardDebug(globalObject);
         let stack = '';
-        try {
-          stack = String(new Error('hide-trace').stack ?? '')
-            .split('\n')
-            .slice(2, 14)
-            .map((line) => line.trim())
-            .join(' | ');
-        } catch { stack = ''; }
+        if (traceDebug) {
+          try {
+            stack = String(new Error('hide-trace').stack ?? '')
+              .split('\n')
+              .slice(2, 14)
+              .map((line) => line.trim())
+              .join(' | ');
+          } catch { stack = ''; }
+        }
         // Stale 20ms timer after Hide re-binds stage CLICK while menu is gone -> next open dies same frame.
         if (method === 'addStageClick') {
           const self = asRecord(this) ?? target;
           const opt = asRecord(self.optMenu);
           if (!opt || !opt.parent || opt.destroyed === true) {
-            pushUserInfoGuardTrace('skip-addStageClick', { via, reason: 'optMenu-not-open', stack });
+            if (traceDebug) {
+              pushUserInfoGuardTrace('skip-addStageClick', { via, reason: 'optMenu-not-open', stack });
+            }
             return undefined;
           }
         }
@@ -1220,42 +1232,25 @@ function installHideUserOptMenuTrace(
           method === 'HideUserOptMenu'
           && shouldBlockAdaptationHideUserOptMenu(globalObject, stack)
         ) {
-          pushUserInfoGuardTrace('block-HideUserOptMenu', {
-            via,
-            reason: 'adaptation-unchanged-viewport',
-            stack,
-          });
-          try {
-            const bag = globalObject as UnknownRecord;
-            const now = Date.now();
-            const last = Number(bag.__xcAdaptHideBlockAt ?? 0);
-            if (now - last > 2000) {
-              bag.__xcAdaptHideBlockAt = now;
-              try { if ((window as unknown as UnknownRecord).__xcUserInfoGuardDebug === true) console.warn('[userinfo-guard] blocked adaptation HideUserOptMenu (dock/viewport unchanged)'); } catch { /* ignore */ }
-            }
-          } catch { /* ignore */ }
+          if (traceDebug) {
+            pushUserInfoGuardTrace('block-HideUserOptMenu', {
+              via,
+              reason: 'adaptation-unchanged-viewport',
+              stack,
+            });
+          }
           return undefined;
         }
-        pushUserInfoGuardTrace(method, { via, arg0: arg0Type, stack });
-        try {
-          const bag = globalObject as UnknownRecord;
-          const now = Date.now();
-          const last = Number(bag.__xcHideTraceSummaryAt ?? 0);
-          const count = Number(bag.__xcHideTraceCount ?? 0) + 1;
-          bag.__xcHideTraceCount = count;
-          if (now - last > 1500) {
-            bag.__xcHideTraceSummaryAt = now;
-            bag.__xcHideTraceCount = 0;
-            try { if ((window as unknown as UnknownRecord).__xcUserInfoGuardDebug === true) console.warn('[userinfo-guard] Hide/stage summary count=' + count + ' last=' + method + ' via=' + via); } catch { /* ignore */ }
-          }
-        } catch { /* ignore */ }
+        if (traceDebug) {
+          pushUserInfoGuardTrace(method, { via, arg0: arg0Type, stack });
+        }
         const result = original.apply(this, args);
         if (method === 'HideUserOptMenu') {
           const self = asRecord(this) ?? target;
           clearPendingOptMenuStageClick(self, globalObject);
           resetSeatOptMenuGuardState(globalObject);
           try { (globalObject as UnknownRecord).__xcSeatOptMenuDidCloseOnce = true; } catch { /* ignore */ }
-          pushUserInfoGuardTrace('HideUserOptMenu:reset', { via });
+          if (traceDebug) pushUserInfoGuardTrace('HideUserOptMenu:reset', { via });
         }
         return result;
       });
@@ -1588,7 +1583,6 @@ export function installGameNativePopupProtector(
   };
   bag.__xcGameNativePopupProtectorDispose = dispose;
   try {
-    try { if ((globalObject as UnknownRecord).__xcNativeDialogDebug === true) console.info('[xiaochao] native popup protector disabled (no dismiss intercept)'); } catch { /* ignore */ }
   } catch {
     // ignore
   }

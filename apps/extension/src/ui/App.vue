@@ -62,6 +62,7 @@ import {
   setOwnedPanelLayout
 } from './panel/panel-layout-ownership';
 import {
+  isXiaochaoDockResizeNotify,
   reserveGameAreaForDockedPanel,
   restoreFullGameArea
 } from './panel/game-layout-docking';
@@ -471,7 +472,11 @@ function restoreSavedPosition(shell: HTMLElement): void {
 function keepPanelInsideViewport(): void {
   const shell = panelElement.value;
   if (!shell) return;
-  if (isDockedRight.value) return applyRightDock(shell);
+  if (isDockedRight.value) {
+    if (isXiaochaoDockResizeNotify()) return;
+    syncDockedGameLayout(shell);
+    return;
+  }
   if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
   const bounds = shell.getBoundingClientRect();
   const position = constrainPanelPosition(bounds, bounds, {

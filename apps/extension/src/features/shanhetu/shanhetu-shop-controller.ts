@@ -79,18 +79,9 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-/**
- * 山河同步业务字段在 ProtoObj 上
- *（`allData` / `dataMark` / `shopData`），外层只带 ClassName。
- */
-export function resolveRogueLikeSyncBody(payload: UnknownRecord): UnknownRecord {
-  const nestedData = asRecord(payload.data) ?? asRecord(payload.Data);
-  return asRecord(payload.ProtoObj)
-    ?? asRecord(payload.protoObj)
-    ?? asRecord(nestedData?.ProtoObj)
-    ?? asRecord(nestedData?.protoObj)
-    ?? payload;
-}
+import { readRogueLikeAllData, resolveRogueLikeSyncBody } from './shanhetu-rogue-sync.ts';
+
+export { resolveRogueLikeSyncBody } from './shanhetu-rogue-sync.ts';
 
 /** dataMark 的 bit4 表示本次同步带集市数据。 */
 export function hasRogueShopSyncFlag(payload: UnknownRecord): boolean {
@@ -106,14 +97,8 @@ export function readShopData(payload: UnknownRecord): UnknownRecord | null {
   const direct = asRecord(body.shopData) ?? asRecord(body.ShopData)
     ?? asRecord(payload.shopData) ?? asRecord(payload.ShopData);
   if (direct) return direct;
-  const allData = asRecord(body.allData)
-    ?? asRecord(body.AllData)
-    ?? asRecord(body.data)
-    ?? asRecord(body.Data)
-    ?? asRecord(payload.allData)
-    ?? asRecord(payload.AllData)
-    ?? asRecord(payload.data)
-    ?? asRecord(payload.Data);
+  const allData = readRogueLikeAllData(body)
+    ?? readRogueLikeAllData(payload);
   return asRecord(allData?.shopData) ?? asRecord(allData?.ShopData);
 }
 

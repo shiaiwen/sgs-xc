@@ -1,4 +1,4 @@
-/** 微端更新：下载、校验并替换客户端文件。 */
+/** 微端更新：脚本级无感热更优先；整包替换仍保留为后备。 */
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -9,13 +9,20 @@ const { buildWindowsMicroClientUpdater } = require('./micro-client-updater');
 
 const MANIFEST_URL = 'https://95chong.cn/api/xiaochao-version';
 const APP_URL = 'https://xc.95chong.cn/downloads/app.zip';
+/** 稳定地址：勿在常量上加会变的 query；下载时再临时加 t= 防缓存。 */
+const SCRIPT_URL = 'https://xc.95chong.cn/downloads/xiaochao.js';
 const REQUEST_TIMEOUT_MS = 15000;
 const DOWNLOAD_TIMEOUT_MS = 120000;
 const MAX_UPDATE_BYTES = 100 * 1024 * 1024;
+const MAX_SCRIPT_BYTES = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 
 function sha256File(filePath) {
     return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function sha256Buffer(buffer) {
+    return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
 function compareVersions(left, right) {
@@ -118,11 +125,23 @@ function downloadFile(url, localFilePath, onProgress) {
     });
 }
 
-function isValidManifest(manifest) {
+function isValidAppManifest(manifest) {
     return Boolean(manifest)
         && /^\d+\.\d+\.\d+$/.test(String(manifest.version || ''))
         && String(manifest.appUrl || '').split('?')[0] === APP_URL
         && /^[a-f0-9]{64}$/.test(String(manifest.appSha256 || ''));
+}
+
+/** 脚本级无感热更：稳定 scriptUrl + sha256。 */
+function isValidScriptManifest(manifest) {
+    return Boolean(manifest)
+        && /^\d+\.\d+\.\d+$/.test(String(manifest.version || ''))
+        && String(manifest.scriptUrl || '').split('?')[0] === SCRIPT_URL
+        && /^[a-f0-9]{64}$/.test(String(manifest.scriptSha256 || ''));
+}
+
+function isValidManifest(manifest) {
+    return isValidAppManifest(manifest) || isValidScriptManifest(manifest);
 }
 
 function readScriptVersion(scriptPath) {
@@ -136,6 +155,11 @@ function readScriptVersion(scriptPath) {
     }
 }
 
+function readScriptVersionFromText(text) {
+    const match = String(text || '').match(/@version\s+(\d+\.\d+\.\d+)/);
+    return match ? match[1] : '';
+}
+
 /** 用户目录里的脚本和安装包里的脚本都看，取读得到的较新号。读不到就不拿 0.0.0 充数。 */
 function readLocalScriptVersion(getScriptPath) {
     const versions = [readScriptVersion(getScriptPath()), readScriptVersion(path.join(__dirname, 'xiaochao.js'))]
@@ -145,9 +169,19 @@ function readLocalScriptVersion(getScriptPath) {
     ), '');
 }
 
+function writeScriptAtomically(scriptPath, body) {
+    const directory = path.dirname(scriptPath);
+    const tempPath = path.join(directory, `xiaochao.js.${process.pid}.hot.tmp`);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(tempPath, body);
+    if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
+    fs.renameSync(tempPath, scriptPath);
+}
+
 /**
- * 正式包启动后检查门户清单。脚本版本更高时下载 app.zip，校验后弹 UAC，
- * 等本进程退出再替换 resources/app 并重新打开微端。
+ * 正式包启动后检查门户清单。
+ * 优先：scriptUrl → 写入 userData/xiaochao.js → 清缓存并重载注入（无确认、无 UAC）。
+ * 后备：仅当清单无有效 scriptUrl 时，走整包 app.zip + 确认 + UAC。
  */
 function scheduleMicroClientUpdate(deps) {
     const {
@@ -157,7 +191,9 @@ function scheduleMicroClientUpdate(deps) {
         screen,
         getMainWindow,
         logMessage,
-        getScriptPath
+        getScriptPath,
+        clearLocalScriptCache,
+        reloadScriptInjection
     } = deps;
     if (process.platform !== 'win32') return;
 
@@ -271,6 +307,49 @@ function scheduleMicroClientUpdate(deps) {
     setTimeout(queueCheck, 500);
     setTimeout(queueCheck, 8000);
 
+    /** 无感：下载脚本 → userData → 清缓存 → 重载注入。失败只记日志，不弹窗。 */
+    async function applySilentScriptHotUpdate(manifest) {
+        const scriptPath = getScriptPath();
+        if (!scriptPath) {
+            logMessage('micro-client script hot update skipped: scriptPath empty');
+            return false;
+        }
+        const downloadUrl = new URL(manifest.scriptUrl);
+        downloadUrl.searchParams.set('t', String(Date.now()));
+        logMessage(`micro-client script hot update downloading ${downloadUrl.toString()}`);
+        const { statusCode, body } = await requestBuffer(
+            downloadUrl.toString(),
+            MAX_SCRIPT_BYTES,
+            DOWNLOAD_TIMEOUT_MS
+        );
+        if (statusCode !== 200) {
+            throw new Error(`script download failed (${statusCode})`);
+        }
+        if (sha256Buffer(body) !== String(manifest.scriptSha256)) {
+            throw new Error('script sha256 mismatch');
+        }
+        const remoteVersion = readScriptVersionFromText(body.toString('utf8'));
+        if (!remoteVersion || compareVersions(remoteVersion, manifest.version) < 0) {
+            throw new Error(`script @version invalid or older than manifest (${remoteVersion || 'none'})`);
+        }
+        const latestLocalVersion = readLocalScriptVersion(getScriptPath);
+        if (latestLocalVersion && compareVersions(remoteVersion, latestLocalVersion) <= 0) {
+            logMessage(`micro-client script already current before write, script=${latestLocalVersion}`);
+            return true;
+        }
+        writeScriptAtomically(scriptPath, body);
+        if (typeof clearLocalScriptCache === 'function') clearLocalScriptCache();
+        if (typeof reloadScriptInjection === 'function') {
+            try {
+                reloadScriptInjection();
+            } catch (error) {
+                logMessage(`micro-client script reload injection failed: ${error.message}`);
+            }
+        }
+        logMessage(`micro-client script hot-updated to v${remoteVersion} (silent, no UAC)`);
+        return true;
+    }
+
     async function run() {
         const currentVersion = readLocalScriptVersion(getScriptPath);
         if (!currentVersion) {
@@ -289,14 +368,33 @@ function scheduleMicroClientUpdate(deps) {
             logMessage('micro-client is up to date or manifest invalid');
             return;
         }
-        if (!app.isPackaged) {
-            logMessage(`micro-client update available ${manifest.version}, skip install while unpackaged`);
-            return;
-        }
+
         const latestLocalVersion = readLocalScriptVersion(getScriptPath);
         if (!latestLocalVersion) return;
         if (compareVersions(manifest.version, latestLocalVersion) <= 0) {
-            logMessage(`micro-client already updated before prompt, script=${latestLocalVersion}`);
+            logMessage(`micro-client already updated before apply, script=${latestLocalVersion}`);
+            return;
+        }
+
+        // 优先脚本级无感热更（打包/未打包均可写 userData）
+        if (isValidScriptManifest(manifest)) {
+            try {
+                const applied = await applySilentScriptHotUpdate(manifest);
+                if (applied) return;
+            } catch (error) {
+                logMessage(`micro-client script hot update failed: ${error.message}`);
+                // 有 scriptUrl 时不自动降级弹 UAC；下次检查再试。
+                return;
+            }
+        }
+
+        // 后备：整包（仅正式包；需确认 + UAC）
+        if (!isValidAppManifest(manifest)) {
+            logMessage('micro-client full-package path skipped: app manifest fields missing');
+            return;
+        }
+        if (!app.isPackaged) {
+            logMessage(`micro-client update available ${manifest.version}, skip full install while unpackaged`);
             return;
         }
         if (declinedVersions.has(manifest.version)) return;
@@ -394,5 +492,9 @@ module.exports = {
     fetchJson,
     compareVersions,
     isValidManifest,
-    readScriptVersion
+    isValidScriptManifest,
+    isValidAppManifest,
+    readScriptVersion,
+    SCRIPT_URL,
+    APP_URL
 };
