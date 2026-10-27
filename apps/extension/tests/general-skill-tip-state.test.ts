@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { yieldGeneralSkillTipsToSeatUi } from '../src/runtime/general-skill-tip-state.ts';
 
 describe('yieldGeneralSkillTipsToSeatUi', () => {
-  it('有管理器时调用原生 TipsHide', () => {
+  it('不调用游戏 TipsHide', () => {
     let hideCalls = 0;
     const globalObject = {
       Laya: {
@@ -24,6 +24,6 @@ describe('yieldGeneralSkillTipsToSeatUi', () => {
       },
     } as never;
     yieldGeneralSkillTipsToSeatUi(globalObject);
-    assert.equal(hideCalls, 1);
+    assert.equal(hideCalls, 0);
   });
 });

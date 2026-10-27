@@ -1537,7 +1537,7 @@ export function installBlockEffectsController(
         installRedDotBlock
       ];
       installers.forEach((install) => {
-        install().catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
+        void Promise.resolve(install()).catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
       });
       installSceneEffectPatches();
       if (isOn('block.noticeWindow')) applyNoticeBlockState();

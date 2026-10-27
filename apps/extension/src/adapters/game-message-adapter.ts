@@ -101,7 +101,8 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
     const cardIds = isArrayLike(list)
       ? Array.from(list, Number).filter((id) => Number.isInteger(id) && id > 0)
       : [];
-    return cardIds.length ? [{ type: 'card-list-ready', cardIds }] : [];
+    // 空列表也发 ready：重新挑战时参考脚本仍走 Bs.ready(CardList)。
+    return [{ type: 'card-list-ready', cardIds }];
   }
   if (className === TRIGGER_SPELL_MESSAGE_NAME) {
     const event = translateTriggerSpell(payload);

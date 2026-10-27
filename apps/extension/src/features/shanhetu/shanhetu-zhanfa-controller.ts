@@ -10,7 +10,9 @@ import {
   noteDragonDraw,
   noteZhanfaGameEnded,
   noteZhanfaGameStarted,
+  noteZhanfaNewDealTurn,
   noteZhanfaPhase0,
+  noteZhanfaReady,
   zhanfaDisplayValue,
   type ZhanfaCounts
 } from './shanhetu-zhanfa-count.ts';
@@ -60,6 +62,7 @@ export function paintZhanfaItems(items: readonly UnknownRecord[], state: ZhanfaC
 
 export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions): () => void {
   const state = createZhanfaCounts();
+  let previousTurnCount = 0;
 
   const refresh = (): void => {
     const items = readZhanfaItems(options.locator);
@@ -69,17 +72,26 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
   const onEvent = (event: GameEvent): void => {
     if (event.type === 'game-ended') {
       noteZhanfaGameEnded(state);
+      previousTurnCount = 0;
+      refresh();
       return;
     }
     if (event.type === 'game-started') {
       noteZhanfaGameStarted(state, event.freshGame === true);
+      previousTurnCount = 0;
       refresh();
       return;
     }
+    if (event.type === 'card-list-ready') {
+      noteZhanfaReady(state);
+      refresh();
+      return;
+    }
+    if (event.type === 'turn-started' && event.turnCount > 0) {
+      if (noteZhanfaNewDealTurn(state, event.turnCount, previousTurnCount)) refresh();
+      previousTurnCount = event.turnCount;
+    }
     const selfSeatId = options.selfSeatId();
-    const items = readZhanfaItems(options.locator);
-    if (!items.length) return;
-
     let changed = false;
     if (event.type === 'phase-changed' && event.phase === 0) {
       changed = noteZhanfaPhase0(state, event.seatId, selfSeatId);
@@ -101,7 +113,7 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
         isSend: event.isSend
       });
     }
-    if (changed) paintZhanfaItems(items, state);
+    if (changed) refresh();
   };
 
   return options.gameEvents.subscribe(onEvent);
