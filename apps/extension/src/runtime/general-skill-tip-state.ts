@@ -22,48 +22,21 @@ function tipCloseButtonVisible(tip: UnknownRecord): boolean {
   return true;
 }
 
-function isVisibleGeneralTip(tip: UnknownRecord): boolean {
-  if (tip.name !== TIP_NAME || tip.destroyed) return false;
-  if (tip.visible === false || tip._visible === false) return false;
-  const alpha = Number(tip.alpha);
-  if (Number.isFinite(alpha) && alpha <= 0.01) return false;
-  return true;
-}
-
 type NativeFn = (...args: unknown[]) => unknown;
 
 /**
- * 点头像菜单 / 资料页与武将技能详情不能叠在一起；先收起技能详情，不关座位菜单。
+ * 点头像菜单 / 资料页与技能详情不宜叠层时，走游戏自带的 TipsHide，不改 visible / addLoop。
  */
 export function yieldGeneralSkillTipsToSeatUi(
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): void {
   const manager = readTipManager(globalObject);
-  if (!manager) return;
-  const names = new Set<string>();
-  const visit = (raw: unknown) => {
-    const tip = asRecord(raw);
-    if (!tip || !isVisibleGeneralTip(tip)) return;
-    names.add(String(tip.name ?? TIP_NAME));
-  };
-  visit(manager.staticTip2);
-  visit(manager.currentTip);
-  if (Array.isArray(manager.viewArr)) manager.viewArr.forEach(visit);
-  if (names.size === 0) return;
-  const visitHide = (raw: unknown) => {
-    const tip = asRecord(raw);
-    if (!tip || !isVisibleGeneralTip(tip)) return;
-    try {
-      tip.visible = false;
-      tip._visible = false;
-    } catch {
-      // 忽略。
-    }
-  };
-  visitHide(manager.staticTip2);
-  visitHide(manager.currentTip);
-  if (Array.isArray(manager.viewArr)) manager.viewArr.forEach(visitHide);
-  manager.addLoop = false;
+  if (!manager || typeof manager.TipsHide !== 'function') return;
+  try {
+    (manager.TipsHide as NativeFn).call(manager);
+  } catch {
+    // 忽略。
+  }
 }
 
 function readTipManager(globalObject: LayaRuntimeWindow): UnknownRecord | null {
