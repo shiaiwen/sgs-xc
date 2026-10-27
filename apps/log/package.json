@@ -7,6 +7,8 @@
     "build": "next build --webpack",
     "start": "next start --port 3010",
     "lint": "eslint",
+    "test": "node --test scripts/new-release.test.js",
+    "new-release": "node scripts/new-release.js",
     "deploy": "node deploy/push.js"
   },
   "dependencies": {
