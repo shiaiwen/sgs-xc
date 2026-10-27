@@ -8,6 +8,8 @@ interface DockingSnapshot {
   backgroundWidthPriority: string;
   layaBrowser: object | undefined;
   layaClientWidthDescriptor: PropertyDescriptor | undefined;
+  /** 原始 clientWidth getter，扣除侧栏时以它为基数。 */
+  originalClientWidthGet: (() => number) | undefined;
 }
 
 let dockingSnapshot: DockingSnapshot | undefined;
@@ -29,17 +31,26 @@ export function reserveGameAreaForDockedPanel(panelWidth: number): void {
 
   if (!dockingSnapshot) {
     const layaBrowser = (window as any).Laya?.Browser as object | undefined;
+    const descriptor = layaBrowser
+      ? Object.getOwnPropertyDescriptor(layaBrowser, 'clientWidth')
+      : undefined;
+    const originalGet =
+      descriptor && typeof descriptor.get === 'function'
+        ? (descriptor.get as () => number).bind(layaBrowser)
+        : undefined;
     dockingSnapshot = {
       padding: (window as any).padding,
       backgroundWidth: gameBackground?.style.getPropertyValue('width') || '',
       backgroundWidthPriority: gameBackground?.style.getPropertyPriority('width') || '',
       layaBrowser,
-      layaClientWidthDescriptor: layaBrowser
-        ? Object.getOwnPropertyDescriptor(layaBrowser, 'clientWidth')
-        : undefined
+      layaClientWidthDescriptor: descriptor,
+      originalClientWidthGet: originalGet
     };
     installLayaClientWidthOverride(layaBrowser);
     installDockWindowListeners();
+  } else {
+    // 快照已在、但上次 Laya 未就绪或 override 未挂上时补装。
+    ensureLayaClientWidthOverride();
   }
 
   applyDockedViewportLayout(true);
@@ -95,6 +106,8 @@ function applyDockedViewportLayout(forceResize = false): void {
     enforceBgDivWidth(gameBackground);
     watchGameBackground(gameBackground);
   }
+  // 同步裁切常见 Laya 画布容器，避免只缩 bgDiv、canvas 仍全宽叠在侧栏下。
+  enforceGameCanvasHostWidth(gameWidth);
   document.documentElement.style.setProperty('--sgs-center-x', `${gameWidth / 2}px`);
   document.documentElement.classList.add('xiaochao-game-viewport--docked');
   // Only notify the game when the docked viewport size actually changed.
@@ -120,9 +133,8 @@ function scheduleDockLayoutRetry(): void {
       return;
     }
     attempts += 1;
-    // Never force-resize on retry: MutationObserver already keeps bgDiv width.
-    // Forcing every 800ms was killing seat opt menu via onGameAdaptation.
-    applyDockedViewportLayout(false);
+    // 前几次强制通知：拖贴右后布局变量刚写入时，需让 UpdateGameSize 吃到新的 clientWidth。
+    applyDockedViewportLayout(attempts <= 5);
     if (attempts >= 90) stopDockLayoutRetry();
   }, 400);
 }
@@ -209,26 +221,67 @@ function enforceBgDivWidth(gameBackground: HTMLElement): void {
   gameBackground.style.setProperty('width', expected, 'important');
 }
 
+function enforceGameCanvasHostWidth(gameWidth: number): void {
+  const expected = `${gameWidth}px`;
+  // 只收 DOM 容器；canvas 宽高交给 Laya.stage.setScreenSize（由 clientWidth override + resize 驱动）。
+  for (const id of ['layaContainer', 'laya_container', 'GameDiv']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.style.getPropertyValue('width').trim() !== expected) {
+      el.style.setProperty('width', expected, 'important');
+      el.style.setProperty('max-width', expected, 'important');
+    }
+  }
+}
+
 function ensureLayaClientWidthOverride(): void {
-  if (!dockingSnapshot || dockingSnapshot.layaClientWidthDescriptor) return;
+  if (!dockingSnapshot) return;
   const layaBrowser = (window as any).Laya?.Browser as object | undefined;
   if (!layaBrowser) return;
-  dockingSnapshot.layaBrowser = layaBrowser;
-  dockingSnapshot.layaClientWidthDescriptor = Object.getOwnPropertyDescriptor(layaBrowser, 'clientWidth');
+
+  const current = Object.getOwnPropertyDescriptor(layaBrowser, 'clientWidth');
+  if (current?.get === getAvailableGameWidth) {
+    dockingSnapshot.layaBrowser = layaBrowser;
+    return;
+  }
+
+  // Laya 晚于首次停靠出现，或先前 install 失败：重新抓原始 getter 并挂上。
+  if (!dockingSnapshot.layaClientWidthDescriptor || dockingSnapshot.layaBrowser !== layaBrowser) {
+    dockingSnapshot.layaBrowser = layaBrowser;
+    dockingSnapshot.layaClientWidthDescriptor = current;
+    dockingSnapshot.originalClientWidthGet =
+      current && typeof current.get === 'function'
+        ? (current.get as () => number).bind(layaBrowser)
+        : dockingSnapshot.originalClientWidthGet;
+  }
   installLayaClientWidthOverride(layaBrowser);
 }
 
 function getAvailableGameWidth(): number {
-  return Math.max(320, document.documentElement.clientWidth - reservedPanelWidth);
+  const original = dockingSnapshot?.originalClientWidthGet;
+  let base = 0;
+  if (original) {
+    try {
+      base = Number(original()) || 0;
+    } catch {
+      base = 0;
+    }
+  }
+  if (!(base > 0)) {
+    base = document.documentElement.clientWidth || window.innerWidth || 0;
+  }
+  return Math.max(320, base - reservedPanelWidth);
 }
 
 function installLayaClientWidthOverride(layaBrowser: object | undefined): void {
   if (!layaBrowser) return;
   const descriptor = Object.getOwnPropertyDescriptor(layaBrowser, 'clientWidth');
-  if (!descriptor?.configurable || typeof descriptor.get !== 'function') return;
+  if (!descriptor?.configurable) return;
+  // 已是我们的 getter 则跳过。
   if (descriptor.get === getAvailableGameWidth) return;
+  // 无 getter 时（偶发成 value）也尽量覆盖成 getter。
   Object.defineProperty(layaBrowser, 'clientWidth', {
-    configurable: descriptor.configurable,
+    configurable: true,
     enumerable: descriptor.enumerable,
     get: getAvailableGameWidth
   });
@@ -240,6 +293,25 @@ function requestGameResize(): void {
   try {
     window.dispatchEvent(new Event('resize'));
     window.dispatchEvent(new Event('SGSresize'));
+    const Laya = (window as any).Laya;
+    const stage = Laya?.stage;
+    if (stage && typeof stage.event === 'function') {
+      const type = Laya?.Event?.RESIZE || 'resize';
+      try {
+        stage.event(type);
+      } catch {
+        // 舞台未就绪时忽略。
+      }
+    }
+    // 直调游戏适配入口（若已暴露），比只派 DOM resize 更稳。
+    try {
+      const njt = (window as any).Njt?.I?.();
+      if (njt && typeof njt.ScreenSizeChange === 'function') {
+        njt.ScreenSizeChange(false);
+      }
+    } catch {
+      // 压缩名/未加载时忽略。
+    }
   } finally {
     notifyingResize = false;
   }

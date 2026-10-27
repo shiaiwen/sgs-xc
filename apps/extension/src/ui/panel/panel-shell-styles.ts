@@ -34,6 +34,13 @@ html.xiaochao-game-viewport--docked #bgDiv {
   max-width: var(--xc-game-viewport-width, calc(100% - var(--xc-docked-panel-width, 0px))) !important;
   box-sizing: border-box !important;
 }
+html.xiaochao-game-viewport--docked #layaContainer,
+html.xiaochao-game-viewport--docked #laya_container,
+html.xiaochao-game-viewport--docked #GameDiv {
+  width: var(--xc-game-viewport-width, calc(100% - var(--xc-docked-panel-width, 0px))) !important;
+  max-width: var(--xc-game-viewport-width, calc(100% - var(--xc-docked-panel-width, 0px))) !important;
+  box-sizing: border-box !important;
+}
 #createIframe.createIframe {
   --xc-font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
   position: fixed !important;
@@ -59,6 +66,10 @@ html.xiaochao-game-viewport--docked #bgDiv {
   user-select: none;
   pointer-events: none;
   transition: box-shadow .18s ease;
+}
+#createIframe.createIframe.xiaochao-panel--dock-pending {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 #createIframe.createIframe.xiaochao-panel--collapsed {
   width: 96px !important;

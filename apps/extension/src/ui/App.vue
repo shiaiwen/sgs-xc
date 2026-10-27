@@ -101,6 +101,8 @@ const panel = createXiaochaoPanelModel(
 const isCollapsed = panel.isCollapsed;
 const panelElement = ref<HTMLElement>();
 const isDockedRight = ref(props.configStore.get('panel.dockedRight'));
+/** 停靠初始化未让出游戏视口前为 true，避免首帧不透明侧栏盖住画面。 */
+const isDockPending = ref(isDockedRight.value === true);
 const isDockPreviewVisible = ref(false);
 const isDockPreviewActive = ref(false);
 const othersHasUpdate = ref(props.updateNoticeController?.getSnapshot().hasUpdate ?? false);
@@ -143,13 +145,15 @@ onMounted(() => {
   expandedHeight = `${initialHeight}px`;
   expandedWidth = props.layout.width;
   if (isDockedRight.value) {
+    // isDockPending 初始即为 true（默认 dockedRight）；applyRightDock → reveal 就绪后揭开
     applyRightDock(shell);
     requestAnimationFrame(() => syncDockedGameLayout(shell));
     for (const delay of [320, 1200, 3000]) {
       window.setTimeout(() => syncDockedGameLayout(shell), delay);
     }
   } else restoreSavedPosition(shell);
-  if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
+  // 仅非停靠时保留折叠胶囊；停靠路径已在 applyRightDock 里强制展开
+  if (panel.isCollapsed.value && !isDockedRight.value) applyCollapsedDimensions(shell);
   window.addEventListener('resize', keepPanelInsideViewport);
 });
 
@@ -157,6 +161,7 @@ onBeforeUnmount(() => {
   stopDragging?.();
   stopResizing?.();
   stopUpdateNotice?.();
+  clearDockRevealTimer();
   window.removeEventListener('resize', keepPanelInsideViewport);
   restoreFullGameArea();
 });
@@ -165,10 +170,33 @@ function toggleCollapsed(): void {
   const shell = panelElement.value;
   if (!shell) return;
   if (!panel.isCollapsed.value) {
-    if (!isDockedRight.value) {
-      const currentHeight = getOwnedPanelLayoutValue(shell, 'height') || `${shell.offsetHeight}px`;
-      if (currentHeight !== '100vh') expandedHeight = currentHeight;
+    // 即将折叠
+    if (isDockedRight.value) {
+      // 停靠下折叠：脱离贴边收成胶囊（与拖出停靠一致）；applyRightDock 已改为始终展开，不能再回灌。
+      expandedWidth = getOwnedPanelLayoutValue(shell, 'width') || props.layout.width;
+      const bounds = shell.getBoundingClientRect();
+      isDockedRight.value = false;
+      props.configStore.set('panel.dockedRight', false);
+      restoreFullGameArea();
+      clearDockRevealTimer();
+      isDockPending.value = false;
+      applyCollapsedDimensions(shell);
+      panel.toggleCollapsed();
+      const position = constrainPanelPosition(
+        { left: window.innerWidth - shell.offsetWidth - 8, top: Math.max(8, bounds.top) },
+        { width: shell.offsetWidth, height: shell.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight }
+      );
+      setOwnedPanelLayout(shell, {
+        left: `${position.left}px`,
+        top: `${position.top}px`,
+        right: 'auto'
+      });
+      persistFloatingPosition(shell);
+      return;
     }
+    const currentHeight = getOwnedPanelLayoutValue(shell, 'height') || `${shell.offsetHeight}px`;
+    if (currentHeight !== '100vh') expandedHeight = currentHeight;
     expandedWidth = getOwnedPanelLayoutValue(shell, 'width') || props.layout.width;
     applyCollapsedDimensions(shell);
   } else {
@@ -182,7 +210,7 @@ function toggleCollapsed(): void {
     });
   }
   panel.toggleCollapsed();
-  // 停靠状态的展开高度始终跟随游戏窗口；折叠时则只保留标题栏。
+  // 停靠状态的展开高度始终跟随游戏窗口。
   if (isDockedRight.value) applyRightDock(shell);
   else syncDockedGameLayout(shell);
 }
@@ -346,30 +374,53 @@ function handleDragStart(event: PointerEvent): void {
   header.addEventListener('lostpointercapture', handleInterruptedDrag, { once: true });
 }
 
+/** 贴右前若仍是折叠胶囊，先恢复展开尺寸与状态（不走 toggle，避免与 applyRightDock 互相递归）。 */
+function expandCollapsedForDock(shell: HTMLElement): void {
+  if (!panel.isCollapsed.value) return;
+  const height = expandedHeight || `${resolveExpandedHeight(DEFAULT_EXPANDED_PANEL_HEIGHT)}px`;
+  const width = expandedWidth || props.layout.width;
+  setOwnedPanelLayout(shell, {
+    height,
+    width,
+    minWidth: undefined,
+    maxWidth: undefined,
+    minHeight: undefined,
+    maxHeight: 'none'
+  });
+  expandedHeight = height;
+  expandedWidth = width;
+  panel.isCollapsed.value = false;
+  persistCollapsedState(false);
+}
+
 function applyRightDock(shell: HTMLElement): void {
+  // 拖到右边固定：折叠态先展开，再铺满侧栏（停靠=展开侧栏，不保留胶囊贴边）。
+  expandCollapsedForDock(shell);
   isDockedRight.value = true;
-  if (panel.isCollapsed.value) {
-    applyCollapsedDimensions(shell);
-    setOwnedPanelLayout(shell, { left: 'auto', right: '0px', top: '0px' });
-  } else {
-    setOwnedPanelLayout(shell, {
-      left: 'auto',
-      right: '0px',
-      top: '0px',
-      width: expandedWidth,
-      height: '100vh',
-      minWidth: undefined,
-      maxWidth: undefined,
-      minHeight: undefined,
-      maxHeight: undefined
-    });
-  }
+  setOwnedPanelLayout(shell, {
+    left: 'auto',
+    right: '0px',
+    top: '0px',
+    width: expandedWidth,
+    height: '100vh',
+    minWidth: undefined,
+    maxWidth: undefined,
+    minHeight: undefined,
+    maxHeight: undefined
+  });
+  // 先写入展开宽度再 reserve，避免用折叠胶囊 rect 把游戏只让出 ~96px。
+  reserveGameAreaForDockedPanel(resolveDockReserveWidth(shell));
   props.configStore.set('panel.dockedRight', true);
+  // 用展开宽度再 reserve 一次，并在下一帧复同步（防同帧 rect 仍是胶囊宽）。
   syncDockedGameLayout(shell);
+  scheduleDockLayoutSync(shell);
+  revealDockedPanelWhenGameReady(shell);
 }
 
 function detachFromRightDock(shell: HTMLElement, pointerX: number, pointerY: number): void {
   isDockedRight.value = false;
+  clearDockRevealTimer();
+  isDockPending.value = false;
   const width = shell.offsetWidth;
   // 必须先归还游戏宽度，再把面板切回悬浮坐标。
   restoreFullGameArea();
@@ -430,13 +481,80 @@ function keepPanelInsideViewport(): void {
   setOwnedPanelLayout(shell, { left: `${position.left}px`, top: `${position.top}px`, right: 'auto' });
 }
 
-/** 贴在右边时按面板实际宽度压缩游戏区域，折叠成胶囊也一样。 */
+/** 停靠初始化：游戏 bgDiv/Laya 未就绪时先隐藏侧栏，就绪或超时后再显示，避免遮盖游戏。 */
+let dockRevealTimer: ReturnType<typeof setInterval> | undefined;
+function clearDockRevealTimer(): void {
+  if (dockRevealTimer !== undefined) {
+    clearInterval(dockRevealTimer);
+    dockRevealTimer = undefined;
+  }
+}
+function isGameViewportReadyForDock(): boolean {
+  const layaReady = Boolean((window as any).Laya?.Browser);
+  const bg = document.getElementById('bgDiv');
+  return layaReady || Boolean(bg);
+}
+function revealDockedPanelWhenGameReady(shell: HTMLElement): void {
+  clearDockRevealTimer();
+  if (!isDockedRight.value) {
+    isDockPending.value = false;
+    return;
+  }
+  const reveal = () => {
+    isDockPending.value = false;
+    syncDockedGameLayout(shell);
+  };
+  if (isGameViewportReadyForDock()) {
+    reveal();
+    return;
+  }
+  isDockPending.value = true;
+  let attempts = 0;
+  dockRevealTimer = setInterval(() => {
+    attempts += 1;
+    if (!isDockedRight.value) {
+      clearDockRevealTimer();
+      isDockPending.value = false;
+      return;
+    }
+    if (isGameViewportReadyForDock() || attempts >= 15) {
+      // ~3s@200ms：尽快显示；就绪则同步视口后再露出来
+      clearDockRevealTimer();
+      reveal();
+    }
+  }, 200);
+}
+
+/** 解析停靠应预留的宽度：展开侧栏宽度，避免布局未刷出时误用折叠胶囊的 rect。 */
+function resolveDockReserveWidth(shell: HTMLElement): number {
+  const owned = Number.parseFloat(getOwnedPanelLayoutValue(shell, 'width') || '');
+  const expanded = Number.parseFloat(String(expandedWidth || ''));
+  const rect = shell.getBoundingClientRect().width;
+  // 展开侧栏通常 >= 200；折叠胶囊约 96。过渡帧优先采信 CSS 变量 / expandedWidth。
+  const solid = [owned, expanded].filter((n) => Number.isFinite(n) && n >= 160);
+  if (solid.length) return Math.round(Math.max(...solid));
+  if (Number.isFinite(rect) && rect >= 160) return Math.round(rect);
+  return Math.round(Math.max(owned || 0, expanded || 0, rect || 0, 340));
+}
+
+/** 贴在右边时按展开侧栏宽度压缩游戏区域。 */
 function syncDockedGameLayout(shell: HTMLElement): void {
   if (isDockedRight.value) {
-    reserveGameAreaForDockedPanel(shell.getBoundingClientRect().width);
+    reserveGameAreaForDockedPanel(resolveDockReserveWidth(shell));
   } else {
     restoreFullGameArea();
   }
+}
+
+/** 布局写入后再同步一次，避免同帧 rect 仍是折叠宽度。 */
+function scheduleDockLayoutSync(shell: HTMLElement): void {
+  requestAnimationFrame(() => {
+    if (!isDockedRight.value) return;
+    syncDockedGameLayout(shell);
+    requestAnimationFrame(() => {
+      if (isDockedRight.value) syncDockedGameLayout(shell);
+    });
+  });
 }
 
 function resolveExpandedHeight(savedHeight: number): number {
@@ -488,7 +606,8 @@ function handleResizeStart(event: PointerEvent): void {
     class="createIframe xiaochao-panel"
     :class="{
       'xiaochao-panel--collapsed': isCollapsed,
-      'xiaochao-panel--docked-right': isDockedRight
+      'xiaochao-panel--docked-right': isDockedRight,
+      'xiaochao-panel--dock-pending': isDockPending
     }"
     aria-label="三国杀小抄"
   >
