@@ -105,6 +105,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
   let core: XiaochaoCoreRuntime | null = null;
+  let tipHooksCleanedAfterRuntime = false;
 
   const probeRuntimeReady = () => getMissingGameRuntimeDependencies({ globalObject: window });
 
@@ -121,6 +122,10 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
       return;
     }
     if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
+    if (!tipHooksCleanedAfterRuntime) {
+      tipHooksCleanedAfterRuntime = true;
+      disposeOrphanTipStayHooks(window);
+    }
     core.mountPanelShell();
     core.syncRuntimeSession();
     panelStartupStatus.state = 'ready';

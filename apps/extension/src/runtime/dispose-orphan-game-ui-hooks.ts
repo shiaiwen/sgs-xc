@@ -42,7 +42,7 @@ function restoreOrphanGeneralSkillTipPatches(globalObject: LayaRuntimeWindow): v
   }
 }
 
-/** 启动时卸掉已删除的 tip 停驻模块可能残留的 hook。 */
+/** 卸掉已删除的 tip 停驻模块可能残留的 hook；进局后 Laya 就绪时再调一次才有效。 */
 export function disposeOrphanTipStayHooks(globalObject: Window = window): void {
   const bag = globalObject as Record<string, unknown>;
   const dispose = bag.__xcGeneralSkillTipStayDispose;
@@ -55,4 +55,11 @@ export function disposeOrphanTipStayHooks(globalObject: Window = window): void {
     delete bag.__xcGeneralSkillTipStayDispose;
   }
   restoreOrphanGeneralSkillTipPatches(globalObject as LayaRuntimeWindow);
+  try {
+    (globalObject as Record<string, unknown>).__xcDisposeOrphanTipStayHooks = () => {
+      disposeOrphanTipStayHooks(globalObject);
+    };
+  } catch {
+    // 忽略
+  }
 }
