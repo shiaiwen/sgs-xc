@@ -69,12 +69,12 @@ test("按参数写出带引号的 frontmatter", async () => {
   const dir = tempDir();
   const io = capture();
   const result = await run(
-    ["--version", "1.0.3", "--today", "--note", "修复xxx", "--recent", "优化yyy"],
+    ["--version", "1.0.41", "--today", "--note", "修复xxx", "--recent", "优化yyy"],
     { releasesDir: dir, stdout: io.stdout, now: new Date("2026-10-26T16:00:00.000Z"), interactive: false },
   );
   const markdown = expectedMarkdown({
-    version: "1.0.3",
-    title: "小抄 1.0.3",
+    version: "1.0.41",
+    title: "小抄 1.0.41",
     date: "2026-10-27",
     notes: ["修复xxx"],
     recents: ["优化yyy"],
@@ -82,19 +82,19 @@ test("按参数写出带引号的 frontmatter", async () => {
   assert.equal(result.wrote, true);
   assert.equal(result.markdown, markdown);
   assert.equal(fs.readFileSync(result.path, "utf8"), markdown);
-  assert.equal(path.basename(result.path), "1.0.3.md");
+  assert.equal(path.basename(result.path), "1.0.41.md");
   assert.match(io.read(), /已写入/);
 });
 
 test("没有近期更新就不写这一节", async () => {
   const dir = tempDir();
   const result = await run(
-    ["--version", "1.0.3", "--date", "2026-10-27", "--note", "修复xxx", "--note", "- 再补一条"],
+    ["--version", "1.0.41", "--date", "2026-10-27", "--note", "修复xxx", "--note", "- 再补一条"],
     { releasesDir: dir, stdout: capture().stdout, interactive: false },
   );
   assert.equal(result.markdown, expectedMarkdown({
-    version: "1.0.3",
-    title: "小抄 1.0.3",
+    version: "1.0.41",
+    title: "小抄 1.0.41",
     date: "2026-10-27",
     notes: ["修复xxx", "再补一条"],
     recents: [],
@@ -151,13 +151,13 @@ test("同名文件没有 --force 时失败且不改内容", async () => {
 
 test("--force 只覆盖同名文件", async () => {
   const dir = tempDir();
-  const target = path.join(dir, "1.0.3.md");
+  const target = path.join(dir, "1.0.41.md");
   const sibling = path.join(dir, "1.0.2.md");
   const siblingBody = frontmatter("1.0.2", "2026-10-18");
-  fs.writeFileSync(target, frontmatter("1.0.3", "2026-10-01", "- 旧"));
+  fs.writeFileSync(target, frontmatter("1.0.41", "2026-10-01", "- 旧"));
   fs.writeFileSync(sibling, siblingBody);
   const result = await run(
-    ["--version", "1.0.3", "--note", "新条目", "--date", "2026-10-27", "--force"],
+    ["--version", "1.0.41", "--note", "新条目", "--date", "2026-10-27", "--force"],
     { releasesDir: dir, stdout: capture().stdout, interactive: false },
   );
   assert.match(result.markdown, /- 新条目/);
@@ -168,11 +168,11 @@ test("--force 只覆盖同名文件", async () => {
 test("别的文件里已经有这个版本时拒绝，--force 也不写", async () => {
   const dir = tempDir();
   const other = path.join(dir, "notes.md");
-  const original = frontmatter("1.0.3", "2026-10-01");
+  const original = frontmatter("1.0.41", "2026-10-01");
   fs.writeFileSync(other, original);
   await assert.rejects(
     () => run(
-      ["--version", "1.0.3", "--note", "新条目", "--date", "2026-10-27", "--force"],
+      ["--version", "1.0.41", "--note", "新条目", "--date", "2026-10-27", "--force"],
       { releasesDir: dir, stdout: capture().stdout, interactive: false },
     ),
     (error) => {
@@ -181,7 +181,7 @@ test("别的文件里已经有这个版本时拒绝，--force 也不写", async 
       return true;
     },
   );
-  assert.equal(fs.existsSync(path.join(dir, "1.0.3.md")), false);
+  assert.equal(fs.existsSync(path.join(dir, "1.0.41.md")), false);
   assert.equal(fs.readFileSync(other, "utf8"), original);
 });
 
@@ -189,24 +189,24 @@ test("--dry-run 只打印不写盘", async () => {
   const dir = tempDir();
   const io = capture();
   const result = await run(
-    ["--version", "1.0.3", "--date", "2026-10-27", "--note", "修复xxx", "--dry-run"],
+    ["--version", "1.0.41", "--date", "2026-10-27", "--note", "修复xxx", "--dry-run"],
     { releasesDir: dir, stdout: io.stdout, interactive: false },
   );
   assert.equal(result.wrote, false);
   assert.equal(fs.existsSync(result.path), false);
   assert.match(io.read(), /将写入/);
-  assert.match(io.read(), /version: "1.0.3"/);
+  assert.match(io.read(), /version: "1.0.41"/);
   assert.match(io.read(), /- 修复xxx/);
 });
 
 test("已存在的文件加 --dry-run 且没有 --force 时不打印成将覆盖", async () => {
   const dir = tempDir();
-  const target = path.join(dir, "1.0.3.md");
-  const original = frontmatter("1.0.3", "2026-10-01");
+  const target = path.join(dir, "1.0.41.md");
+  const original = frontmatter("1.0.41", "2026-10-01");
   fs.writeFileSync(target, original);
   await assert.rejects(
     () => run(
-      ["--version", "1.0.3", "--note", "新", "--date", "2026-10-27", "--dry-run"],
+      ["--version", "1.0.41", "--note", "新", "--date", "2026-10-27", "--dry-run"],
       { releasesDir: dir, stdout: capture().stdout, interactive: false },
     ),
     (error) => error instanceof CliError,
@@ -218,7 +218,7 @@ test("非交互且没有本次更新时失败", async () => {
   const dir = tempDir();
   await assert.rejects(
     () => run(
-      ["--version", "1.0.3", "--date", "2026-10-27", "--recent", "只有近期"],
+      ["--version", "1.0.41", "--date", "2026-10-27", "--recent", "只有近期"],
       { releasesDir: dir, stdout: capture().stdout, interactive: false },
     ),
     (error) => {
@@ -263,7 +263,7 @@ test("非法日期、非法版本、版本和 bump 同时出现都会拒绝", as
   const dir = tempDir();
   const base = { releasesDir: dir, stdout: capture().stdout, interactive: false };
   await assert.rejects(
-    () => run(["--version", "1.0.3", "--date", "2026-02-31", "--note", "甲"], base),
+    () => run(["--version", "1.0.41", "--date", "2026-02-31", "--note", "甲"], base),
     (error) => error instanceof CliError,
   );
   await assert.rejects(
@@ -271,29 +271,29 @@ test("非法日期、非法版本、版本和 bump 同时出现都会拒绝", as
     (error) => error instanceof CliError,
   );
   await assert.rejects(
-    () => run(["--version", "01.0.3", "--date", "2026-10-27", "--note", "甲"], base),
+    () => run(["--version", "01.0.41", "--date", "2026-10-27", "--note", "甲"], base),
     (error) => error instanceof CliError,
   );
   await assert.rejects(
-    () => run(["--version", "1.0.3", "--bump", "patch", "--note", "甲"], base),
+    () => run(["--version", "1.0.41", "--bump", "patch", "--note", "甲"], base),
     (error) => error instanceof CliError,
   );
-  assert.equal(fs.existsSync(path.join(dir, "1.0.3.md")), false);
+  assert.equal(fs.existsSync(path.join(dir, "1.0.41.md")), false);
 });
 
 test("命令行直接跑：重复版本失败，试运行不落盘", () => {
   const releasesDir = path.join(logRoot, "content", "releases");
   assert.deepEqual(
     fs.readdirSync(releasesDir).filter((name) => name.endsWith(".md")).sort(),
-    ["1.0.3.md"],
+    ["1.0.41.md"],
   );
-  const sample = path.join(releasesDir, "1.0.3.md");
+  const sample = path.join(releasesDir, "1.0.41.md");
   const before = fs.readFileSync(sample);
   assert.match(before.toString("utf8"), /修复山河图换将透视hook/);
   const rejected = spawnSync(process.execPath, [
     scriptPath,
     "--version",
-    "1.0.3",
+    "1.0.41",
     "--note",
     "不要写入",
     "--date",

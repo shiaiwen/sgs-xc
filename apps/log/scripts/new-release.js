@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * 生成 content/releases/<版本号>.md。
- * 用法：npm run new-release -- --version 1.0.4 --today --note "修复xxx" --recent "优化yyy"
+ * 用法：npm run new-release -- --version 1.0.41 --today --note "修复xxx" --recent "优化yyy"
+ * 版本号跟小抄同一个号，以 apps/extension/package.json 的 version 为准。
  */
 "use strict";
 
@@ -23,10 +24,12 @@ class CliError extends Error {
 const helpText = `生成 content/releases/<版本号>.md
 
 用法：
-  npm run new-release -- --version 1.0.4 --today --note "修复xxx" --recent "优化yyy"
+  npm run new-release -- --version 1.0.41 --today --note "修复xxx" --recent "优化yyy"
+
+版本号跟小抄同一个号，以 apps/extension/package.json 的 version 为准。
 
 选项：
-  --version <版本号>   指定版本，三段数字，例如 1.0.3
+  --version <版本号>   指定版本，三段数字，例如 1.0.41
   --bump <级别>        不写版本时怎么递增：patch、minor、major。默认 patch
   --date <YYYY-MM-DD>  发布日期。不写则用上海当天
   --today              明确使用上海当天
@@ -65,7 +68,7 @@ function isThreePartVersion(version) {
 function bumpVersion(version, kind) {
   const matched = versionPattern.exec(version);
   if (!matched) {
-    throw new CliError(`最高版本 ${version} 不是三段数字，例如 1.0.3。用 --version 指定`);
+    throw new CliError(`最高版本 ${version} 不是三段数字，例如 1.0.41。用 --version 指定`);
   }
   const major = Number(matched[1]);
   const minor = Number(matched[2]);
@@ -347,7 +350,7 @@ async function run(argv, io = {}) {
     version = bumpVersion(highestVersion(versions), args.bump || "patch");
   }
   if (!isThreePartVersion(version)) {
-    throw new CliError(`版本号格式不对：${version}。用三段数字，例如 1.0.3`);
+    throw new CliError(`版本号格式不对：${version}。用三段数字，例如 1.0.41`);
   }
 
   const date = args.date == null ? shanghaiDate(now) : String(args.date).trim();

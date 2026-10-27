@@ -16,17 +16,19 @@ npm run dev:log
 
 在 `apps/log` 目录执行：
 
+版本号跟小抄同一个号，以 `apps/extension/package.json` 里的 `version` 为准。当前是 `1.0.41`。
+
 ```bash
-npm run new-release -- --version 1.0.4 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
+npm run new-release -- --version 1.0.41 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
 ```
 
 仓库根目录用下面这条，参数相同：
 
 ```bash
-npm run log:new -- --version 1.0.4 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
+npm run log:new -- --version 1.0.41 --today --note "修复记牌闪一下" --recent "下载页补了安装说明"
 ```
 
-不写 `--version` 时，按 `content/releases` 里最高的版本号把最后一段加一。现有最高是 `1.0.3` 时，会生成 `1.0.4`。`--bump minor` 升中间那段，`--bump major` 升第一段。
+不写 `--version` 时，按 `content/releases` 里最高的版本号把最后一段加一。`--bump minor` 升中间那段，`--bump major` 升第一段。发布时仍写成小抄当前的版本号。
 
 `--note` 是本次更新，`--recent` 是近期更新，都可以重复，一次一条。不写 `--recent`，文件里就没有近期更新这一节。日期不写就是上海当天，也可以用 `--date 2026-10-27`。
 
@@ -36,13 +38,13 @@ npm run log:new -- --version 1.0.4 --today --note "修复记牌闪一下" --rece
 
 ## 新增一版
 
-也可以自己在 `content/releases` 新建 `.md`。文件名随意，建议用版本号，例如 `1.0.3.md`。上面的命令会写成 `<版本号>.md`。版本号和日期写在开头，正文用 Markdown。
+也可以自己在 `content/releases` 新建 `.md`。文件名用小抄的版本号，例如 `1.0.41.md`。上面的命令会写成 `<版本号>.md`。版本号和日期写在开头，正文用 Markdown。
 
 ```md
 ---
-version: "1.0.3"
-title: "小抄 1.0.3"
-date: "2026-10-27"
+version: "1.0.41"
+title: "小抄 1.0.41"
+date: "2026-10-28"
 ---
 
 ## 本次更新：
