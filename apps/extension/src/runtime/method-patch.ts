@@ -166,6 +166,13 @@ export function createMethodPatcher(): MethodPatcher {
   };
 }
 
+/** 剥掉同一方法上多层本库包装，直到没有 wrap 标记为止。 */
+export function restoreTaggedMethodPatchUntilClean(target: unknown, name: string): number {
+  let restored = 0;
+  while (restoreTaggedMethodPatch(target, name)) restored += 1;
+  return restored;
+}
+
 /** 无 patcher 引用时，把仍带本库标记的包装还原为游戏原方法。 */
 export function restoreTaggedMethodPatch(target: unknown, name: string): boolean {
   if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return false;

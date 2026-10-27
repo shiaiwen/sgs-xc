@@ -29,7 +29,10 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
-import { disposeOrphanTipStayHooks } from '../runtime/dispose-orphan-game-ui-hooks';
+import {
+  disposeOrphanTipStayHooks,
+  scheduleOrphanTipStayHookCleanup
+} from '../runtime/dispose-orphan-game-ui-hooks';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
 import { createGameCardCatalog } from '../features/cards/game-card-catalog';
@@ -105,6 +108,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   }
   disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
+  scheduleOrphanTipStayHookCleanup(window, (cleanup) => lifecycle.register(cleanup));
   bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
@@ -130,6 +134,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     if (!tipHooksCleanedAfterRuntime) {
       tipHooksCleanedAfterRuntime = true;
       disposeOrphanTipStayHooks(window);
+      scheduleOrphanTipStayHookCleanup(window, (cleanup) => lifecycle.register(cleanup));
     }
     core.mountPanelShell();
     core.syncRuntimeSession();
@@ -230,6 +235,12 @@ function startXiaochaoCore(
   lifecycle.register(installCampChatRightPanelController(window).dispose);
   lifecycle.register(installSeatStateController(seatStateStore));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
+  lifecycle.register(gameEvents.subscribe((event) => {
+    if (event.type === 'game-started') {
+      disposeOrphanTipStayHooks(window);
+      scheduleOrphanTipStayHookCleanup(window, (cleanup) => lifecycle.register(cleanup));
+    }
+  }));
   lifecycle.register(installNativeHudPostGameGuard(gameEvents, window));
   // 微端里点进输入框时把系统键盘焦点交回 webview，否则中文输入法打不进去。
   lifecycle.register(installMicroClientFocusBridge(window));
