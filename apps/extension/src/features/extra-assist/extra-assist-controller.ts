@@ -10,7 +10,6 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import { isGeneralSkillTipManualCloseVisible } from '../../runtime/game-tip-layer.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import {
@@ -277,10 +276,8 @@ export function installExtraAssistController(
     });
     patcher.wrap(avatarProto, 'SetGeneralCard', (original) => function (this: unknown, ...args: unknown[]) {
       const result = original.apply(this, args);
-      if (!isGeneralSkillTipManualCloseVisible(globalObject)) {
-        refreshQuanyu();
-        refreshZuifeng();
-      }
+      refreshQuanyu();
+      refreshZuifeng();
       return result;
     });
   }

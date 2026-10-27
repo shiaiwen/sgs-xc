@@ -1,5 +1,3 @@
-export { isGeneralSkillTipManualCloseVisible } from './general-skill-tip-state.ts';
-
 /** 游戏内武将技能说明等提示层 zOrder，与打包脚本 ri.tipLayer 一致。 */
 export const GAME_TIP_LAYER_Z = 2005;
 

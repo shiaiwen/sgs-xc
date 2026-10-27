@@ -58,8 +58,7 @@ import { mingpaiPerf, now, recordNativeSync } from './mingpai-perf.ts';
 import { isGameSeatUiFlowActive } from '../../runtime/game-native-dialog.ts';
 import {
   clampExtensionZOrder,
-  EXTENSION_Z_BELOW_GAME_TIP,
-  isGeneralSkillTipManualCloseVisible
+  EXTENSION_Z_BELOW_GAME_TIP
 } from '../../runtime/game-tip-layer.ts';
 import {
   layoutPopupSection,
@@ -226,7 +225,6 @@ export function installNativeMingpaiPreviewController(
     const Event = readLayaEvent();
     const seatId = entry.seatId;
     call(tile, 'on', Event?.ROLL_OVER ?? 'mouseover', entry, () => {
-      if (isGeneralSkillTipManualCloseVisible(window)) return;
       if (pinnedSeatId !== null && pinnedSeatId !== seatId) return;
       clearHideTimer();
       showPopup(entry);
@@ -654,12 +652,6 @@ export function installNativeMingpaiPreviewController(
    */
   function syncNow(): void {
     if (stopped) return;
-    if (isGeneralSkillTipManualCloseVisible(window)) {
-      clearHideTimer();
-      if (popup) destroyPopup();
-      if (root) root.mouseEnabled = false;
-      return;
-    }
     if (isGameSeatUiFlowActive(window)) {
       clearHideTimer();
       if (popup) destroyPopup();

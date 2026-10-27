@@ -9,7 +9,6 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
-import { isGeneralSkillTipManualCloseVisible } from '../../runtime/game-tip-layer.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
@@ -204,10 +203,6 @@ export function installSkinChangeController(
     hpBySeat.clear();
   }
 
-  function shouldYieldToGeneralSkillTip(): boolean {
-    return isGeneralSkillTipManualCloseVisible(globalObject);
-  }
-
   function restoreSeatSetGeneralSkinOverride(seat: UnknownRecord): void {
     const hook = asRecord(seat[SEAT_SKIN_OVERRIDE_HOOK]);
     const native = hook?.native;
@@ -264,7 +259,6 @@ export function installSkinChangeController(
   }
 
   function applySkin(seat: UnknownRecord, generalID: number, skinID: number, isDynamic: boolean, skinType: number): void {
-    if (shouldYieldToGeneralSkillTip()) return;
     const shown = resolveHpForSeat(seat);
     callMethod(seat, 'SetGeneralSkin', generalID, skinID, isDynamic, skinType, true);
     if (shown) scheduleRepaintHp(seat, shown.hp, shown.maxHp);
@@ -289,7 +283,6 @@ export function installSkinChangeController(
   function scheduleRepaintHp(seat: UnknownRecord, hp: number, maxHp: number): void {
     for (const delay of HP_REPAINT_DELAYS) {
       tasks.later(() => {
-        if (shouldYieldToGeneralSkillTip()) return;
         repaintHpForSeat(seat, hp, maxHp);
       }, delay);
     }
@@ -350,7 +343,6 @@ export function installSkinChangeController(
   function handleHpUpdated(seatId: number, hp: number | null, maxHp: number | null, maxHpOnly: boolean): void {
     let formSynced = false;
     const run = () => {
-      if (shouldYieldToGeneralSkillTip()) return;
       const seat = seatByIndex(seatId);
       if (!seat) return;
       let resolvedHp = hp;
@@ -403,7 +395,7 @@ export function installSkinChangeController(
 
   /** 进局后把本地保存的皮肤套到自己座位，避免开换肤窗时先闪官方默认皮。 */
   function applySavedSkinsForSelf(): void {
-    if (!localOn() || shouldYieldToGeneralSkillTip()) return;
+    if (!localOn()) return;
     seedSelfHpCache();
     const seat = selfSeat();
     if (!seat) return;
@@ -1032,7 +1024,6 @@ export function installSkinChangeController(
       const isZhu = hoveredIsZhu(manager);
       tasks.later(() => {
         if (shouldDeferSeatTopManagerSync(window as LayaRuntimeWindow)) return;
-        if (shouldYieldToGeneralSkillTip()) return;
         if (!otherOn()) return;
         const liveSeat = asRecord(manager.seat);
         if (!liveSeat || liveSeat.IsSelf || isSpectating(manager)) return;

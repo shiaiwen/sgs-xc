@@ -29,7 +29,6 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
-import { installGameNativePopupProtector } from '../runtime/game-native-dialog';
 import { disposeOrphanTipStayHooks } from '../runtime/dispose-orphan-game-ui-hooks';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
@@ -97,10 +96,16 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     }
     delete bootBag.__xcXiaochaoBootstrapDispose;
   }
+  const prevPopupProtector = bootBag.__xcGameNativePopupProtectorDispose;
+  if (typeof prevPopupProtector === 'function') {
+    try { (prevPopupProtector as () => void)(); } catch (error) {
+      console.error('[xiaochao] previous popup protector dispose failed', error);
+    }
+    delete bootBag.__xcGameNativePopupProtectorDispose;
+  }
   disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
   bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
-  lifecycle.register(installGameNativePopupProtector(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
