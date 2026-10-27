@@ -1,6 +1,7 @@
 {
   "name": "sgs-xc",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "小抄 monorepo：微端注入脚本、下载门户、更新日志、版本服务",
   "workspaces": [

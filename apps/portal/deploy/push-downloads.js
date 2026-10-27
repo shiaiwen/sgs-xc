@@ -5,6 +5,7 @@
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { withSshOpts } = require("../../../tools/deploy-ssh-options.cjs");
 
 const rootDir = path.resolve(__dirname, "..");
 const target = process.env.XC_SSH || "admin@123.56.3.130";
@@ -28,10 +29,10 @@ if (!fs.existsSync(downloadsDir)) {
   process.exit(1);
 }
 
-run("ssh", [
+run("ssh", withSshOpts([
   target,
   `sudo mkdir -p ${remote}/dist && sudo chown -R "$(whoami):$(whoami)" ${remote}/dist && rm -rf ${remote}/dist/downloads`,
-]);
-run("scp", ["-r", downloadsDir, `${target}:${remote}/dist/`]);
+]));
+run("scp", withSshOpts(["-r", downloadsDir, `${target}:${remote}/dist/`]));
 
 console.log(`已同步 downloads 到 ${target}:${remote}/dist/downloads`);

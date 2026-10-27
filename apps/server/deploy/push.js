@@ -6,8 +6,12 @@
  * 换目标时设置 SGS_XC_SSH、SGS_XC_REMOTE。
  */
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const { withSshOpts } = require('../../../tools/deploy-ssh-options.cjs');
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const target = process.env.SGS_XC_SSH || 'admin@123.56.3.130';
@@ -22,14 +26,14 @@ function run(command, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-run('ssh', [target, `sudo mkdir -p ${remote} && sudo chown -R admin:admin ${remote} && rm -rf ${remote}/src ${remote}/keep-alive.sh`]);
-run('scp', [
+run('ssh', withSshOpts([target, `sudo mkdir -p ${remote} && sudo chown -R admin:admin ${remote} && rm -rf ${remote}/src ${remote}/keep-alive.sh`]));
+run('scp', withSshOpts([
   '-r',
   'package.json',
   'package-lock.json',
   'src',
   'data',
   `${target}:${remote}/`
-]);
-run('ssh', [target, `cd ${remote} && npm ci --omit=dev`]);
+]));
+run('ssh', withSshOpts([target, `cd ${remote} && npm ci --omit=dev`]));
 console.log(`已同步到 ${target}:${remote}`);
