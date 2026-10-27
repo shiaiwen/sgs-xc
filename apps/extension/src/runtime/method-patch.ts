@@ -31,7 +31,7 @@ const XC_METHOD_ORIGINAL = Symbol.for('sgsxc.methodPatch.original');
 type TaggedFn = PatchableFunction & { [k: symbol]: unknown };
 
 /** 若已是本库包装，沿 ORIGINAL 链剥到游戏原方法，避免层层套娃导致栈溢出 */
-export function unwrapToOriginal(fn: unknown): PatchableFunction | null {
+function unwrapToOriginal(fn: unknown): PatchableFunction | null {
   if (typeof fn !== 'function') return null;
   let cursor: unknown = fn;
   const seen = new Set<unknown>();
@@ -164,31 +164,4 @@ export function createMethodPatcher(): MethodPatcher {
       restores.splice(0).reverse().forEach((restore) => restore());
     }
   };
-}
-
-/** 无 patcher 引用时，把仍带本库标记的包装还原为游戏原方法。 */
-export function restoreTaggedMethodPatch(target: unknown, name: string): boolean {
-  if (target === null || typeof target !== 'object' && typeof target !== 'function') return false;
-  const record = target as Record<string, unknown>;
-  const current = record[name];
-  if (typeof current !== 'function' || !(current as TaggedFn)[XC_METHOD_WRAP]) return false;
-  const original = unwrapToOriginal(current);
-  if (!original || original === current) return false;
-  const ownDescriptor = Object.getOwnPropertyDescriptor(record, name);
-  try {
-    Object.defineProperty(record, name, {
-      value: original,
-      configurable: true,
-      writable: true,
-      enumerable: ownDescriptor?.enumerable ?? false
-    });
-    return true;
-  } catch {
-    try {
-      record[name] = original;
-      return true;
-    } catch {
-      return false;
-    }
-  }
 }
