@@ -165,3 +165,42 @@ export function createMethodPatcher(): MethodPatcher {
     }
   };
 }
+
+/** 无 patcher 引用时，把仍带本库标记的包装还原为游戏原方法。 */
+export function restoreTaggedMethodPatch(target: unknown, name: string): boolean {
+  if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return false;
+  const record = target as Record<string, unknown>;
+  const current = record[name];
+  if (typeof current !== 'function' || !(current as TaggedFn)[XC_METHOD_WRAP]) return false;
+  let original: PatchableFunction | null = null;
+  let cursor: unknown = current;
+  const seen = new Set<unknown>();
+  while (
+    typeof cursor === 'function'
+    && (cursor as TaggedFn)[XC_METHOD_WRAP]
+    && typeof (cursor as TaggedFn)[XC_METHOD_ORIGINAL] === 'function'
+  ) {
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    cursor = (cursor as TaggedFn)[XC_METHOD_ORIGINAL];
+  }
+  if (typeof cursor === 'function') original = cursor as PatchableFunction;
+  if (!original || original === current) return false;
+  const ownDescriptor = Object.getOwnPropertyDescriptor(record, name);
+  try {
+    Object.defineProperty(record, name, {
+      value: original,
+      configurable: true,
+      writable: true,
+      enumerable: ownDescriptor?.enumerable ?? false
+    });
+    return true;
+  } catch {
+    try {
+      record[name] = original;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}

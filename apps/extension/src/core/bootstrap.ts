@@ -30,7 +30,7 @@ import { createRecentCardStore } from '../features/recent-cards/recent-card-stor
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
 import { installGameNativePopupProtector } from '../runtime/game-native-dialog';
-import { installGeneralSkillTipStayCoordinator } from '../runtime/general-skill-tip-stay-coordinator';
+import { disposeOrphanTipStayHooks } from '../runtime/dispose-orphan-game-ui-hooks';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
 import { createGameCardCatalog } from '../features/cards/game-card-catalog';
@@ -97,10 +97,10 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     }
     delete bootBag.__xcXiaochaoBootstrapDispose;
   }
+  disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
   bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
   lifecycle.register(installGameNativePopupProtector(window));
-  lifecycle.register(installGeneralSkillTipStayCoordinator(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
