@@ -277,11 +277,7 @@ export function installGeneralSkillTipStayCoordinator(
     dispatcherReady = true;
   }
 
-  function wrapTipsDismissMethod(
-    target: UnknownRecord,
-    name: string,
-    block: (self: UnknownRecord) => boolean,
-  ): void {
+  function wrapTipsDismissMethod(target: UnknownRecord, name: string): void {
     patcher.wrap(target, name, (original) => function (this: unknown, ...args: unknown[]) {
       // 资料页打开/守卫期：拦住全局收起，只关技能 tip、保住资料页。
       if (shouldSuppressGlobalTipsHide(globalObject)) {
@@ -301,23 +297,30 @@ export function installGeneralSkillTipStayCoordinator(
         pushUserInfoGuardTrace('pass-' + name, { reason: 'menu-protected-allow' });
         return original.apply(this, args);
       }
-      const self = asRecord(this);
-      if (self && block(self)) return undefined;
+      // TipsHide / clearTips2 是整管理器级：技能停驻不能拦，否则包裹 CommonPropTip 等不符合原生。
+      if (name === 'TipsHide' || name === 'clearTips2') {
+        return original.apply(this, args);
+      }
+      if (name === 'HideTargetTips') {
+        const tipName = String(args[0] ?? '');
+        if (tipName !== TIP_NAME) return original.apply(this, args);
+        const self = asRecord(this);
+        if (self && shouldKeepStayOpen(self)) return undefined;
+      }
       return original.apply(this, args);
     });
   }
 
   function installManagerProto(manager: UnknownRecord): void {
-    const block = (self: UnknownRecord) => shouldKeepStayOpen(self);
     const dismissNames = ['TipsHide', 'HideTargetTips', 'clearTips2'] as const;
     for (const name of dismissNames) {
-      wrapTipsDismissMethod(manager, name, block);
+      wrapTipsDismissMethod(manager, name);
     }
     if (managerProtoReady) return;
     const proto = readPrototype(globalObject, MANAGER_CLASS, 'TipsHide', manager);
     if (!proto) return;
     for (const name of dismissNames) {
-      wrapTipsDismissMethod(proto, name, block);
+      wrapTipsDismissMethod(proto, name);
     }
     patcher.wrap(proto, 'onCheckStaticTip2', (original) => function (this: unknown, ...args: unknown[]) {
       if (args[0] === false && shouldBlockGlobalTipsDismissForSeatPopup(globalObject)) {
@@ -328,7 +331,7 @@ export function installGeneralSkillTipStayCoordinator(
       // false = 玩家点关或空白确认，必须走原生关闭，不能走 stay 拦截
       if (args[0] === false) return original.apply(this, args);
       const self = asRecord(this);
-      if (self && block(self)) return undefined;
+      if (self && shouldKeepStayOpen(self)) return undefined;
       return original.apply(this, args);
     });
     patcher.wrap(proto, 'checkButtonMode', (original) => {
@@ -341,7 +344,7 @@ export function installGeneralSkillTipStayCoordinator(
         }
         if (isGameSeatUiFlowActive(globalObject)) return original.apply(this, args);
         const self = asRecord(this);
-        if (self && block(self)) return undefined;
+        if (self && shouldKeepStayOpen(self)) return undefined;
         return original.apply(this, args);
       };
     });
@@ -354,7 +357,7 @@ export function installGeneralSkillTipStayCoordinator(
     if (!proto || typeof proto.onTimeComplete !== 'function') return;
     patcher.wrap(proto, 'clickSprite', (original) => function (this: unknown, ...args: unknown[]) {
       const tip = asRecord(this);
-      if (!tip) return original.apply(this, args);
+      if (!tip || tip.name !== TIP_NAME) return original.apply(this, args);
       return withUserClosing(tip, userClosing, () => original.apply(this, args));
     });
     patcher.wrap(proto, 'onTimeComplete', (original) => function (this: unknown, ...args: unknown[]) {
