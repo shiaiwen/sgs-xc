@@ -1,106 +1,158 @@
-import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator.ts';
-import { restoreTaggedMethodPatchUntilClean } from './method-patch.ts';
+/**
+ * 卸载历史 tip dismiss / popup-protector 残留 wrap。
+ * 不要调用 __xcGeneralSkillTipStayDispose：那会卸掉正在使用的技能 tip 停驻。
+ */
 
-const MANAGER_CLASS = 'XHt';
-const TIP_CLASS = 'XWi';
-const MANAGER_METHODS = ['TipsHide', 'HideTargetTips', 'clearTips2', 'onCheckStaticTip2', 'checkButtonMode'] as const;
-const TIP_METHODS = ['onTimeComplete', 'clickSprite'] as const;
+import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator.ts';
 
 type UnknownRecord = Record<string, unknown>;
+
+const XC_METHOD_WRAP = Symbol.for('sgsxc.methodPatch.wrap');
+const XC_METHOD_ORIGINAL = Symbol.for('sgsxc.methodPatch.original');
+
+const TIP_MANAGER_METHODS = [
+  // tip-stay v6 占用：TipsHide(预提升)/clearTips2(守卫)/onCheckStaticTip2(放行旗)/OnChangeTipToStay
+  // 勿剥，否则进局 dispose→缝隙期会卸掉停驻守卫
+  'HideTargetTips',
+  'checkButtonMode',
+] as const;
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
 }
 
-function readClassPrototype(globalObject: LayaRuntimeWindow, className: string): UnknownRecord | null {
+function unwrapOwnMethod(target: UnknownRecord, name: string): boolean {
+  const current = target[name];
+  if (typeof current !== 'function') return false;
+  const tagged = current as UnknownRecord;
+  if (!tagged[XC_METHOD_WRAP]) return false;
+  const original = tagged[XC_METHOD_ORIGINAL];
+  if (typeof original !== 'function') return false;
   try {
-    const ctor = globalObject.Laya?.ClassUtils?.getClass?.(className);
-    return asRecord(typeof ctor === 'function' ? (ctor as { prototype?: unknown }).prototype : null);
+    target[name] = original;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
-function readTipsManagerInstance(globalObject: LayaRuntimeWindow): UnknownRecord | null {
+function findTipManager(globalObject: LayaRuntimeWindow): UnknownRecord | null {
+  const locator = createLayaObjectLocator(globalObject);
   try {
-    const ctor = globalObject.Laya?.ClassUtils?.getClass?.(MANAGER_CLASS) as { I?: () => unknown } | undefined;
-    const inst = asRecord(typeof ctor?.I === 'function' ? ctor.I() : null);
-    if (inst && typeof inst.TipsHide === 'function') return inst;
+    const fromPred = locator.findManagerByPredicate((candidate) => {
+      const rec = asRecord(candidate);
+      return Boolean(
+        rec
+        && typeof rec.TipsHide === 'function'
+        && Array.isArray(rec.viewArr)
+      );
+    });
+    if (fromPred) return fromPred;
   } catch {
-    // ClassUtils 可能未注册。
+    // ignore
   }
   return null;
 }
 
-function forEachPrototype(target: UnknownRecord, visit: (proto: UnknownRecord) => void): void {
-  const seen = new Set<UnknownRecord>();
-  let cursor: UnknownRecord | null = target;
-  while (cursor && !seen.has(cursor)) {
-    seen.add(cursor);
-    visit(cursor);
-    const next = Object.getPrototypeOf(cursor) as UnknownRecord | null;
-    if (!next || next === Object.prototype) break;
-    cursor = next;
-  }
-}
-
-function restoreMethodsOnTarget(target: UnknownRecord, names: readonly string[]): number {
-  let count = 0;
-  for (const name of names) {
-    count += restoreTaggedMethodPatchUntilClean(target, name);
-  }
-  return count;
-}
-
-/** 旧版 tip 停驻若未 dispose，会在原型或单例实例上留下 TipsHide 等包装。 */
-function restoreOrphanGeneralSkillTipPatches(globalObject: LayaRuntimeWindow): number {
-  let restored = 0;
-  const managerProto = readClassPrototype(globalObject, MANAGER_CLASS);
-  if (managerProto) {
-    forEachPrototype(managerProto, (proto) => {
-      restored += restoreMethodsOnTarget(proto, MANAGER_METHODS);
-    });
-  }
-  const manager = readTipsManagerInstance(globalObject);
-  if (manager) {
-    forEachPrototype(manager, (layer) => {
-      restored += restoreMethodsOnTarget(layer, MANAGER_METHODS);
-    });
-  }
-  const tipProto = readClassPrototype(globalObject, TIP_CLASS);
-  if (tipProto) {
-    forEachPrototype(tipProto, (proto) => {
-      restored += restoreMethodsOnTarget(proto, TIP_METHODS);
-    });
-  }
-  const ged = createLayaObjectLocator(globalObject).dispatcher();
-  if (ged) {
-    forEachPrototype(ged, (layer) => {
-      restored += restoreTaggedMethodPatchUntilClean(layer, 'event');
-    });
-  }
-  return restored;
-}
-
-/** 卸掉已删除的 tip 停驻模块可能残留的 hook；进局后 Laya 就绪时再调一次才有效。 */
-export function disposeOrphanTipStayHooks(globalObject: Window = window): number {
-  const bag = globalObject as Record<string, unknown>;
-  const dispose = bag.__xcGeneralSkillTipStayDispose;
-  if (typeof dispose === 'function') {
-    try {
-      (dispose as () => void)();
-    } catch {
-      // 忽略
-    }
-    delete bag.__xcGeneralSkillTipStayDispose;
-  }
-  const restored = restoreOrphanGeneralSkillTipPatches(globalObject as LayaRuntimeWindow);
+function unwrapTipManagerChain(manager: UnknownRecord): number {
+  // tip-stay 存活时不要动 tip manager 方法链
   try {
-    (globalObject as Record<string, unknown>).__xcDisposeOrphanTipStayHooks = () => {
+    if ((globalThis as UnknownRecord).__xcGeneralSkillTipStayActive === true) return 0;
+  } catch { /* ignore */ }
+  let n = 0;
+  const targets: UnknownRecord[] = [manager];
+  let proto = asRecord(Object.getPrototypeOf(manager));
+  const seen = new Set<object>();
+  while (proto && !seen.has(proto)) {
+    seen.add(proto);
+    targets.push(proto);
+    proto = asRecord(Object.getPrototypeOf(proto));
+  }
+  for (const target of targets) {
+    for (const name of TIP_MANAGER_METHODS) {
+      // unwrap possibly nested wraps
+      for (let i = 0; i < 8; i += 1) {
+        if (!unwrapOwnMethod(target, name)) break;
+        n += 1;
+      }
+    }
+  }
+  return n;
+}
+
+function restoreUserInfoCloseOriginals(win: UnknownRecord | null): number {
+  if (!win) return 0;
+  const methods = ['Close', 'close', 'CloseWin', 'Hide', 'hide', 'laterClose', 'removeSelf', 'destroy'] as const;
+  const originals = asRecord(win.__xcUserInfoCloseOriginals);
+  if (!originals) return 0;
+  let n = 0;
+  for (const method of methods) {
+    const original = originals[method];
+    if (typeof original !== 'function') continue;
+    try {
+      win[method] = original;
+      n += 1;
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    delete win.__xcUserInfoCloseOriginals;
+    delete win.__xcUserInfoCloseGuarded;
+  } catch {
+    // ignore
+  }
+  return n;
+}
+
+/** 调用旧 dispose，并尽量剥掉 tip 管理器上残留的 method-patch wrap。 */
+export function disposeOrphanTipStayHooks(
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+): number {
+  const bag = globalObject as UnknownRecord;
+  let restored = 0;
+  for (const key of [
+    // 勿 dispose tip-stay：install 后/进局再调用会把 OnChange/OTC wrap 全部 restore 掉
+    '__xcGameNativePopupProtectorDispose',
+    '__xcUserInfoOpenWindowArmDispose',
+  ] as const) {
+    const dispose = bag[key];
+    if (typeof dispose === 'function') {
+      try {
+        (dispose as () => void)();
+        restored += 1;
+      } catch {
+        // ignore
+      }
+      try {
+        delete bag[key];
+      } catch {
+        // ignore
+      }
+    }
+  }
+  try {
+    delete bag.__xcUserInfoDismissGuardUntil;
+    delete bag.__xcSeatMenuTipsHoldUntil;
+    delete bag.__xcAllowHideUserOptMenu;
+  } catch {
+    // ignore
+  }
+  const manager = findTipManager(globalObject);
+  if (manager) restored += unwrapTipManagerChain(manager);
+  // 还原 UserInfo 实例上可能残留的 Close/Hide 吞掉包装
+  try {
+    const cached = asRecord(bag.__xcCachedUserInfoWindow);
+    restored += restoreUserInfoCloseOriginals(cached);
+  } catch {
+    // ignore
+  }
+  try {
+    (globalObject as UnknownRecord).__xcDisposeOrphanTipStayHooks = () => {
       disposeOrphanTipStayHooks(globalObject);
     };
   } catch {
-    // 忽略
+    // ignore
   }
   return restored;
 }

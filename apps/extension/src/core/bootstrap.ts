@@ -29,6 +29,8 @@ import { createGameEventBus } from '../runtime/game-event-bus';
 import { createRecentCardStore } from '../features/recent-cards/recent-card-store';
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
+import { installGameNativePopupProtector } from '../runtime/game-native-dialog';
+import { installGeneralSkillTipStayCoordinator } from '../runtime/general-skill-tip-stay-coordinator';
 import { disposeOrphanTipStayHooks } from '../runtime/dispose-orphan-game-ui-hooks';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
@@ -106,6 +108,9 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
   bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
+  // popup protector：只卸旧守卫；tip-stay：技能 tip 出 X 后停驻（勿在其后 disposeOrphan 卸掉）
+  lifecycle.register(installGameNativePopupProtector(window));
+  lifecycle.register(installGeneralSkillTipStayCoordinator(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
 
@@ -130,6 +135,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     if (!tipHooksCleanedAfterRuntime) {
       tipHooksCleanedAfterRuntime = true;
       disposeOrphanTipStayHooks(window);
+      lifecycle.register(installGeneralSkillTipStayCoordinator(window));
     }
     core.mountPanelShell();
     core.syncRuntimeSession();
@@ -231,7 +237,10 @@ function startXiaochaoCore(
   lifecycle.register(installSeatStateController(seatStateStore));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
   lifecycle.register(gameEvents.subscribe((event) => {
-    if (event.type === 'game-started') disposeOrphanTipStayHooks(window);
+    if (event.type === 'game-started') {
+      disposeOrphanTipStayHooks(window);
+      lifecycle.register(installGeneralSkillTipStayCoordinator(window));
+    }
   }));
   lifecycle.register(installNativeHudPostGameGuard(gameEvents, window));
   // 微端里点进输入框时把系统键盘焦点交回 webview，否则中文输入法打不进去。
@@ -438,3 +447,5 @@ function readSavedPanelHeight(): number {
     return 0;
   }
 }
+
+
