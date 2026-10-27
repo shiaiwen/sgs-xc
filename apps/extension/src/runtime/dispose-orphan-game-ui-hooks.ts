@@ -104,25 +104,3 @@ export function disposeOrphanTipStayHooks(globalObject: Window = window): number
   }
   return restored;
 }
-
-const ORPHAN_CLEANUP_DELAYS_MS = [0, 80, 400, 1500, 4000, 10_000] as const;
-
-/**
- * 管理器单例常在进局后才创建；在若干时间点重复清理，避免只扫原型扫不到实例上的残留包装。
- */
-export function scheduleOrphanTipStayHookCleanup(
-  globalObject: Window = window,
-  registerCleanup?: (cleanup: () => void) => void
-): void {
-  const timers: number[] = [];
-  for (const delay of ORPHAN_CLEANUP_DELAYS_MS) {
-    const id = globalObject.setTimeout(() => {
-      disposeOrphanTipStayHooks(globalObject);
-    }, delay);
-    timers.push(id);
-  }
-  const cancel = () => {
-    for (const id of timers) globalObject.clearTimeout(id);
-  };
-  registerCleanup?.(cancel);
-}

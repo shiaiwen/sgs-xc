@@ -58,7 +58,8 @@ import { mingpaiPerf, now, recordNativeSync } from './mingpai-perf.ts';
 import { isGameSeatUiFlowActive } from '../../runtime/game-native-dialog.ts';
 import {
   clampExtensionZOrder,
-  EXTENSION_Z_BELOW_GAME_TIP
+  EXTENSION_Z_BELOW_GAME_TIP,
+  isGeneralSkillTipStayInteractive
 } from '../../runtime/game-tip-layer.ts';
 import {
   layoutPopupSection,
@@ -86,6 +87,7 @@ const STRIP_OFFSET_Y = 10;
 const POPUP_OFFSET = 14;
 const POPUP_CARD_SCALE = 0.85;
 const HIDE_DELAY_MS = 120;
+const STRIP_TILE_POINTER_BOUND = '__xcMingpaiStripTilePointerBound';
 const POLL_INTERVAL_MS = 500;
 const POLL_INTERVAL_OUT_OF_GAME_MS = 2000;
 /** 同一次事件链可能同时触发座位状态、明牌引擎和游戏事件订阅；
@@ -218,10 +220,22 @@ export function installNativeMingpaiPreviewController(
     return root;
   }
 
-  function attachStripTilePointerEvents(tile: UnknownRecord, entry: SeatStrip): void {
+  function setStripTilePassThrough(tile: UnknownRecord, passThrough: boolean): void {
+    if (passThrough) {
+      tile.mouseEnabled = false;
+      tile.mouseThrough = true;
+      tile.hitTestPrior = false;
+      return;
+    }
     tile.mouseEnabled = true;
     tile.mouseThrough = false;
     tile.hitTestPrior = false;
+  }
+
+  function attachStripTilePointerEvents(tile: UnknownRecord, entry: SeatStrip): void {
+    if (tile[STRIP_TILE_POINTER_BOUND] === true) return;
+    tile[STRIP_TILE_POINTER_BOUND] = true;
+    setStripTilePassThrough(tile, false);
     const Event = readLayaEvent();
     const seatId = entry.seatId;
     call(tile, 'on', Event?.ROLL_OVER ?? 'mouseover', entry, () => {
@@ -237,6 +251,16 @@ export function installNativeMingpaiPreviewController(
       if (pinnedSeatId === null) destroyPopup();
       else showPopup(entry);
     });
+  }
+
+  /** 技能说明停驻时让小牌条不拦截鼠标，避免误判移开而自动关 tip。 */
+  function applyStripPointerYield(yieldToSkillTip: boolean): void {
+    for (const entry of strips.values()) {
+      for (const child of readChildren(entry.strip)) {
+        if (child[STRIP_TILE_POINTER_BOUND] !== true) continue;
+        setStripTilePassThrough(child, yieldToSkillTip);
+      }
+    }
   }
 
   function createStrip(seatId: number, seatUi: UnknownRecord): SeatStrip | null {
@@ -329,7 +353,11 @@ export function installNativeMingpaiPreviewController(
           if (!tile) return;
           call(tile, 'pos', (TILE_WIDTH + TILE_GAP) * index, y);
           tile.zOrder = index + 2;
-          attachStripTilePointerEvents(tile, entry);
+          if (isGeneralSkillTipStayInteractive(window)) {
+            setStripTilePassThrough(tile, true);
+          } else {
+            attachStripTilePointerEvents(tile, entry);
+          }
           call(entry.strip, 'addChild', tile);
         });
         if (truncated) {
@@ -337,7 +365,11 @@ export function installNativeMingpaiPreviewController(
           if (ellipsis) {
             call(ellipsis, 'pos', (TILE_WIDTH + TILE_GAP) * visible.length, y);
             ellipsis.zOrder = visible.length + 2;
-            attachStripTilePointerEvents(ellipsis, entry);
+            if (isGeneralSkillTipStayInteractive(window)) {
+              setStripTilePassThrough(ellipsis, true);
+            } else {
+              attachStripTilePointerEvents(ellipsis, entry);
+            }
             call(entry.strip, 'addChild', ellipsis);
           }
         }
@@ -803,6 +835,7 @@ export function installNativeMingpaiPreviewController(
     [...strips.values()]
       .filter((entry) => !activeSeatIds.has(entry.seatId))
       .forEach(destroyStrip);
+    applyStripPointerYield(isGeneralSkillTipStayInteractive(window));
   }
 
   const bridge = asRecord((globalThis as UnknownRecord).__XIAOCHAO_ENGINEERING__);
