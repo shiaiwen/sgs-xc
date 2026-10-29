@@ -26,6 +26,7 @@ tools/console-copy-seats.txt
 *.tsbuildinfo
 coverage/
 .nyc_output/
+.reference
 
 # 日志
 logs/
