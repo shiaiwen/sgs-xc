@@ -35,7 +35,7 @@ export function DownloadMode({
               aria-selected={selected}
               className={`flex-1 rounded-full px-4 py-2 text-sm font-medium transition sm:flex-none sm:px-6 ${
                 selected
-                  ? "bg-ink text-paper"
+                  ? "bg-[#1677ff] text-white"
                   : "text-ink/70 hover:text-ink"
               }`}
               onClick={() => setMode(item.id)}

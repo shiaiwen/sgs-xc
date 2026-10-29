@@ -26,7 +26,7 @@ export function InstallerDownload() {
     <a
       href={`/downloads/${zipName}`}
       download={zipName}
-      className="inline-flex min-w-28 items-center justify-center rounded-full bg-ink px-6 py-3 text-sm font-medium text-paper transition hover:bg-accent"
+      className="inline-flex min-w-28 items-center justify-center rounded-full bg-[#1677ff] px-6 py-3 text-sm font-medium text-white transition hover:bg-[#4096ff]"
     >
       下载
     </a>

@@ -92,6 +92,12 @@ export interface LayaObjectLocator {
   /** 在 ServerProxy / ActivityManager / 分发器监听者及 managerList 上查找管理器。 */
   findManagerByPredicate(predicate: (manager: UnknownRecord) => boolean): UnknownRecord | null;
   obfuscatedMethodName(target: unknown, owner: string, method: string): string | null;
+  /**
+   * 解析 GameEventDispatcher.ShowWindow 的候选方法名。
+   * 顺序：特征串 resolved → 当前包混淆名 `_` → 字面量 ShowWindow。
+   * `_` 仅为逃生口；包体变更后仍以 obfuscatedMethodName 为准。
+   */
+  listShowWindowMethodNames(target: unknown): string[];
 }
 
 /** 只读定位器：不创建游戏实例，只从已有 Laya/场景对象上取管理器与方法引用。 */
@@ -337,13 +343,35 @@ export function createLayaObjectLocator(
       }
       if (candidates.some((candidate) => {
         if (typeof candidate !== 'function') return false;
-        const source = Function.prototype.toString.call(candidate);
-        return fragments.every((fragment) => source.includes(fragment));
+        // method-patch 包装后 toString 不再含特征串；顺着本库 ORIGINAL 链看原函数。
+        let cursor = candidate;
+        const seen = new Set();
+        while (typeof cursor === 'function' && !seen.has(cursor)) {
+          seen.add(cursor);
+          const source = Function.prototype.toString.call(cursor);
+          if (fragments.every((fragment) => source.includes(fragment))) return true;
+          const original = cursor[Symbol.for('sgsxc.methodPatch.original')];
+          if (typeof original !== 'function' || original === cursor) break;
+          cursor = original;
+        }
+        return false;
       })) {
         return key;
       }
     }
     return null;
+  }
+
+  function listShowWindowMethodNames(target: unknown): string[] {
+    const record = asRecord(target);
+    if (!record) return [];
+    const resolved = obfuscatedMethodName(record, 'GameEventDispatcher', 'ShowWindow');
+    // '_' = 当前游戏包混淆名（见 sgsGame_inner ShowWindow）；正式路径优先信 resolved。
+    const names: string[] = [];
+    for (const name of [resolved, '_', 'ShowWindow']) {
+      if (name && typeof record[name] === 'function' && !names.includes(name)) names.push(name);
+    }
+    return names;
   }
 
   return {
@@ -361,7 +389,8 @@ export function createLayaObjectLocator(
     findInLayer,
     managerFromList,
     findManagerByPredicate,
-    obfuscatedMethodName
+    obfuscatedMethodName,
+    listShowWindowMethodNames
   };
 }
 

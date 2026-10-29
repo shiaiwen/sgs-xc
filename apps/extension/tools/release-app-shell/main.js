@@ -13,7 +13,13 @@ const { createSharedStore, createJsonConfig, normalizeCredentials: normalizeShar
 const { selectInstanceProfile } = require('./instance-profile')
 const instanceProfile = selectInstanceProfile(app)
 const { createHtmlReportOpener } = require('./report-window')
-const { scheduleMicroClientUpdate } = require('./micro-client-update')
+let scheduleMicroClientUpdate = function () {};
+try {
+    ({ scheduleMicroClientUpdate } = require('./micro-client-update'));
+} catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    console.error('[micro-client-update] 未加载，跳过自动更新:', message);
+}
 
 
 const steamAppID = 4209770;

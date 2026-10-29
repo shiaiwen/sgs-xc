@@ -31,15 +31,6 @@ function matchesRogueSelectWindow(windowName: unknown): boolean {
   return name === ROGUE_SELECT_GENERAL_WINDOW || name.includes('RogueSelectGeneral');
 }
 
-function listShowWindowMethodNames(locator: LayaObjectLocator, target: UnknownRecord): string[] {
-  const resolved = locator.obfuscatedMethodName(target, 'GameEventDispatcher', 'ShowWindow');
-  const names: string[] = [];
-  for (const name of [resolved, '_', 'ShowWindow']) {
-    if (name && typeof target[name] === 'function' && !names.includes(name)) names.push(name);
-  }
-  return names;
-}
-
 export interface ShanhetuChangeGeneralHandle {
   dispose: () => void;
   filterMessage(payload: UnknownRecord, className: string): void;
@@ -107,7 +98,7 @@ export function installShanhetuChangeGeneral(options: {
 
   function wrapShowWindowTarget(target: UnknownRecord): boolean {
     let hooked = false;
-    for (const methodName of listShowWindowMethodNames(locator, target)) {
+    for (const methodName of locator.listShowWindowMethodNames(target)) {
       if (patcher.isWrapped(target, methodName)) {
         hooked = true;
         continue;

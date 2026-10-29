@@ -319,12 +319,8 @@ export function installShanhetuShopController(
       showToast('游戏尚未就绪，稍后再打开集市');
       return false;
     }
-    const showWindowName = locator.obfuscatedMethodName(
-      dispatcher,
-      'GameEventDispatcher',
-      'ShowWindow'
-    ) ?? 'ShowWindow';
-    const method = dispatcher[showWindowName];
+    const showWindowName = locator.listShowWindowMethodNames(dispatcher)[0];
+    const method = showWindowName ? dispatcher[showWindowName] : null;
     if (typeof method !== 'function') {
       showToast('无法打开集市窗口');
       return false;
@@ -333,7 +329,7 @@ export function installShanhetuShopController(
       method.call(dispatcher, ROGUE_SHOP_WINDOW);
       return true;
     } catch (error) {
-      console.warn('[山河图] 打开集市失败', error);
+      console.warn('[山河图] 打开集市失败 via', showWindowName, error);
       showToast('打开集市失败');
       return false;
     }

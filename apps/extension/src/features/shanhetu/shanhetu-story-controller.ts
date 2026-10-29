@@ -135,13 +135,7 @@ export function installShanhetuStoryController(
     if (patched || disposed) return patched;
     const dispatcher = locator.dispatcher();
     if (!dispatcher) return false;
-    const showWindowName = locator.obfuscatedMethodName(
-      dispatcher,
-      'GameEventDispatcher',
-      'ShowWindow'
-    ) ?? 'ShowWindow';
-    if (typeof dispatcher[showWindowName] !== 'function') return false;
-    patched = patcher.wrap(dispatcher, showWindowName, (original) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
+    const wrapShowWindow = (original: (...args: unknown[]) => unknown) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
       if (windowName === STORY_PROBE_WINDOW) {
         const probeWin: UnknownRecord = {
           destroyed: false,
@@ -157,7 +151,16 @@ export function installShanhetuStoryController(
       if (windowName !== STORY_WINDOW) return result;
       if (isOn()) closeAfterShow(result);
       return result;
-    });
+    };
+    let hooked = false;
+    for (const showWindowName of locator.listShowWindowMethodNames(dispatcher)) {
+      if (patcher.isWrapped(dispatcher, showWindowName)) {
+        hooked = true;
+        continue;
+      }
+      if (patcher.wrap(dispatcher, showWindowName, wrapShowWindow)) hooked = true;
+    }
+    patched = hooked;
     if (patched) {
       markStoryReady(globalObject, true);
       if (isOn()) closeStoryWindows();

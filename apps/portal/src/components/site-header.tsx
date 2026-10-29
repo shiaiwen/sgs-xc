@@ -15,12 +15,12 @@ const links: { href: string; label: string; external?: boolean }[] = [
 
 export function SiteHeader() {
   return (
-    <header className="z-20 shrink-0 border-b border-ink/10 bg-paper/90 backdrop-blur">
-      <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-        <Link href="/" className="font-serif text-lg tracking-wide text-ink">
+    <header className="z-20 flex h-20 shrink-0 items-center border-b border-[#eee] bg-white">
+      <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-6 sm:px-8">
+        <Link href="/" className="text-[20px] font-semibold tracking-wide text-[#1a1a1a]">
           {site.name}
         </Link>
-        <nav className="hidden items-center gap-6 text-sm sm:flex" aria-label="主导航">
+        <nav className="hidden items-center gap-7 text-[15px] sm:flex" aria-label="主导航">
           {links.map((link) =>
             link.external ? (
               <a
@@ -28,7 +28,7 @@ export function SiteHeader() {
                 href={link.href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-ink/80 transition hover:text-accent"
+                className="text-[#333] transition hover:text-[#1677ff]"
               >
                 {link.label}
               </a>
@@ -36,7 +36,7 @@ export function SiteHeader() {
               <Link
                 key={link.href}
                 href={link.href}
-                className="text-ink/80 transition hover:text-accent"
+                className="text-[#333] transition hover:text-[#1677ff]"
               >
                 {link.label}
               </Link>
@@ -44,11 +44,11 @@ export function SiteHeader() {
           )}
         </nav>
         <details className="relative sm:hidden">
-          <summary className="cursor-pointer list-none rounded-full border border-ink/15 px-3 py-1 text-sm">
+          <summary className="cursor-pointer list-none rounded-full border border-[#ddd] px-3 py-1.5 text-sm text-[#333]">
             菜单
           </summary>
           <nav
-            className="absolute right-0 mt-2 flex w-36 flex-col rounded-2xl border border-ink/10 bg-paper p-2 shadow-lg"
+            className="absolute right-0 mt-2 flex w-36 flex-col rounded-xl border border-[#eee] bg-white p-2 shadow-lg"
             aria-label="移动导航"
           >
             {links.map((link) =>
@@ -58,7 +58,7 @@ export function SiteHeader() {
                   href={link.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="rounded-xl px-3 py-2 text-sm hover:bg-ink/5"
+                  className="rounded-lg px-3 py-2 text-sm text-[#333] hover:bg-[#f5f6f7]"
                 >
                   {link.label}
                 </a>
@@ -66,7 +66,7 @@ export function SiteHeader() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="rounded-xl px-3 py-2 text-sm hover:bg-ink/5"
+                  className="rounded-lg px-3 py-2 text-sm text-[#333] hover:bg-[#f5f6f7]"
                 >
                   {link.label}
                 </Link>

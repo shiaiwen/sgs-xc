@@ -98,8 +98,16 @@ async function createZip(zipPath, entries, cwd) {
 }
 
 async function main() {
-  if (!existsSync(path.join(shellDir, 'main.js')) || !existsSync(path.join(shellDir, 'package.json'))) {
-    throw new Error(`缺少发布壳目录 tools/release-app-shell（需含 main.js / package.json）`);
+  const requiredShellFiles = [
+    'main.js',
+    'package.json',
+    'micro-client-update.js',
+    'micro-client-updater.js'
+  ];
+  for (const name of requiredShellFiles) {
+    if (!existsSync(path.join(shellDir, name))) {
+      throw new Error(`缺少发布壳文件 tools/release-app-shell/${name}（更新模块须成对打包）`);
+    }
   }
 
   const bumpedVersion = resolveVersion();
@@ -143,8 +151,10 @@ async function main() {
   writeFileSync(path.join(appDir, 'package.json'), `${JSON.stringify(shellPackage, null, 2)}\n`);
   writeBundledScript(scriptVersion);
 
-  if (!existsSync(path.join(appDir, 'package.json')) || !existsSync(path.join(appDir, 'main.js'))) {
-    throw new Error('组装后的 app 缺少 package.json 或 main.js');
+  for (const name of requiredShellFiles) {
+    if (!existsSync(path.join(appDir, name))) {
+      throw new Error(`组装后的 app 缺少 ${name}（micro-client-update 与 updater 须同包）`);
+    }
   }
 
   const appZipPath = path.join(packDir, 'app.zip');

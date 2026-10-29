@@ -63,10 +63,18 @@ export function paintZhanfaItems(items: readonly UnknownRecord[], state: ZhanfaC
 export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions): () => void {
   const state = createZhanfaCounts();
   let previousTurnCount = 0;
+  /** 清零时战法条可能还没挂上；挂上后补刷一次 0，避免界面仍显示上一局数字。 */
+  let pendingPaint = false;
 
-  const refresh = (): void => {
+  const refresh = (): boolean => {
     const items = readZhanfaItems(options.locator);
-    if (items.length) paintZhanfaItems(items, state);
+    if (!items.length) {
+      pendingPaint = true;
+      return false;
+    }
+    paintZhanfaItems(items, state);
+    pendingPaint = false;
+    return true;
   };
 
   const onEvent = (event: GameEvent): void => {
@@ -89,6 +97,7 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
     }
     if (event.type === 'turn-started' && event.turnCount > 0) {
       if (noteZhanfaNewDealTurn(state, event.turnCount, previousTurnCount)) refresh();
+      else if (pendingPaint) refresh();
       previousTurnCount = event.turnCount;
     }
     const selfSeatId = options.selfSeatId();
@@ -113,7 +122,7 @@ export function installShanhetuZhanfaCount(options: ShanhetuZhanfaCountOptions):
         isSend: event.isSend
       });
     }
-    if (changed) refresh();
+    if (changed || pendingPaint) refresh();
   };
 
   return options.gameEvents.subscribe(onEvent);

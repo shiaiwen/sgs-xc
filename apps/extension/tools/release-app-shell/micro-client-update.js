@@ -5,7 +5,19 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
-const { buildWindowsMicroClientUpdater } = require('./micro-client-updater');
+/** 整包更新才需要；勿顶层 require，缺文件时不应拖垮主进程启动。 */
+function loadWindowsMicroClientUpdater() {
+    const updaterModulePath = path.join(__dirname, 'micro-client-updater.js');
+    if (!fs.existsSync(updaterModulePath)) {
+        throw new Error('缺少微端更新辅助模块 micro-client-updater.js（请重新安装完整包）');
+    }
+    try {
+        return require('./micro-client-updater');
+    } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        throw new Error('无法加载微端更新辅助模块 micro-client-updater.js: ' + message);
+    }
+}
 
 const MANIFEST_URL = 'https://95chong.cn/api/xiaochao-version';
 const APP_URL = 'https://xc.95chong.cn/downloads/app.zip';
@@ -444,6 +456,7 @@ function scheduleMicroClientUpdate(deps) {
         const updaterPath = path.join(updateDirectory, 'apply-update.ps1');
         const launcherPath = path.join(updateDirectory, 'launch-update.ps1');
         const statusPath = path.join(updateDirectory, 'update-status.txt');
+        const { buildWindowsMicroClientUpdater } = loadWindowsMicroClientUpdater();
         const { updaterSource, launcherSource } = buildWindowsMicroClientUpdater({
             parentPid: process.pid,
             archivePath,

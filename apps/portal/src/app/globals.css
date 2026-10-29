@@ -1,10 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  --paper: #f6f1e7;
-  --card: #fffdf8;
-  --ink: #1c1915;
-  --accent: #c45c26;
+  --paper: #ffffff;
+  --card: #f5f6f7;
+  --ink: #1a1a1a;
+  --accent: #1677ff;
 }
 
 @theme inline {
@@ -17,9 +17,7 @@
 }
 
 body {
-  background:
-    radial-gradient(circle at top, rgba(196, 92, 38, 0.08), transparent 32%),
-    var(--paper);
+  background: var(--paper);
   color: var(--ink);
   font-family: var(--font-noto-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
 }

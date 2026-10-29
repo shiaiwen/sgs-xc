@@ -13,11 +13,24 @@ export const MOVE_DRAW = 13;
 /** 杀 */
 export const SHA_SPELL_ID = 1;
 
-export const SANBAN_PLOT_IDS = [0x7fa, 0x7fb, 0x7fc] as const;
-export const DRAGON_MOD6_PLOT_ID = 0x85f;
-export const DRAGON_MOD9_PLOT_ID = 0x838;
-export const HANDY_PLOT_IDS = [0x81f, 0x820, 0x821] as const;
-export const PLENTY_PLOT_IDS = [0x822, 0x823, 0x824] as const;
+/** 战法 PlotID 与界面 Value 的对应；新增或改档只改此表。 */
+const ZHANFA_PLOT_DISPLAY_RULES: ReadonlyArray<{
+  plotIds: readonly number[];
+  value: (state: ZhanfaCounts) => number;
+}> = [
+  { plotIds: [0x7fa, 0x7fb, 0x7fc], value: (s) => s.axe % 3 },
+  { plotIds: [0x85f], value: (s) => s.dragon % 6 },
+  { plotIds: [0x838], value: (s) => s.dragon % 9 },
+  { plotIds: [0x81f, 0x820, 0x821], value: (s) => s.handy },
+  { plotIds: [0x822, 0x823, 0x824], value: (s) => s.plenty },
+];
+
+const zhanfaPlotDisplayById = new Map<number, (state: ZhanfaCounts) => number>();
+for (const rule of ZHANFA_PLOT_DISPLAY_RULES) {
+  for (const plotId of rule.plotIds) {
+    zhanfaPlotDisplayById.set(plotId, rule.value);
+  }
+}
 
 export interface ZhanfaCounts {
   dragon: number;
@@ -69,15 +82,26 @@ export function noteZhanfaReady(state: ZhanfaCounts): void {
   state.isPassed = false;
 }
 
+function hasZhanfaTallies(state: ZhanfaCounts): boolean {
+  return state.dragon > 0 || state.axe > 0 || state.handy > 0 || state.plenty > 0;
+}
+
 /**
- * TurnCnt 从大于 1 回到 1：新一盘 / 重新挑战未走 game-ended 时的兜底清零。
+ * 新一盘 / 重新挑战未走 game-ended 时的兜底清零。
+ * - TurnCnt 回落到 1（含仅打到第 1 回合就重开：1→1 且仍有计数）
+ * - 或 TurnCnt 相对上一记变小（回合数回绕）
+ * - 或局已结束 / 未在局中后又见到 TurnCnt=1
  * 返回是否清零并重新挂上。
  */
 export function noteZhanfaNewDealTurn(state: ZhanfaCounts, turnCount: number, previousTurnCount: number): boolean {
-  if (turnCount !== 1) return false;
-  const rematchWithoutEnd = previousTurnCount > 1;
-  const afterEnded = state.isPassed || !state.playing;
-  if (!rematchWithoutEnd && !afterEnded) return false;
+  if (turnCount <= 0) return false;
+  const turnWentBackwards = previousTurnCount > 0 && turnCount < previousTurnCount;
+  const rematchAtTurnOne = turnCount === 1 && (
+    previousTurnCount > 1
+    || (previousTurnCount === 1 && hasZhanfaTallies(state))
+  );
+  const afterEnded = turnCount === 1 && (state.isPassed || !state.playing);
+  if (!turnWentBackwards && !rematchAtTurnOne && !afterEnded) return false;
   noteZhanfaReady(state);
   noteZhanfaPlayStarted(state);
   return true;
@@ -161,10 +185,6 @@ export function noteCardUsed(
 }
 
 export function zhanfaDisplayValue(plotId: number, state: ZhanfaCounts): number | null {
-  if ((SANBAN_PLOT_IDS as readonly number[]).includes(plotId)) return state.axe % 3;
-  if (plotId === DRAGON_MOD6_PLOT_ID) return state.dragon % 6;
-  if (plotId === DRAGON_MOD9_PLOT_ID) return state.dragon % 9;
-  if ((HANDY_PLOT_IDS as readonly number[]).includes(plotId)) return state.handy;
-  if ((PLENTY_PLOT_IDS as readonly number[]).includes(plotId)) return state.plenty;
-  return null;
+  const compute = zhanfaPlotDisplayById.get(plotId);
+  return compute === undefined ? null : compute(state);
 }
