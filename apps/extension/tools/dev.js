@@ -83,7 +83,10 @@ function forwardChildOutput(chunk, stream) {
 ensureWindowsUtf8Console();
 purgeDebugLogFiles(root);
 
-const env = { ...process.env };
+const env = {
+  ...process.env,
+  XC_ELECTRON_DEV: '1'
+};
 delete env.ELECTRON_RUN_AS_NODE;
 // 禁止 Electron 打开文件日志通道（否则会在仓库/安装目录生成 debug.log）
 delete env.ELECTRON_ENABLE_LOGGING;
@@ -136,6 +139,7 @@ if (!resolved) {
 }
 
 console.log(`[dev] Electron(${resolved.kind}): ${resolved.path}`);
+console.log('[dev] 快速 watch：不压缩、不每次清空 dist/electron，改 TS/Vue 保存后等终端 built 再刷新微端');
 
 /**
  * @param {string} command

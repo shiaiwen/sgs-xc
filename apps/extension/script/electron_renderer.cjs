@@ -91,7 +91,8 @@ const xiaochaoStorage = {
     },
     saveCredentials: (scope, credentials) => {
         return sendSharedSync('xiaochao-credentials-set-sync', { scope, credentials });
-    }
+    },
+    customBackground: (operation) => ipcRenderer.invoke('xiaochao-custom-background', operation)
 };
 
 /** 注入到页面的 electron 桥：开窗、外链、通用 invoke、输入框焦点回交。 */

@@ -13,7 +13,13 @@ import {
   waitForGameRuntime
 } from '../runtime/wait-for-game-runtime.js';
 import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
-import { accountScopedStorageKey } from '../features/skin-background/skin-runtime';
+import {
+  accountScopedStorageKey,
+  describeHallStartupProbe,
+  isHallLoginTransitionLoading,
+  isXiaochaoGameplayUiReady
+} from '../features/skin-background/skin-runtime';
+import { createLayaObjectLocator, type LayaRuntimeWindow } from '../adapters/laya-object-locator';
 import type { PlatformAdapter } from '../adapters/platform';
 import {
   mountXiaochaoApp,
@@ -80,6 +86,16 @@ import { installCampChatRightPanelController } from '../features/in-game-chat/ca
 /** 挂到 window.__XIAOCHAO_STARTUP__，方便控制台看 waiting/ready。 */
 const panelStartupStatus: Record<string, unknown> = {};
 
+/** preboot 会先写入 __XIAOCHAO_STARTUP__，bootstrap 必须合并到同一对象再更新 state。 */
+function bindPanelStartupStatus(globalObject: Record<string, unknown>): Record<string, unknown> {
+  const existing = globalObject.__XIAOCHAO_STARTUP__;
+  if (existing && typeof existing === 'object' && existing !== panelStartupStatus) {
+    Object.assign(panelStartupStatus, existing as Record<string, unknown>);
+  }
+  globalObject.__XIAOCHAO_STARTUP__ = panelStartupStatus;
+  return panelStartupStatus;
+}
+
 /** 核心装好后对外暴露的面板挂载 / 会话同步句柄。 */
 interface XiaochaoCoreRuntime {
   mountPanelShell(layout?: XiaochaoPanelLayout): ReturnType<typeof mountXiaochaoApp> | undefined;
@@ -108,16 +124,26 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
   bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
-  // popup protector：只卸旧守卫；tip-stay：技能 tip 出 X 后停驻（勿在其后 disposeOrphan 卸掉）
+  // popup protector：只卸旧守卫；技能 tip 停驻等进大厅后再挂，避免登录初始化链被打断
   lifecycle.register(installGameNativePopupProtector(window));
-  lifecycle.register(installGeneralSkillTipStayCoordinator(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
-  (window as unknown as Record<string, unknown>).__XIAOCHAO_STARTUP__ ??= panelStartupStatus;
+  const startupStatus = bindPanelStartupStatus(bootBag);
+  startupStatus.state = 'starting';
+  startupStatus.panelGate = 'login-transition-only';
 
   let core: XiaochaoCoreRuntime | null = null;
   let tipHooksCleanedAfterRuntime = false;
 
-  const probeRuntimeReady = () => getMissingGameRuntimeDependencies({ globalObject: window });
+  const probeRuntimeReady = () => {
+    const missing = getMissingGameRuntimeDependencies({ globalObject: window });
+    if (missing.length > 0) return missing;
+    const globalObject = window as LayaRuntimeWindow;
+    if (!globalObject.Laya) return ['LayaRuntime'];
+    const locator = createLayaObjectLocator(globalObject);
+    if (locator.gameScene()) return [];
+    if (!isXiaochaoGameplayUiReady(locator, globalObject)) return ['GameHallUi'];
+    return [];
+  };
 
   /**
    * 每秒轮询：同步登录账号配置。
@@ -126,9 +152,15 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const syncAccountSession = () => {
     configStore.syncAccount();
     const missing = probeRuntimeReady();
-    panelStartupStatus.missing = missing;
+    startupStatus.missing = missing;
+    if (missing.length > 0) {
+      const locator = createLayaObjectLocator(window as LayaRuntimeWindow);
+      startupStatus.hallProbe = describeHallStartupProbe(locator, window as LayaRuntimeWindow);
+    } else {
+      delete startupStatus.hallProbe;
+    }
     if (!document.body || missing.length > 0) {
-      if (!core) panelStartupStatus.state = 'waiting';
+      if (!core) startupStatus.state = 'waiting';
       return;
     }
     if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
@@ -139,7 +171,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     }
     core.mountPanelShell();
     core.syncRuntimeSession();
-    panelStartupStatus.state = 'ready';
+    startupStatus.state = 'ready';
   };
 
   // 先装瘦桥，供注入早期调试；core 就绪后会再装一次带完整 getter 的桥
@@ -162,7 +194,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
       return true;
     },
     registerCleanup: (cleanup) => lifecycle.register(cleanup),
-    status: panelStartupStatus
+    status: startupStatus
   }).catch((error: unknown) => console.error('[xiaochao] 启动失败', error));
 }
 
@@ -261,12 +293,15 @@ function startXiaochaoCore(
   let officialBackground: OfficialBackgroundController | undefined;
   const skinPaper = installSkinPaperController(configStore, {
     selfSeatId: () => seatStateStore.getSnapshot().selfSeatId,
-    syncWallpaperMenu: () => officialBackground?.sync()
+    syncWallpaperMenu: () => officialBackground?.sync(),
+    gameEvents
   });
   lifecycle.register(skinPaper.dispose);
   officialBackground = installOfficialBackgroundController(configStore, {
     menuExtension: skinPaper.menuExtension
   });
+  const startupSnapshot = window.__XIAOCHAO_STARTUP__ as Record<string, unknown> | undefined;
+  if (startupSnapshot) startupSnapshot.wallpaperController = 'installed';
   lifecycle.register(officialBackground.dispose);
   let autoTask: ReturnType<typeof installAutoTaskController>;
   try {
@@ -413,8 +448,8 @@ function startXiaochaoCore(
     mountPanelShell,
     teardownPanel,
     syncRuntimeSession() {
-      // 运行时齐备后再武装公告屏蔽，避免登录前误拦
       blockEffects.armNoticeBlock();
+      blockEffects.armAdBlock();
     }
   };
 }

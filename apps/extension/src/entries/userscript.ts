@@ -1,30 +1,19 @@
 /**
  * 油猴 / 浏览器脚本入口。
- * 与微端共用 bootstrapXiaochao；平台差异由 createUserscriptPlatform 注入。
- * 开发构建会注入轮询 URL，用于改代码后自动刷新脚本。
+ * 必须单文件打包；拆 chunk 后油猴在游戏域名拉不到副文件，主逻辑永远进不去。
  */
-import './electron-polyfills';
-import { createUserscriptPlatform } from '../adapters/userscript-platform';
-import { bootstrapXiaochao } from '../core/bootstrap';
-import { installUserscriptDevAutoReload } from '../runtime/userscript-dev-auto-reload.ts';
+import './userscript-preboot.ts';
+import { runUserscriptBootstrap } from './userscript-bootstrap.ts';
 
-/** 构建期替换；生产包为空字符串，install 内部会 no-op。 */
-declare const __XIAOCHAO_DEV_BUILD_POLL_URL__: string;
-
-const devBuildPollUrl = typeof __XIAOCHAO_DEV_BUILD_POLL_URL__ === 'string'
-  ? __XIAOCHAO_DEV_BUILD_POLL_URL__
-  : '';
-installUserscriptDevAutoReload(devBuildPollUrl);
-
-bootstrapXiaochao(createUserscriptPlatform());
-
-
-/** Vite/monkey 热更新：拆掉上一轮 bootstrap，避免钩子套娃 */
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    const dispose = (window as unknown as Record<string, unknown>).__xcXiaochaoBootstrapDispose;
-    if (typeof dispose === 'function') {
-      try { (dispose as () => void)(); } catch { /* ignore */ }
-    }
-  });
+try {
+  runUserscriptBootstrap();
+} catch (error: unknown) {
+  const startup = (globalThis as Record<string, unknown>).__XIAOCHAO_STARTUP__ as
+    | Record<string, unknown>
+    | undefined;
+  if (startup) {
+    startup.state = 'failed';
+    startup.error = error instanceof Error ? error.message : String(error);
+  }
+  console.error('[xiaochao] 启动失败', error);
 }

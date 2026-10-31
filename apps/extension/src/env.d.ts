@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 declare const __XIAOCHAO_VERSION__: string;
+declare const __XIAOCHAO_BUILD_STAMP__: string;
 
 declare module '*.vue' {
   import type { DefineComponent } from 'vue';
@@ -31,6 +32,7 @@ interface Window {
   };
   xiaochaoStorage?: {
     saveCredentials?: (scope: 'official' | '4399', credentials: unknown[]) => unknown;
+    customBackground?: (operation: Record<string, unknown>) => Promise<unknown>;
   };
   __XIAOCHAO_ENGINEERING__?: Record<string, unknown> & {
     probeAutoTask?: () => unknown;

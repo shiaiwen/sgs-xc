@@ -10,24 +10,42 @@ import {
 
 type UnknownRecord = Record<string, unknown>;
 
+export interface ReadUserDataSelfOptions {
+  /** 登录过程中不要弹生日窗探测账号，否则会打断进大厅。 */
+  allowBirthdayWishProbe?: boolean;
+}
+
 export function isValidGameAccountId(value: unknown): boolean {
   if (value == null) return false;
   const text = String(value).trim();
   return text.length > 0 && text !== '0';
 }
 
-/**
- * UserData 不在管理器事件表里。生日祝福窗不走 Init，调用 refreshIcon 后
- * userData 才指向当前用户。静态 Self 挂在 userData 的构造函数上。
- */
-export function readUserDataSelf(globalObject: LayaRuntimeWindow): UnknownRecord | null {
+function readUserDataClassSelf(globalObject: LayaRuntimeWindow): UnknownRecord | null {
   const classUtils = globalObject.Laya?.ClassUtils as {
     getClass?: (name: string) => { Self?: unknown };
-    getInstance?: (name: string, args?: unknown) => UnknownRecord | null;
   } | undefined;
   if (!classUtils) return null;
   const direct = asRecord(classUtils.getClass?.('UserData')?.Self);
   if (direct?.clientId || direct?.ClientId || direct?.ClientID) return direct;
+  return null;
+}
+
+/**
+ * UserData 不在管理器事件表里时，可选通过生日窗 refreshIcon 读 Self。
+ * 默认关闭，登录阶段禁止走这条路径。
+ */
+export function readUserDataSelf(
+  globalObject: LayaRuntimeWindow,
+  options: ReadUserDataSelfOptions = {}
+): UnknownRecord | null {
+  const direct = readUserDataClassSelf(globalObject);
+  if (direct) return direct;
+  if (!options.allowBirthdayWishProbe) return null;
+  const classUtils = globalObject.Laya?.ClassUtils as {
+    getInstance?: (name: string, args?: unknown) => UnknownRecord | null;
+  } | undefined;
+  if (!classUtils) return null;
   let wish: UnknownRecord | null = null;
   try {
     wish = asRecord(classUtils.getInstance?.('BirthdayWishWin', null));
@@ -52,22 +70,23 @@ export function readUserDataSelf(globalObject: LayaRuntimeWindow): UnknownRecord
 export function resolveGameAccountId(
   globalObject: LayaRuntimeWindow,
   locator?: LayaObjectLocator,
-  userDataSelf: UnknownRecord | null = null
+  userDataSelf: UnknownRecord | null = null,
+  options: ReadUserDataSelfOptions = {}
 ): string {
   const resolvedLocator = locator ?? createLayaObjectLocator(globalObject);
-  const self = userDataSelf ?? readUserDataSelf(globalObject);
   const manager = resolvedLocator.manager('UserInfoManger');
   const managerSelf = asRecord(manager?.Self) ?? asRecord(manager?.self);
-  const value = self?.clientId
-    ?? self?.ClientId
-    ?? self?.ClientID
-    ?? managerSelf?.clientId
+  const fromManager = managerSelf?.clientId
     ?? managerSelf?.ClientId
     ?? managerSelf?.ClientID
     ?? manager?.clientId
     ?? manager?.ClientId
     ?? manager?.userID
     ?? manager?.UserID;
+  if (isValidGameAccountId(fromManager)) return String(fromManager).trim();
+
+  const self = userDataSelf ?? readUserDataSelf(globalObject, options);
+  const value = self?.clientId ?? self?.ClientId ?? self?.ClientID;
   return isValidGameAccountId(value) ? String(value).trim() : '';
 }
 

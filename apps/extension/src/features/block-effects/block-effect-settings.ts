@@ -87,7 +87,7 @@ export const BLOCK_OTHER_SETTINGS: readonly BlockSetting[] = [
   {
     key: 'block.adWindow',
     label: '广告',
-    tooltip: '屏蔽大厅自动弹出的活动广告'
+    tooltip: '屏蔽大厅自动弹出的活动广告，含节钺令等活动弹窗'
   },
   {
     key: 'block.noticeWindow',

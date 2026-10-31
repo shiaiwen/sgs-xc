@@ -355,32 +355,42 @@ async function readLocalScriptCompat() {
     };
 }
 
+function jsonLiteralForExecuteJavaScript(value) {
+    return JSON.stringify(value)
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+}
+
 function getLocalScriptInjection(data) {
     if (localScriptInjectCache && localScriptInjectCache.data === data) {
         return localScriptInjectCache.code;
     }
-    const escapedData = data.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+    const scriptLiteral = jsonLiteralForExecuteJavaScript(data);
     localScriptInjectCache = {
         data,
         code: `
             (function () {
-                function remountXiaochaoPanel() {
-                    var bridge = window.__XIAOCHAO_ENGINEERING__;
-                    if (bridge && typeof bridge.mountPanelShell === 'function') {
-                        try { bridge.mountPanelShell(); } catch (error) {
-                            console.error('[xiaochao] remount panel failed:', error);
+                try {
+                    function remountXiaochaoPanel() {
+                        var bridge = window.__XIAOCHAO_ENGINEERING__;
+                        if (bridge && typeof bridge.mountPanelShell === 'function') {
+                            try { bridge.mountPanelShell(); } catch (error) {
+                                console.error('[xiaochao] remount panel failed:', error);
+                            }
                         }
                     }
+                    if (window.__XIAOCHAO_MICROCLIENT_INJECTED__) {
+                        if (!document.getElementById('xiaochao-app')) remountXiaochaoPanel();
+                        return;
+                    }
+                    window.__XIAOCHAO_MICROCLIENT_INJECTED__ = true;
+                    var script = document.createElement('script');
+                    script.type = 'text/javascript';
+                    script.appendChild(document.createTextNode(${scriptLiteral}));
+                    (document.body || document.documentElement).appendChild(script);
+                } catch (error) {
+                    console.error('[xiaochao] local script injection failed:', error);
                 }
-                if (window.__XIAOCHAO_MICROCLIENT_INJECTED__) {
-                    if (!document.getElementById('xiaochao-app')) remountXiaochaoPanel();
-                    return;
-                }
-                window.__XIAOCHAO_MICROCLIENT_INJECTED__ = true;
-                var script = document.createElement('script');
-                script.type = 'text/javascript';
-                script.appendChild(document.createTextNode(\`${escapedData}\`));
-                (document.body || document.documentElement).appendChild(script);
             })();
         `
     };
@@ -539,7 +549,11 @@ function initElectronFrame() {
             if (url) webview.loadURL(url)
         },
         executeJS(str) {
-            webview.executeJavaScript(str)
+            if (typeof str !== 'string' || !str.trim()) return;
+            const result = webview.executeJavaScript(`(()=>{try{${str}}catch(error){console.error('[xiaochao] rendererMsg executeJS failed:',error);}})()`);
+            if (result && typeof result.catch === 'function') {
+                result.catch((error) => console.error('[xiaochao] rendererMsg executeJS failed:', error));
+            }
         },
         changeSize(wh) {
 
@@ -592,11 +606,13 @@ ipcRenderer.on('set-video-path', (event, url) => {
     if (index !== -1) {
         url = url.substring(0, index);
     }
-    // 创建视频元素
-    let webview = document.getElementById('wb');
-        webview.executeJavaScript(`
-        document.getElementById('sgsBgVideo').src = '${url}';
-    `)
+    const webview = document.getElementById('wb');
+    if (!webview) return;
+    const safeUrl = jsonLiteralForExecuteJavaScript(url);
+    const result = webview.executeJavaScript(`(()=>{try{var node=document.getElementById('sgsBgVideo');if(node)node.src=${safeUrl};}catch(error){console.error('[xiaochao] set-video-path failed:',error);}})()`);
+    if (result && typeof result.catch === 'function') {
+        result.catch((error) => console.error('[xiaochao] set-video-path failed:', error));
+    }
 });
 
 // ipcRenderer.on('set-title', (event, title) => {

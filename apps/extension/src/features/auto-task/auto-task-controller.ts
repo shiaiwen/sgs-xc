@@ -16,6 +16,7 @@ import {
   accountScopedStorageKey,
   accountStorageKey,
   createTaskScope,
+  isBackgroundUiScene,
   watchSceneSwitch
 } from '../skin-background/skin-runtime.ts';
 import { beijingDayIndex, createAutoTaskClaims } from './auto-task-claims.ts';
@@ -331,7 +332,7 @@ export function installAutoTaskController(
   }
 
   function watchAccount(): void {
-    noteAccountArrival();
+    if (isBackgroundUiScene(locator, globalObject)) noteAccountArrival();
     tasks.later(watchAccount, ACCOUNT_POLL_MS);
   }
 
@@ -384,7 +385,7 @@ export function installAutoTaskController(
 
   watchSceneSwitch(locator, patcher, tasks, () => {
     if (configStore.get(AUTO_TASK_ENABLED_KEY)) runner.scheduleLowBeanFree('scene');
-  });
+  }, globalObject);
 
   return {
     schedule,

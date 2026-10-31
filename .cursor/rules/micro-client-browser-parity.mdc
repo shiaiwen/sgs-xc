@@ -1,0 +1,33 @@
+---
+description: 微端开发须兼顾浏览器油猴路径，禁止只在本机 Electron 上能跑
+alwaysApply: true
+---
+
+# 微端开发与浏览器兼容（强制）
+
+日常可用 `npm run dev` 在微端里调试，但**交付物是两条入口共用同一套业务代码**：`electron-bootstrap` 与 `userscript`。在微端里验证通过，不等于浏览器用户可用。
+
+## 必须遵守
+
+- 功能逻辑放在 `src/features/**`、`src/core/bootstrap.ts` 等共用模块；平台差异只通过 `PlatformAdapter` 与 `browser-settings` 注入，不在业务里直接读 `window.electron`、`GM_*`、Node 模块。
+- 油猴脚本为 **grant none + 单文件整包**；共用代码不得依赖仅 Electron 可用的 API，也不得引入必须拆 chunk 才能在油猴里加载的构建形态。
+- 外链、配置读写、本地持久化：走 `platform.openExternal` / `getSetting` / `setSetting`，或已有的 `readBrowserSetting` / `writeBrowserSetting` 双写策略，不要只在 preload 或主进程里藏一份业务状态。
+- 改拦截、换背景、包装游戏方法等与运行环境无关的行为：微端与浏览器同一套约束，**禁止**为微端单独加一条只在 Electron 生效的分支，除非浏览器侧有等价的降级且注释写清用户会看到什么差异。
+
+## 微端开发时的自检
+
+动手前或改完问自己：
+
+1. 若用户只装油猴、不装微端，这个改动是否仍完整？
+2. 是否新增了只在 `apps/extension/main.cjs`、preload、Electron 专有工具里实现、却影响功能正确性的逻辑？
+3. 是否用了浏览器 CSP 或混合内容下会失败的请求方式，而微端里碰巧能通？
+
+## 验证建议
+
+- 逻辑用 `node --test "tests/*.test.ts"`；与平台相关的适配器行为应有单测或明确手动步骤。
+- 用户未要求时可只在微端 dev 联调；**发版或用户明确要浏览器验收前**，应至少确认 userscript 构建配置仍满足单包、grant none，且无 Electron 专用 import 漏进共用树。
+
+## 允许
+
+- 仅微端壳层、安装器、主进程 IPC、`.cjs` 预加载里的能力扩展，且不改变油猴路径下的功能契约。
+- 在注释中说明「浏览器里无此壳能力时的表现」，不写 app.bak 式对照出处。

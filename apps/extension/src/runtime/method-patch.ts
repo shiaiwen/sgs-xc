@@ -24,9 +24,36 @@ export interface MethodPatcher {
   restoreAll(): void;
 }
 
+/**
+ * 这三个装备动画只能挂在座位实例上。
+ * 游戏会从构造函数 prototype 上的同一个方法再进入，写到那一层会再次进入包装函数。
+ */
+export const SEAT_EQUIP_INSTANCE_METHODS = [
+  'playEquipSkillAnimate',
+  'play3DEquipSkill',
+  'ShowEquipTrailEffect'
+] as const;
+
+const SEAT_EQUIP_INSTANCE_METHOD_SET = new Set<string>(SEAT_EQUIP_INSTANCE_METHODS);
+
+/** 装备动画必须把原来的播放做完。直接不播放时，进桌会一直等。 */
+export function runSeatEquipMethod(
+  _blocked: boolean,
+  original: PatchableFunction,
+  thisArg: unknown,
+  args: readonly unknown[]
+): unknown {
+  return original.apply(thisArg, args);
+}
+
 /** 跨 patcher 识别包装函数；HMR 重装时剥到真实原方法再替换，禁止套娃 */
 const XC_METHOD_WRAP = Symbol.for('sgsxc.methodPatch.wrap');
 const XC_METHOD_ORIGINAL = Symbol.for('sgsxc.methodPatch.original');
+
+function isConstructorPrototype(target: object): boolean {
+  const ctor = (target as { constructor?: unknown }).constructor;
+  return typeof ctor === 'function' && (ctor as { prototype?: unknown }).prototype === target;
+}
 
 type TaggedFn = PatchableFunction & { [k: symbol]: unknown };
 
@@ -79,6 +106,7 @@ export function createMethodPatcher(): MethodPatcher {
   return {
     wrap(target, name, createWrapper) {
       if (!isObjectLike(target)) return false;
+      if (SEAT_EQUIP_INSTANCE_METHOD_SET.has(name) && isConstructorPrototype(target)) return false;
       const current = target[name];
       if (typeof current !== 'function') return false;
       const original = unwrapToOriginal(current);

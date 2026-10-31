@@ -2,6 +2,19 @@
  * 牌局记录仓：跟踪弃牌、牌堆顶底、本回合弃牌等，可与明牌牌堆订阅联动。
  */
 
+import {
+  DISCARD_ZONE,
+  DRAW_PILE_BOTTOM_POSITION,
+  DRAW_PILE_OWNER_ID,
+  DRAW_PILE_TOP_POSITION,
+  DRAW_PILE_ZONE,
+  MAX_DISCARD_HISTORY,
+  MAX_MOVEMENT_HISTORY,
+  PERSIST_DEBOUNCE_MS,
+  PERSISTED_SNAPSHOT_KEY,
+  PERSISTED_SNAPSHOT_MAX_AGE,
+  UNSPECIFIED_POSITION
+} from '../../const/deck-record.ts';
 import type { GameEvent, GameEventBus } from '../../runtime/game-event-bus.ts';
 
 export interface CardMovementRecord {
@@ -52,18 +65,6 @@ export interface DeckRecordStore {
   subscribe(listener: (snapshot: Readonly<DeckRecordSnapshot>) => void): () => void;
   clear(): void;
 }
-
-const DRAW_PILE_OWNER_ID = 0xff;
-const DRAW_PILE_ZONE = 1;
-const DISCARD_ZONE = 2;
-const DRAW_PILE_TOP_POSITION = 0xff00;
-const DRAW_PILE_BOTTOM_POSITION = 0;
-const UNSPECIFIED_POSITION = 0xff02;
-const MAX_MOVEMENT_HISTORY = 120;
-const MAX_DISCARD_HISTORY = 160;
-const PERSISTED_SNAPSHOT_KEY = 'XC::vueDeckRecordSnapshot';
-const PERSISTED_SNAPSHOT_MAX_AGE = 3 * 60 * 60 * 1000;
-const PERSIST_DEBOUNCE_MS = 1500;
 
 /**
  * 保存原始移动记录并维护可靠的弃牌集合。

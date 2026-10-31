@@ -16,6 +16,7 @@ import {
   isLayaDisplayNode,
   scrubInvalidDisplayChildren
 } from './laya-display-node.ts';
+import { isBackgroundUiScene } from '../features/skin-background/skin-runtime.ts';
 import { createMethodPatcher } from './method-patch.ts';
 
 const SETTLEMENT_WINDOW_NAMES = [
@@ -206,8 +207,10 @@ export function installNativeHudPostGameGuard(
 ): () => void {
   const pollMs = 1000;
   const patcher = createMethodPatcher();
+  const locator = createLayaObjectLocator(globalObject);
   let sceneHookReady = false;
   const installSceneLeaveScrub = () => {
+    if (!isBackgroundUiScene(locator, globalObject)) return;
     const manager = readSceneManager(globalObject);
     if (sceneHookReady || !manager) return;
     sceneHookReady = patcher.wrap(manager, 'executeSwitchScene', (original) => function (this: unknown, ...args: unknown[]) {

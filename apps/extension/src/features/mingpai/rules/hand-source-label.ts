@@ -5,6 +5,7 @@
  * 读不到技能名就不标。
  */
 
+import { GLOBAL_OWNER } from '../mingpai-engine.ts';
 import { readSpellName } from '../spell-name.ts';
 import { HAND_LABEL_ALIASES } from './hand-label-aliases.ts';
 
@@ -13,7 +14,7 @@ export interface IncomingHandLabelInput {
   moveType: number;
   fromZone: number;
   toZone: number;
-  /** 来源座位；来源是公共区时是 255。 */
+  /** 来源座位；来源是公共区时用 GLOBAL_OWNER。 */
   fromId?: number;
   toId: number;
   selfSeatId: number | null;
@@ -21,12 +22,16 @@ export interface IncomingHandLabelInput {
   seatLabel?: (seatId: number) => string;
 }
 
-export function buildIncomingHandSourceLabel(input: IncomingHandLabelInput): string | null {
+export function buildIncomingHandSourceLabel(
+  input: IncomingHandLabelInput,
+): string | null {
   if (!input.spellId || input.moveType >= 255) return null;
   const name = readSpellName(input.spellId);
   if (!name) return null;
-  // 游戏自己会在牌上标这些技能，小抄不再画一遍。
-  if (name === '巧织' || name === '制衡') return null;
+  // 对于别人都不是明牌所以不标来源。
+
+  const skipNames = ['巧织', '制衡', '采风', '茂著','顾曲','尽览'];
+  if (skipNames.includes(name)) return null;
   // 火攻亮出来的牌常常还停在原来的位置，不进新手牌。移动类型 0 也会被别处丢掉，这里仍要标。
   if (input.toZone !== 5 || input.fromZone === 12) {
     return name === '火攻' ? '[火攻]' : null;
@@ -34,10 +39,13 @@ export function buildIncomingHandSourceLabel(input: IncomingHandLabelInput): str
   if (input.moveType <= 0 && name !== '火攻' && name !== '霸朝') return null;
   const shortName = HAND_LABEL_ALIASES[name] ?? name.slice(0, 2);
   // 来源是另一个座位的手牌时标座位。霸朝从装备区交来的牌同样标是谁给的。
-  const fromOtherSeat = input.fromId !== undefined
-    && input.fromId !== 0xff
-    && input.fromId !== input.toId
-    && (input.fromZone === 5 || name === '霸朝');
-  const source = fromOtherSeat ? input.seatLabel?.(input.fromId as number) ?? '' : '';
+  const fromOtherSeat =
+    input.fromId !== undefined &&
+    input.fromId !== GLOBAL_OWNER &&
+    input.fromId !== input.toId &&
+    (input.fromZone === 5 || name === '霸朝');
+  const source = fromOtherSeat
+    ? (input.seatLabel?.(input.fromId as number) ?? '')
+    : '';
   return `[${shortName}]${source}`;
 }

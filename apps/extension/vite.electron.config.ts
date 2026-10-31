@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+import { isElectronDevBuild } from './tools/vite-dev-fast.ts';
 
 const xiaochaoVersion = JSON.parse(
   readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')
 ).version as string;
+
+const devFast = isElectronDevBuild();
 
 export default defineConfig({
   plugins: [vue(), injectBuiltCssIntoElectronBundle()],
@@ -17,9 +20,11 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist/electron',
-    emptyOutDir: true,
+    emptyOutDir: !devFast,
     target: 'chrome100',
-    sourcemap: true,
+    minify: devFast ? false : 'esbuild',
+    sourcemap: devFast ? false : true,
+    reportCompressedSize: !devFast,
     lib: {
       entry: resolve(import.meta.dirname, 'src/entries/electron.ts'),
       name: 'Xiaochao',

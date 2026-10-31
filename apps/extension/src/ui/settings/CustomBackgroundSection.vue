@@ -23,7 +23,11 @@ function showPreview(record) {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = record ? URL.createObjectURL(record.blob) : '';
   current.value = record
-    ? { active: record.active, url: previewUrl, isVideo: isCustomBackgroundVideo(record.blob) }
+    ? {
+        active: record.active,
+        url: previewUrl,
+        isVideo: record.isVideo === true || isCustomBackgroundVideo(record.blob, record)
+      }
     : null;
 }
 
@@ -106,7 +110,7 @@ async function clearBackground() {
       <input
         ref="inputRef"
         type="file"
-        accept="image/png,image/jpeg,image/webp,video/mp4,.mp4"
+        accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,.mp4,.webm"
         aria-label="选择背景文件"
         @change="onFile"
       >
@@ -115,7 +119,7 @@ async function clearBackground() {
       </button>
       <span class="xiaochao-custom-bg__name" :title="fileLabel">{{ fileLabel }}</span>
     </div>
-    <p class="xiaochao-custom-bg__hint">PNG、JPG、WEBP、MP4，只显示在自己的屏幕上</p>
+    <p class="xiaochao-custom-bg__hint">PNG、JPG、WEBP、MP4、WEBM，只显示在自己的屏幕上</p>
     <button
       type="button"
       class="xiaochao-custom-bg__apply"

@@ -7,8 +7,11 @@ import monkey from 'vite-plugin-monkey';
 import {
   createUserscriptDevBuildIdPlugin,
   userscriptDevBuildPollUrl,
+  userscriptDevInstallUrl,
   userscriptDevReloadEnabled
 } from './src/runtime/userscript-dev-build-id-plugin.ts';
+import { patchUserscriptDevInstallMount } from './tools/patch-userscript-dev-install.js';
+import { isUserscriptDevBuild } from './tools/vite-dev-fast.ts';
 
 const USERSCRIPT_FILE = resolve(import.meta.dirname, 'dist/userscript/xiaochao.user.js');
 
@@ -120,39 +123,16 @@ function mountUserscriptStyle(css: string): void {
   }, 30);
 }
 
-/**
- * 开发脚本在页面脚本之前执行。原挂载会用带下划线的策略名，
- * 浏览器直接拒绝，整个脚本停在这一行。这里改成合法名字，并等到节点出现再插入。
- */
-const DEV_USERSCRIPT_MOUNT_BROKEN =
-  /if \(window\.trustedTypes\)[\s\S]*?\(document\.head \|\| document\.documentElement\)\.append\(script\);/;
-
+/** 开发安装脚本挂载修补：本 config 的 serve 模式一律启用。 */
 function patchDevUserscriptMount(): Plugin {
-  const fixed = `try {
-\t\tconst policy = window.trustedTypes && window.trustedTypes.createPolicy('xc-monkey', { createScriptURL: (input) => input });
-\t\tscript.src = policy ? policy.createScriptURL(entrySrc) : entrySrc;
-\t} catch (error) {
-\t\tscript.src = entrySrc;
-\t}
-\tconst mount = () => {
-\t\tconst parent = document.head || document.documentElement;
-\t\tif (!parent) return false;
-\t\tparent.append(script);
-\t\treturn true;
-\t};
-\tif (!mount()) {
-\t\tconst observer = new MutationObserver(() => {
-\t\t\tif (mount()) observer.disconnect();
-\t\t});
-\t\tobserver.observe(document, { childList: true, subtree: true });
-\t}`;
+  const installPaths = new Set(['/__vite-plugin-monkey.install.user.js', '/xiaochao-dev.user.js']);
   return {
     name: 'xiaochao-dev-userscript-mount',
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const path = req.url?.split('?')[0] ?? '';
-        if (path !== '/__vite-plugin-monkey.install.user.js' && path !== '/xiaochao-dev.user.js') {
+        if (!installPaths.has(path)) {
           next();
           return;
         }
@@ -160,11 +140,22 @@ function patchDevUserscriptMount(): Plugin {
           'Content-Disposition',
           'attachment; filename="xiaochao-dev.user.js"'
         );
+        const chunks: Buffer[] = [];
         const end = res.end.bind(res);
+        const write = res.write.bind(res);
+        res.write = ((chunk: unknown, ...args: unknown[]) => {
+          if (chunk) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
+          return true;
+        }) as typeof res.write;
         res.end = ((chunk?: unknown, encoding?: unknown, callback?: unknown) => {
-          const text = Buffer.isBuffer(chunk) || typeof chunk === 'string'
-            ? String(chunk).replace(DEV_USERSCRIPT_MOUNT_BROKEN, fixed)
-            : chunk;
+          if (chunk) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
+          const raw = Buffer.concat(chunks).toString('utf8');
+          const text = raw ? patchUserscriptDevInstallMount(raw) : raw;
+          res.write = write;
           return end(text as never, encoding as never, callback as never);
         }) as typeof res.end;
         next();
@@ -173,7 +164,8 @@ function patchDevUserscriptMount(): Plugin {
   };
 }
 
-const isDevUserscriptBundle = process.env.XC_USERSCRIPT_DEV === '1';
+const isDevUserscriptBundle = isUserscriptDevBuild();
+const userscriptDevFast = isDevUserscriptBundle;
 
 /** 开发期安装引导页，配合 vite-plugin-monkey 热更新安装脚本。 */
 function devUserscriptInstallPage(port: number, useHttps: boolean): Plugin {
@@ -404,8 +396,12 @@ const remoteUserscriptUrl = 'https://xc.95chong.cn/downloads/sgs-xc.user.js';
 export default defineConfig({
   define: {
     __XIAOCHAO_VERSION__: JSON.stringify(xiaochaoVersion),
+    __XIAOCHAO_BUILD_STAMP__: JSON.stringify(`${xiaochaoVersion}-panel-gate`),
     __XIAOCHAO_DEV_BUILD_POLL_URL__: JSON.stringify(
-      userscriptDevBuildPollUrl(devAutoReloadEnabled, useLocalHttps, devPort)
+      userscriptDevBuildPollUrl(devAutoReloadEnabled, useLocalHttps, devPort, installHttpPort)
+    ),
+    __XIAOCHAO_DEV_INSTALL_URL__: JSON.stringify(
+      userscriptDevInstallUrl(devAutoReloadEnabled, installHttpPort, devPort)
     )
   },
   server: {
@@ -435,7 +431,8 @@ export default defineConfig({
     ...(useLocalHttps ? [basicSsl()] : []),
     ...(isBundleDevServe ? [serveUserscriptInstallFile(), devUserscriptSimplePage(devPort)] : []),
     vue(),
-    ...(isLocalUserscriptServe ? [devUserscriptInstallPage(devPort, useLocalHttps), patchDevUserscriptMount()] : []),
+    ...(useLocalHttps ? [patchDevUserscriptMount()] : []),
+    ...(isLocalUserscriptServe ? [devUserscriptInstallPage(devPort, useLocalHttps)] : []),
     monkey({
       entry: 'src/entries/userscript.ts',
       server: {
@@ -468,7 +465,7 @@ export default defineConfig({
           '*://s118.app1107877410.qqopenapp.com/pc/qqLobby_index.php*'
         ],
         grant: 'none',
-        connect: devAutoReloadEnabled ? ['127.0.0.1'] : undefined,
+        connect: isDevUserscriptBundle ? ['127.0.0.1', 'localhost'] : undefined,
         'run-at': 'document-start',
         homepageURL: 'https://xc.95chong.cn/',
         downloadURL: isDevUserscriptBundle && isBundleDevServe ? localUserscriptUrl : remoteUserscriptUrl,
@@ -479,36 +476,47 @@ export default defineConfig({
         cssSideEffects: mountUserscriptStyle
       }
     }),
-    collapseUserscriptPlugin()
+    ...(userscriptDevFast ? [] : [collapseUserscriptPlugin()])
   ],
   build: {
     outDir: 'dist/userscript',
-    emptyOutDir: true,
+    emptyOutDir: !userscriptDevFast,
+    rollupOptions: {
+      output: {
+        // 油猴只安装一个 .user.js；拆 chunk 会在游戏域名 404，bootstrap 永不执行。
+        inlineDynamicImports: true
+      }
+    },
     target: 'chrome100',
     sourcemap: false,
-    cssMinify: 'lightningcss',
-    minify: 'terser',
-    terserOptions: {
-      compress: {
-        passes: 3,
-        ecma: 2020,
-        module: false,
-        toplevel: true,
-        drop_debugger: true,
-        pure_getters: true,
-        hoist_funs: true,
-        unsafe_arrows: true,
-        unsafe_comps: true,
-        unsafe_math: true,
-        unsafe_methods: true
-      },
-      mangle: {
-        toplevel: true
-      },
-      format: {
-        comments: false,
-        ecma: 2020
-      }
-    }
+    reportCompressedSize: !userscriptDevFast,
+    cssMinify: userscriptDevFast ? false : 'lightningcss',
+    minify: userscriptDevFast ? false : 'terser',
+    ...(userscriptDevFast
+      ? {}
+      : {
+          terserOptions: {
+            compress: {
+              passes: 3,
+              ecma: 2020,
+              module: false,
+              toplevel: true,
+              drop_debugger: true,
+              pure_getters: true,
+              hoist_funs: true,
+              unsafe_arrows: true,
+              unsafe_comps: true,
+              unsafe_math: true,
+              unsafe_methods: true
+            },
+            mangle: {
+              toplevel: true
+            },
+            format: {
+              comments: false,
+              ecma: 2020
+            }
+          }
+        })
   }
 });

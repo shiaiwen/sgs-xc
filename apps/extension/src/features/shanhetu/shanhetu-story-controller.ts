@@ -9,6 +9,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { isXiaochaoGameplayUiReady } from '../skin-background/skin-runtime.ts';
 import { SHANHETU_HIDE_STORY_KEY } from './shanhetu-settings.ts';
 
 const STORY_WINDOW = 'RogueChapterStoryWindow';
@@ -133,6 +134,7 @@ export function installShanhetuStoryController(
 
   function tryPatchDispatcher(): boolean {
     if (patched || disposed) return patched;
+    if (!isXiaochaoGameplayUiReady(locator)) return false;
     const dispatcher = locator.dispatcher();
     if (!dispatcher) return false;
     const wrapShowWindow = (original: (...args: unknown[]) => unknown) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {

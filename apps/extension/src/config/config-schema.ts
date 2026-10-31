@@ -228,7 +228,7 @@ export const CONFIG_SCHEMA: {
   // —— 皮肤 / 壁纸 ——
   'skin.localSkin': booleanDefinition(true, 'LOCAL_SKIN_SWITCH'),
   'skin.otherLocalSkin': booleanDefinition(false, 'OTHER_LOCAL_SKIN_SWITCH'),
-  'skin.officialBackground': booleanDefinition(true, 'OFFICIAL_BACKGROUND_SWITCH'),
+  'skin.officialBackground': booleanDefinition(false, 'OFFICIAL_BACKGROUND_SWITCH'),
   'skin.skinPaper': booleanDefinition(true, 'SKIN_PAPER_SWITCH'),
   'skin.allPaper': booleanDefinition(false, 'ALL_PAPER_SWITCH'),
   // —— 自动任务（skip* 为 true 表示跳过该项）——

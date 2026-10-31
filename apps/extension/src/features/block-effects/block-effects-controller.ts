@@ -10,7 +10,11 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
+import {
+  createMethodPatcher,
+  type PatchableFunction
+} from '../../runtime/method-patch.ts';
+import { isBackgroundUiScene } from '../skin-background/skin-runtime.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
 import { applyBlockMessageFilters, shouldDropNoticeProtocol } from './block-message-filters.ts';
 import { installPersistentMarqueeEventBlock } from './marquee-event-hook.ts';
@@ -28,6 +32,11 @@ import {
   type EffectResourceFlags
 } from './effect-resource-filter.ts';
 import { classifyPlayback, kindFromCard, type PlaybackKind } from './effect-playback.ts';
+import {
+  isLobbyAdPushWindowName,
+  LOBBY_AD_PUSH_WINDOW_NAMES,
+  looksLikeAdPushCarouselWindow
+} from '../../const/block-ad-window.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -71,6 +80,10 @@ const SHOWN_WINDOW_SWITCHES: Record<string, BlockSettingKey> = {
   SelectSkinWindow: 'block.packageWindow'
 };
 
+for (const adWindowName of LOBBY_AD_PUSH_WINDOW_NAMES) {
+  SHOWN_WINDOW_SWITCHES[adWindowName] = 'block.adWindow';
+}
+
 const CLOSE_BY_SWITCH: Partial<Record<BlockSettingKey, string>> = {
   'block.adWindow': 'AdPushWindow'
 };
@@ -82,6 +95,8 @@ export interface BlockEffectsController {
   clearRedDots(): { found: boolean; count: number };
   /** 账号或场景就绪后重挂狗托屏蔽，配置已开时不必再拨开关。 */
   armNoticeBlock(): void;
+  /** 配置已开时关闭大厅活动广告窗，进大厅后补一次。 */
+  armAdBlock(): void;
   dispose(): void;
 }
 
@@ -143,8 +158,9 @@ export function installBlockEffectsController(
     ? isOn('block.selfSkinEffect')
     : isOn('block.otherSkinState');
   const replaceUrl = (url: unknown) => {
+    if (typeof url !== 'string' || url.length === 0) return url;
     const flags = resourceFlags();
-    return hasAnyEffectResourceBlock(flags) ? replaceBlockedEffectUrl(String(url || ''), flags) : url;
+    return hasAnyEffectResourceBlock(flags) ? replaceBlockedEffectUrl(url, flags) : url;
   };
 
   function later(callback: () => void, delay = 0): void {
@@ -193,6 +209,73 @@ export function installBlockEffectsController(
 
   // ---------- 弹窗 ----------
 
+  function readWindowManagerInstances(): UnknownRecord[] {
+    const context = asRecord(globalObject.GameContext);
+    const windowManager = asRecord(context?.WindowManager) ?? asRecord(locator.manager('WindowManager'));
+    const dict = asRecord(windowManager?.WindowInstanceDict);
+    if (!dict) return [];
+    const results: UnknownRecord[] = [];
+    const push = (value: unknown) => {
+      const win = asRecord(value);
+      if (win) results.push(win);
+    };
+    if (typeof dict.forEach === 'function') {
+      try {
+        dict.forEach((value: unknown) => push(value));
+        return results;
+      } catch {
+        // 部分运行时的 forEach 签名不同，回退到按键遍历。
+      }
+    }
+    for (const value of Object.values(dict)) push(value);
+    return results;
+  }
+
+  function closeAdPushWindowInstance(win: UnknownRecord): boolean {
+    if (!win || win.destroyed) return false;
+    const views = win.curViewList;
+    if (Array.isArray(views)) {
+      views.forEach((view) => {
+        try {
+          callMethod(view, 'closeClicker');
+        } catch {
+          // 单个视图关不掉就跳过。
+        }
+      });
+    }
+    let closed = false;
+    try {
+      if (typeof win.Close === 'function') {
+        callMethod(win, 'Close');
+        closed = true;
+      } else if (typeof win.close === 'function') {
+        callMethod(win, 'close');
+        closed = true;
+      } else if (typeof win.destroy === 'function') {
+        callMethod(win, 'destroy', true);
+        closed = true;
+      }
+    } catch (error) {
+      console.warn('[屏蔽设置] 关闭广告窗失败:', error);
+    }
+    return closed;
+  }
+
+  /** 按已知类名与轮播广告结构关闭大厅弹窗。 */
+  function closeAllAdWindows(retries = 0, interval = 500): boolean {
+    if (!isOn('block.adWindow')) return false;
+    let closed = false;
+    for (const name of LOBBY_AD_PUSH_WINDOW_NAMES) {
+      closed = closeWindowByName(name) || closed;
+    }
+    for (const win of readWindowManagerInstances()) {
+      if (!looksLikeAdPushCarouselWindow(win)) continue;
+      closed = closeAdPushWindowInstance(win) || closed;
+    }
+    if (!closed && retries > 0) later(() => closeAllAdWindows(retries - 1, interval), interval);
+    return closed;
+  }
+
   /** 按名字关闭 WindowManager 与 WindowLayer 中的窗口。 */
   function closeWindowByName(name: string, retries = 0, interval = 500): boolean {
     let closed = false;
@@ -221,22 +304,9 @@ export function installBlockEffectsController(
   /** 广告窗口先关闭其内部视图，再关闭窗口本身；未关到时重试。 */
   function closeBySwitch(key: BlockSettingKey, retries = 0, interval = 500): boolean {
     if (!isOn(key)) return false;
+    if (key === 'block.adWindow') return closeAllAdWindows(retries, interval);
     const name = CLOSE_BY_SWITCH[key];
     if (!name) return false;
-    if (key === 'block.adWindow') {
-      new Set([locator.window(name), ...locator.findWindows(name)].filter(Boolean)).forEach((win) => {
-        if (!win || win.destroyed) return;
-        const views = win.curViewList;
-        if (!Array.isArray(views)) return;
-        views.forEach((view) => {
-          try {
-            callMethod(view, 'closeClicker');
-          } catch (error) {
-            console.warn('[屏蔽设置] 广告视图关闭失败:', error);
-          }
-        });
-      });
-    }
     const closed = closeWindowByName(name);
     if (!closed && retries > 0) later(() => closeBySwitch(key, retries - 1, interval), interval);
     return closed;
@@ -319,13 +389,14 @@ export function installBlockEffectsController(
     if (!win) return;
     await poll(() => !win.isShowWait);
     if (win.destroyed || disposed) return;
+    if (isLobbyAdPushWindowName(name)) {
+      closeBySwitch('block.adWindow');
+      return;
+    }
     switch (name) {
       case 'GetPropSpecialWindow':
         callMethod(win, 'Hide');
         callMethod(win, 'Close');
-        break;
-      case 'AdPushWindow':
-        closeBySwitch('block.adWindow');
         break;
       case 'RogueLike1v1ZhanJiWindow':
         callMethod(win, 'onClickClose');
@@ -361,35 +432,30 @@ export function installBlockEffectsController(
     });
 
     const dispatcher = await poll(() => locator.dispatcher());
-    const showWindowName = dispatcher
-      ? locator.obfuscatedMethodName(dispatcher, 'GameEventDispatcher', 'ShowWindow')
-      : null;
-    if (dispatcher && showWindowName) {
-      patcher.wrap(dispatcher, showWindowName, (original) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
-        if (windowName === 'AdPushWindow' && isOn('block.adWindow')) return undefined;
+    if (dispatcher) {
+      const showWindowHook = (original: PatchableFunction) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
         const result = original.call(this, windowName, ...rest);
+        if (typeof windowName === 'string' && isOn('block.adWindow') && isLobbyAdPushWindowName(windowName)) {
+          later(() => closeBySwitch('block.adWindow'));
+        }
         if (typeof windowName === 'string' && SHOWN_WINDOW_SWITCHES[windowName]) {
           later(() => void handleShownWindow(windowName));
         }
         return result;
-      });
+      };
+      for (const showWindowName of locator.listShowWindowMethodNames(dispatcher)) {
+        if (patcher.isWrapped(dispatcher, showWindowName)) continue;
+        patcher.wrap(dispatcher, showWindowName, showWindowHook);
+      }
     }
-    closeBySwitch('block.adWindow', 20, 500);
   }
 
   async function installLobbyAdBlock(): Promise<void> {
     patcher.wrap(locator.classPrototype('ModeScene'), 'showAdView', (original) => function (this: unknown, ...args) {
-      if (!isOn('block.adWindow')) return original.apply(this, args);
-      hideLobbyAd(3);
-      return undefined;
+      const result = original.apply(this, args);
+      if (isOn('block.adWindow')) hideLobbyAd(0);
+      return result;
     });
-    hideLobbyAd(3);
-    const adTimer = setInterval(() => {
-      if (disposed || !isOn('block.adWindow')) return;
-      closeBySwitch('block.adWindow');
-      hideLobbyAd(0);
-    }, 2000);
-    cleanups.push(() => clearInterval(adTimer));
     const leftViewPrototype = await poll(
       () => {
         const leftView = asRecord(locator.scene()?.leftView);
@@ -747,6 +813,7 @@ export function installBlockEffectsController(
   }
 
   function tickMarqueeBlock(): void {
+    if (!isBackgroundUiScene(locator, globalObject)) return;
     tryInstallGedPersistentMarqueeHook();
     wrapMarqueeDispatchListeners();
     installDisplayAddChildGuard();
@@ -814,6 +881,7 @@ export function installBlockEffectsController(
   }
 
   function ensureMarqueeBlockInstalled(): Promise<void> {
+    if (!isBackgroundUiScene(locator, globalObject)) return Promise.resolve();
     if (!marqueeBlockInstallPromise) marqueeBlockInstallPromise = installMarqueeBlock();
     return marqueeBlockInstallPromise;
   }
@@ -883,6 +951,7 @@ export function installBlockEffectsController(
   }
 
   function installSceneEffectPatches(): void {
+    if (!isBackgroundUiScene(locator, globalObject)) return;
     void (async () => {
       const userInfo = await poll(
         () => userInfoManager() ?? locator.managerFromList((manager) => (
@@ -1016,12 +1085,6 @@ export function installBlockEffectsController(
         if (locator.gameScene() && isOn('block.shakeEffect')) stripBaojiSlots(asRecord(asRecord(args[0])?.[0]));
         return result;
       });
-      for (const method of ['playEquipSkillAnimate', 'play3DEquipSkill', 'ShowEquipTrailEffect']) {
-        patcher.wrap(seatUiPrototype, method, (original) => function (this: unknown, ...args) {
-          if (locator.gameScene() && isOn('block.equipEffect')) return undefined;
-          return original.apply(this, args);
-        });
-      }
       patcher.wrap(seatUiPrototype, 'playXDJXSkillEffect', (original) => function (this: unknown, ...args) {
         if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
         return original.apply(this, args);
@@ -1202,11 +1265,12 @@ export function installBlockEffectsController(
   async function installSceneSwitchHook(): Promise<void> {
     const sceneManager = await poll(findSceneManager);
     patcher.wrap(sceneManager, 'executeSwitchScene', (original) => function (this: unknown, ...args) {
-      installSceneEffectPatches();
+      if (isBackgroundUiScene(locator, globalObject)) installSceneEffectPatches();
       const result = original.apply(this, args);
       const sceneName = asRecord(args[0])?.SceneName;
       if (sceneName) {
         later(() => {
+          if (!isBackgroundUiScene(locator, globalObject)) return;
           if (sceneName === 'TableScene') installRecordViewTracker();
           installSceneEffectPatches();
           refreshMarqueeBlock();
@@ -1451,7 +1515,11 @@ export function installBlockEffectsController(
     void poll(() => asRecord(asRecord(globalObject.Laya)?.URL), Infinity, 500).then((urlApi) => {
       if (!urlApi || disposed) return;
       const previous = urlApi.customFormat;
-      urlApi.customFormat = (url: unknown) => replaceUrl(typeof previous === 'function' ? previous(url) : url);
+      urlApi.customFormat = (url: unknown) => {
+        const formatted = typeof previous === 'function' ? previous(url) : url;
+        if (typeof formatted !== 'string') return formatted;
+        return replaceUrl(formatted);
+      };
       cleanups.push(() => {
         urlApi.customFormat = previous;
       });
@@ -1520,11 +1588,13 @@ export function installBlockEffectsController(
     }))
   );
 
-  installResourceRequestFilter();
-  void ensureMarqueeBlockInstalled();
   // 工程入口早于游戏登录，管理器就绪后才安装其余补丁。
-  void poll(() => locator.dispatcher() && locator.manager('WindowManager'), Infinity, 1000).then((ready) => {
+  void poll(() => {
+    if (!isBackgroundUiScene(locator, globalObject)) return null;
+    return locator.dispatcher() && locator.manager('WindowManager');
+  }, Infinity, 1000).then((ready) => {
     if (!ready) return;
+    installResourceRequestFilter();
     void ensureMarqueeBlockInstalled().then(() => {
       if (isOn('block.noticeWindow')) applyNoticeBlockState();
       installLaoXianBlock();
@@ -1560,9 +1630,16 @@ export function installBlockEffectsController(
     void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
   }
 
+  function armAdBlock(): void {
+    if (!isOn('block.adWindow')) return;
+    closeBySwitch('block.adWindow', 8, 500);
+    hideLobbyAd(3);
+  }
+
   return {
     filterMessage,
     armNoticeBlock,
+    armAdBlock,
     clearRedDots() {
       const manager = taskRedDotManager();
       if (typeof manager?.setNodeState !== 'function') return { found: false, count: 0 };

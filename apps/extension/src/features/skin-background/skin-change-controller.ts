@@ -24,6 +24,7 @@ import {
   seatHoldsGeneral,
   skinTrace,
   supportsDynamicSkin,
+  isBackgroundUiScene,
   watchSceneSwitch,
   watchWindowShow,
   writeJson,
@@ -1249,14 +1250,17 @@ export function installSkinChangeController(
     })
   );
 
-  watchWindowShow(locator, patcher, tasks, SKIN_WINDOWS, onSkinWindowShown);
+  watchWindowShow(locator, patcher, tasks, SKIN_WINDOWS, onSkinWindowShown, globalObject);
   watchSceneSwitch(locator, patcher, tasks, () => {
     syncGameScene();
     waitForSeats();
     scheduleApplySavedSkinsForSelf();
     syncOpenWindows();
-  });
-  void tasks.poll(() => locator.dispatcher() && locator.manager('WindowManager'), Infinity, 1000).then((ready) => {
+  }, globalObject);
+  void tasks.poll(() => {
+    if (!isBackgroundUiScene(locator, globalObject)) return null;
+    return locator.dispatcher() && locator.manager('WindowManager');
+  }, Infinity, 1000).then((ready) => {
     if (!ready) return;
     preparePickerPrototype();
     syncGameScene();

@@ -8,6 +8,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { isXiaochaoGameplayUiReady } from '../skin-background/skin-runtime.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import {
   CHANGE_GENERAL_TOAST_MS,
@@ -157,6 +158,7 @@ export function installShanhetuChangeGeneral(options: {
 
   function tryPatchShowWindow(): boolean {
     if (disposed) return showWindowHooked;
+    if (!isXiaochaoGameplayUiReady(locator)) return false;
     const dispatcher = locator.dispatcher();
     let hooked = false;
     if (dispatcher) {

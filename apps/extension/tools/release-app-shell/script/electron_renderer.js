@@ -129,7 +129,8 @@ const xiaochaoStorage = {
     },
     saveCredentials: (scope, credentials) => {
         return sendSharedSync('xiaochao-credentials-set-sync', { scope, credentials });
-    }
+    },
+    customBackground: (operation) => ipcRenderer.invoke('xiaochao-custom-background', operation)
 };
 
 const api = {

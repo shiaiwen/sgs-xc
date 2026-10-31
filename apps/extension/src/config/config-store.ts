@@ -13,6 +13,14 @@ import { currentConfigAccount, type ConfigStorage } from './config-storage.ts';
 /** DOM 自定义事件名；detail 为 ConfigChangeDetail，供非模块订阅方监听。 */
 export const CONFIG_CHANGE_EVENT = 'xc:config-change';
 
+/** 登录账号桶切换时派发；开关值未变也会派发，供背景等资源按账号重载。 */
+export const CONFIG_ACCOUNT_SYNC_EVENT = 'xc:account-sync';
+
+export interface ConfigAccountSyncDetail {
+  previousAccount: string;
+  account: string;
+}
+
 export interface ConfigChangeDetail<Key extends XiaochaoConfigKey = XiaochaoConfigKey> {
   key: Key;
   value: XiaochaoConfig[Key];
@@ -75,6 +83,10 @@ export function createConfigStore(
     const previousValues = values;
     values = storage.read();
     publish(previousValues, values);
+    if (eventTarget && typeof CustomEvent !== 'undefined') {
+      const detail: ConfigAccountSyncDetail = { previousAccount, account: nextAccount };
+      eventTarget.dispatchEvent(new CustomEvent(CONFIG_ACCOUNT_SYNC_EVENT, { detail }));
+    }
   }
 
   function get<Key extends XiaochaoConfigKey>(key: Key): XiaochaoConfig[Key] {

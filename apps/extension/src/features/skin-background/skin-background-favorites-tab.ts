@@ -3,9 +3,17 @@
  */
 
 import type { LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
+import { skinFavoritesGridPosition } from '../../const/skin-favorites-grid.ts';
 import type { MethodPatcher, PatchableFunction } from '../../runtime/method-patch.ts';
 import type { BackgroundFavorite, BackgroundResource, SkinBackgroundStore } from './skin-background-store.ts';
-import { asRecord, callMethod, type UnknownRecord } from './skin-runtime.ts';
+import {
+  asRecord,
+  callMethod,
+  resolveWallPaperTabGroup,
+  skinTrace,
+  wallPaperTabButtons,
+  type UnknownRecord
+} from './skin-runtime.ts';
 
 const TAB_VALUE = 'xcSkinBackgroundFavorites';
 const TAB_MARKER = '__xcSkinBackgroundFavoritesTab';
@@ -63,7 +71,44 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
   }
 
   function isSelected(menu: UnknownRecord): boolean {
-    return asRecord(menu.tabGroup)?.SelectedValue === TAB_VALUE;
+    const group = resolveWallPaperTabGroup(menu);
+    return group?.SelectedValue === TAB_VALUE;
+  }
+
+  function mutableTabButtons(group: UnknownRecord): UnknownRecord[] | null {
+    if (Array.isArray(group.BtnList)) return group.BtnList as UnknownRecord[];
+    const normalized = wallPaperTabButtons(group);
+    if (!normalized.length) return null;
+    group.BtnList = normalized;
+    return normalized;
+  }
+
+  function favoritesTabIndex(group: UnknownRecord): number {
+    const buttons = mutableTabButtons(group);
+    if (!buttons) return -1;
+    return buttons.findIndex((button) => button.value === TAB_VALUE || button[TAB_MARKER]);
+  }
+
+  function isCurrentFromFavorites(): boolean {
+    return store.favorites().some((favorite) => options.isCurrent(favorite));
+  }
+
+  /** 选中「小抄背景」页签并展示收藏列表面板。 */
+  function activateFavoritesTab(menu: UnknownRecord): void {
+    if (!options.enabled()) return;
+    bindTabSwitch(menu);
+    if (!ensureTab(menu)) return;
+    const group = resolveWallPaperTabGroup(menu);
+    callMethod(group, 'LayoutBtn');
+    const index = group ? favoritesTabIndex(group) : -1;
+    if (index >= 0) callMethod(group, 'SelectTab', index);
+    const prototype = Object.getPrototypeOf(menu) as UnknownRecord | null;
+    const onTabClick = prototype?.onTabClick;
+    if (typeof onTabClick === 'function') {
+      callMethod(menu, 'onTabClick', TAB_VALUE);
+      return;
+    }
+    showPanel(menu, true);
   }
 
   function rememberConstructors(menu: UnknownRecord): void {
@@ -266,7 +311,8 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       mark.zOrder = 999;
       callMethod(item, 'setChildIndex', mark, Number(item.numChildren) || 0);
     }
-    callMethod(item, 'pos', 5 + 101 * (index % 3), 1 + 65 * Math.floor(index / 3));
+    const { offsetX, offsetY } = skinFavoritesGridPosition(index);
+    callMethod(item, 'pos', offsetX, offsetY);
     item.visible = true;
     item.mouseEnabled = true;
     return item;
@@ -389,18 +435,20 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
 
   /** 复制第一个原生页签按钮的样式，建立「小抄背景」页签。 */
   function ensureTab(menu: UnknownRecord): UnknownRecord | null {
-    const group = asRecord(menu.tabGroup);
-    const buttons = group?.BtnList;
-    if (!group || !Array.isArray(buttons)) return null;
-    const existing = buttons.map(asRecord).find((button) => button?.value === TAB_VALUE || button?.[TAB_MARKER]);
+    const group = resolveWallPaperTabGroup(menu);
+    if (!group) return null;
+    const buttons = mutableTabButtons(group);
+    if (!buttons?.length) return null;
+    const existing = buttons.find((button) => button.value === TAB_VALUE || button[TAB_MARKER]);
     if (existing) return existing;
-    const template = asRecord(buttons[0]);
+    const template = buttons[0];
     let tab: UnknownRecord | null = null;
     try {
       tab = typeof template?.constructor === 'function' ? new (template.constructor as new () => UnknownRecord)() : null;
     } catch {
       tab = null;
     }
+    if (!tab) tab = asRecord(callMethod(template, 'clone'));
     if (!tab) return null;
     const skins = Array.isArray(template?.skins) ? Array.from(template!.skins as unknown[]) : [];
     if (skins.some(Boolean) && typeof tab.InitSkin === 'function') callMethod(tab, 'InitSkin', ...skins);
@@ -426,45 +474,102 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       enabled: true,
       mouseEnabled: true
     });
-    buttons.splice(Math.min(2, buttons.length), 0, tab);
+    const insertAt = buttons.length >= 2 ? 2 : buttons.length;
+    buttons.splice(insertAt, 0, tab);
     callMethod(group, 'addChild', tab);
-    callMethod(tab, 'AfterInitUiByGroup', { label: tab.label, value: tab.value });
+    if (typeof tab.AfterInitUiByGroup === 'function') {
+      callMethod(tab, 'AfterInitUiByGroup', { label: tab.label, value: tab.value });
+    }
     callMethod(group, 'layout');
     callMethod(group, 'LayoutBtn');
+    tab.visible = true;
     return tab;
+  }
+
+  function bindTabGroupSelectTab(menu: UnknownRecord, group: UnknownRecord): boolean {
+    const inherited = typeof group.SelectTab === 'function'
+      || typeof (Object.getPrototypeOf(group) as UnknownRecord | null)?.SelectTab === 'function';
+    if (!inherited) return false;
+    if (patcher.isWrapped(group, 'SelectTab')) return true;
+    return patcher.wrap(group, 'SelectTab', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      const result = original.apply(this, args);
+      if (this !== group) return result;
+      const index = Number(args[0]);
+      const buttons = mutableTabButtons(group);
+      const button = buttons?.[index];
+      if (button && (button.value === TAB_VALUE || button[TAB_MARKER]) && options.enabled()) {
+        showPanel(menu, true);
+      } else if (options.enabled()) {
+        showPanel(menu, false, false);
+      }
+      return result;
+    });
+  }
+
+  function patchMenuRefresh(menu: UnknownRecord): void {
+    const hasRefresh = typeof menu.RefreList === 'function'
+      || typeof (Object.getPrototypeOf(menu) as UnknownRecord | null)?.RefreList === 'function';
+    if (!hasRefresh || patcher.isWrapped(menu, 'RefreList')) return;
+    patcher.wrap(menu, 'RefreList', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      const result = original.apply(this, args);
+      if (this !== menu) return result;
+      if (options.enabled()) ensureTab(menu);
+      if (isSelected(menu) && options.enabled()) return showPanel(menu, true);
+      return result;
+    });
+  }
+
+  function tabClickHandler(menu: UnknownRecord): PatchableFunction | null {
+    if (typeof menu.onTabClick === 'function') return menu.onTabClick as PatchableFunction;
+    const prototype = Object.getPrototypeOf(menu) as UnknownRecord | null;
+    if (prototype && typeof prototype.onTabClick === 'function') return prototype.onTabClick as PatchableFunction;
+    return null;
+  }
+
+  function tabClickWrapTarget(menu: UnknownRecord): UnknownRecord | null {
+    if (typeof menu.onTabClick === 'function') return menu;
+    const prototype = Object.getPrototypeOf(menu) as UnknownRecord | null;
+    if (prototype && typeof prototype.onTabClick === 'function') return menu;
+    return null;
   }
 
   /** 接管页签切换与列表刷新。 */
   function bindTabSwitch(menu: UnknownRecord): boolean {
-    const group = asRecord(menu.tabGroup);
-    const prototype = Object.getPrototypeOf(menu) as UnknownRecord | null;
-    if (!group || !prototype || typeof prototype.onTabClick !== 'function') return false;
-    patcher.wrap(prototype, 'onTabClick', (original) => {
-      nativeTabClick.set(prototype, original);
-      return function (this: UnknownRecord, ...args: unknown[]) {
-        const value = Array.isArray(args[0]) ? args[0][0] : args[0];
-        if (value === TAB_VALUE && options.enabled()) return showPanel(this, true);
-        showPanel(this, false, false);
-        try {
-          return original.apply(this, args);
-        } finally {
-          stateOf(this).loadMoreVisibility = undefined;
-        }
-      };
-    });
-    if (typeof prototype.RefreList === 'function') {
-      patcher.wrap(prototype, 'RefreList', (original) => function (this: UnknownRecord, ...args: unknown[]) {
-        if (isSelected(this) && options.enabled()) return showPanel(this, true);
-        return original.apply(this, args);
-      });
+    const group = resolveWallPaperTabGroup(menu);
+    if (!group) return false;
+    const wrapTarget = tabClickWrapTarget(menu);
+    let clickBound = false;
+    if (wrapTarget) {
+      if (!patcher.isWrapped(wrapTarget, 'onTabClick')) {
+        patcher.wrap(wrapTarget, 'onTabClick', (original) => {
+          nativeTabClick.set(wrapTarget, original);
+          return function (this: UnknownRecord, ...args: unknown[]) {
+            const value = Array.isArray(args[0]) ? args[0][0] : args[0];
+            if (value === TAB_VALUE && options.enabled()) return showPanel(this, true);
+            showPanel(this, false, false);
+            try {
+              return original.apply(this, args);
+            } finally {
+              stateOf(this).loadMoreVisibility = undefined;
+            }
+          };
+        });
+      }
+      clickBound = true;
     }
+    if (!clickBound) clickBound = bindTabGroupSelectTab(menu, group);
+    if (!clickBound) return false;
+    patchMenuRefresh(menu);
     const state = stateOf(menu);
-    if (!state.tabBound) {
+    if (!state.tabBound && wrapTarget) {
       const eventName = String(asRecord(group.constructor)?.TAP_CLICKED || 'TAP_CLICKED');
-      const native = nativeTabClick.get(prototype);
-      if (native) callMethod(group, 'off', eventName, menu, native);
-      callMethod(group, 'off', eventName, menu, prototype.onTabClick);
-      callMethod(group, 'on', eventName, menu, prototype.onTabClick);
+      const handler = tabClickHandler(menu);
+      const native = nativeTabClick.get(wrapTarget);
+      if (native && handler) callMethod(group, 'off', eventName, menu, native);
+      if (handler) {
+        callMethod(group, 'off', eventName, menu, handler);
+        callMethod(group, 'on', eventName, menu, handler);
+      }
       state.tabEvent = eventName;
       state.tabBound = true;
     }
@@ -476,13 +581,27 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       detach(menu);
       return;
     }
-    if (!ensureTab(menu) || !bindTabSwitch(menu)) return;
+    if (!bindTabSwitch(menu)) {
+      skinTrace('wallpaper-tab-bind-failed', {
+        hasTabGroup: Boolean(menu.tabGroup ?? menu.TabGroup),
+        hasOnTabClick: typeof menu.onTabClick === 'function'
+      });
+      return;
+    }
+    if (!ensureTab(menu)) {
+      skinTrace('wallpaper-tab-create-failed', {
+        tabCount: wallPaperTabButtons(asRecord(menu.tabGroup) ?? asRecord(menu.TabGroup)).length
+      });
+      return;
+    }
     menus.add(menu);
-    if (isSelected(menu)) showPanel(menu, true);
+    const group = resolveWallPaperTabGroup(menu);
+    callMethod(group, 'layout');
+    callMethod(group, 'LayoutBtn');
   }
 
   function detach(menu: UnknownRecord): void {
-    const group = asRecord(menu.tabGroup);
+    const group = resolveWallPaperTabGroup(menu);
     if (isSelected(menu)) callMethod(group, 'SelectTab', 0);
     showPanel(menu, false);
     const state = stateOf(menu);
@@ -519,7 +638,10 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
   }
 
   function refreshSelection(): void {
-    liveMenus().forEach((menu) => stateOf(menu).items.forEach((item) => callMethod(item, 'UpdateSelectedUI')));
+    liveMenus().forEach((menu) => {
+      stateOf(menu).items.forEach((item) => callMethod(item, 'UpdateSelectedUI'));
+      if (options.enabled() && isCurrentFromFavorites() && !isSelected(menu)) activateFavoritesTab(menu);
+    });
   }
 
   const unsubscribe = store.onFavoritesChange(() => {

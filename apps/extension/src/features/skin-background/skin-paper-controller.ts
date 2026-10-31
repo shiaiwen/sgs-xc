@@ -2,24 +2,50 @@
  * 皮肤纸控制器：本家/全场皮肤纸开关与壁纸菜单扩展。
  */
 
-import type { XiaochaoConfigStore } from '../../config/config-store.ts';
+import { CONFIG_ACCOUNT_SYNC_EVENT, type XiaochaoConfigStore } from '../../config/config-store.ts';
 import {
   createLayaObjectLocator,
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
+import { readSeatStateFromGameScene } from '../seat-display/seat-game-adapter.ts';
+import { locateGameScene } from '../seat-display/game-scene-locator.ts';
+import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { WallpaperMenuExtension } from './official-background-controller.ts';
 import { createFavoritesTab } from './skin-background-favorites-tab.ts';
 import { createSkinBackgroundRenderer } from './skin-background-renderer.ts';
 import { createSkinBackgroundStore, type BackgroundFavorite, type BackgroundResource } from './skin-background-store.ts';
+import { SKIN_FRAME_HORIZONTAL, SKIN_FRAME_PORTRAIT, SKIN_FRAME_WIDE } from '../../const/skin-frame.ts';
+import { SKIN_DETAIL_BUTTON_HEIGHT, SKIN_DETAIL_FLAT_BUTTON_SKINS, SKIN_DETAIL_WINDOW_NAMES } from '../../const/skin-detail-window.ts';
+import {
+  cleanupMisplacedDetailButtons,
+  computeDetailButtonLayout,
+  hideInjectedDetailButtons,
+  hookSkinDetailWindowRefresh,
+  isPortraitSkinDetail,
+  isSkinDetailWindowCandidate,
+  resolveSkinDetailMount,
+  resolveSkinDetailWindow,
+  wireNativeSkinDetailButtons,
+  type SkinDetailResolveProbe
+} from './skin-detail-buttons.ts';
+import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 import {
   bindCustomBackgroundActions,
   getCustomBackgroundStore,
   isCustomBackgroundVideo,
   type CustomBackgroundRecord
 } from './custom-background-store.ts';
+import { blobForBackgroundPlayback, detectCustomBackgroundVideo } from './custom-background-media.ts';
+import {
+  getLobbyPageBackground,
+  hasLobbyPageBackgroundContainer
+} from './lobby-page-background.ts';
+import { getViewportPageBackground } from './viewport-page-background.ts';
+import { mayMutateSkinBackground } from './skin-background-session.ts';
 import {
   accountStorageKey,
   asRecord,
@@ -27,6 +53,8 @@ import {
   createTaskScope,
   skinTrace,
   supportsDynamicSkin,
+  isBackgroundUiScene,
+  isXiaochaoGameplayUiReady,
   watchSceneSwitch,
   watchWindowShow,
   type UnknownRecord
@@ -34,7 +62,7 @@ import {
 
 const MAP_SCENES = ['RogueLikeBigMapScene', 'RogueSmallMapScene'];
 const DETAIL_BUTTON_GAP = 3;
-const DETAIL_BUTTON_HEIGHT = 50;
+const DETAIL_BUTTON_HEIGHT = SKIN_DETAIL_BUTTON_HEIGHT;
 const ICON_SIZE = 28;
 /** 多形态皮肤原画数量缺省表（其余按文件名是否带 _N 推断）。 */
 const SKIN_STATE_COUNTS: Record<number, number> = { 60500: 3, 62300: 2, 66100: 2 };
@@ -56,11 +84,14 @@ export interface SkinPaperOptions {
   selfSeatId(): number | null;
   /** 开关变化时重新同步游戏背景面板（由官方背景控制器提供）。 */
   syncWallpaperMenu(): void;
+  gameEvents?: GameEventBus;
 }
 
-/** 背景尺寸：16:9 横版 594×335，普通横版 536×380，竖版不支持做背景。 */
+/** 背景尺寸取皮肤窗口的展示框。竖版不支持做背景。 */
 function backgroundSize(is169: unknown, isHorizontal: unknown): { width: number; height: number } {
-  return { width: is169 ? 594 : isHorizontal ? 536 : 350, height: is169 ? 335 : isHorizontal ? 380 : 464 };
+  if (is169) return { width: SKIN_FRAME_WIDE.width, height: SKIN_FRAME_WIDE.height };
+  if (isHorizontal) return { width: SKIN_FRAME_HORIZONTAL.width, height: SKIN_FRAME_HORIZONTAL.height };
+  return { width: SKIN_FRAME_PORTRAIT.width, height: SKIN_FRAME_PORTRAIT.height };
 }
 
 function isPortrait(is169: unknown, isHorizontal: unknown): boolean {
@@ -80,8 +111,18 @@ export function installSkinPaperController(
   const storage = options.storage ?? globalObject.localStorage;
   const patcher = createMethodPatcher();
   const tasks = createTaskScope();
-  const store = createSkinBackgroundStore(storage);
-  const renderer = createSkinBackgroundRenderer({ globalObject, locator, store, tasks });
+  function paperAccountId(): string {
+    const gameId = resolveGameAccountId(globalObject, locator);
+    if (gameId) return gameId;
+    return accountStorageKey(storage);
+  }
+
+  const store = createSkinBackgroundStore(storage, { resolveAccountId: paperAccountId });
+  const renderer = createSkinBackgroundRenderer({ globalObject, locator, store, tasks, patcher });
+  const lobbyPageBackground = getLobbyPageBackground();
+  const viewportPageBackground = getViewportPageBackground();
+  lobbyPageBackground.clear();
+  viewportPageBackground.clear();
   const laya = () => asRecord(globalObject.Laya);
   const layaEvent = () => asRecord(laya()?.Event);
 
@@ -89,6 +130,37 @@ export function installSkinPaperController(
   const customStore = getCustomBackgroundStore();
   let customResource: BackgroundResource | null = null;
   let useCustom = false;
+  let syncingVisibility = false;
+  let runtimeBlobUrl = '';
+
+  function revokeRuntimeBlobUrl(): void {
+    if (!runtimeBlobUrl.startsWith('blob:')) return;
+    try {
+      URL.revokeObjectURL(runtimeBlobUrl);
+    } catch {
+      // 忽略 revoke 失败。
+    }
+    runtimeBlobUrl = '';
+  }
+
+  /** 跨域原画转 blob，避免 Laya loadImage 因 CORS 静默失败。 */
+  async function resolvePlayableResource(resource: Partial<BackgroundResource>): Promise<Partial<BackgroundResource>> {
+    const url = String(resource.url || '').trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return resource;
+    try {
+      const found = await fetchSkinImage(url).catch(() => null);
+      const fetchUrl = found?.url || url;
+      const response = found?.response ?? await fetch(fetchUrl);
+      if (!response.ok) return resource;
+      const blob = await response.blob();
+      revokeRuntimeBlobUrl();
+      runtimeBlobUrl = URL.createObjectURL(blob);
+      return { ...resource, url: runtimeBlobUrl };
+    } catch (error) {
+      console.warn('[皮肤做背景] 背景资源拉取失败，仍尝试原地址:', error);
+      return resource;
+    }
+  }
   const favoritesTab = createFavoritesTab({
     globalObject,
     store,
@@ -98,15 +170,50 @@ export function installSkinPaperController(
     isCurrent: (favorite) => isCurrentFavorite(favorite)
   });
 
+  /** 用户手动设过的皮肤/自定义背景，优先于山河图等地图场景自带底图。 */
+  function hasManualBackground(): boolean {
+    if (useCustom && customResource?.url) return true;
+    if (!isOn()) return false;
+    const saved = store.loadResource();
+    return Boolean(String(saved.url || renderer.resource.url || '').trim());
+  }
+
+  /** 对局内才展示牌桌背景；局后结算、进房加载仍视为非对局。 */
+  function seatInActiveMatch(): boolean {
+    if (!locator.gameScene()) return false;
+    const sceneName = String(locator.scene()?.SceneName ?? '');
+    if (MAP_SCENES.includes(sceneName)) return true;
+    return Boolean(readSeatStateFromGameScene(locateGameScene(globalObject)).inGame);
+  }
+
   function shouldShow(): boolean {
     const sceneName = String(locator.scene()?.SceneName ?? '');
-    if (MAP_SCENES.includes(sceneName)) return false;
+    const mapScene = MAP_SCENES.includes(sceneName);
+    if (mapScene) return hasManualBackground();
     if (useCustom && customResource) {
-      return configStore.get('skin.allPaper') === true || Boolean(locator.gameScene());
+      if (configStore.get('skin.allPaper') === true) return hasManualBackground();
+      return seatInActiveMatch();
     }
     if (!isOn()) return false;
-    if (configStore.get('skin.allPaper') === true) return true;
-    return Boolean(locator.gameScene());
+    if (configStore.get('skin.allPaper') === true) return hasManualBackground();
+    return seatInActiveMatch();
+  }
+
+  function reloadAccountBackground(): void {
+    configStore.syncAccount();
+    renderer.reloadStoredResource();
+  }
+
+  /** 登录后从 paperRes 重新挂背景，不依赖开关订阅再触发一次。 */
+  async function reapplyStoredBackground(): Promise<boolean> {
+    reloadAccountBackground();
+    const saved = store.loadResource();
+    const url = String(saved.url || '').trim();
+    if (!url || !isOn()) return false;
+    if (useCustom && customResource?.url) {
+      return renderer.setBackground(await resolvePlayableResource(customResource), false);
+    }
+    return renderer.setBackground(await resolvePlayableResource(saved), false);
   }
 
   // ---------- 资源解析 ----------
@@ -232,11 +339,14 @@ export function installSkinPaperController(
     callMethod(win, 'Close');
     try {
       if (win) await new Promise((resolve) => tasks.later(() => resolve(undefined), 300));
-      if (!(await renderer.setBackground(resource))) {
+      const playable = await resolvePlayableResource(resource);
+      if (!(await renderer.setBackground(playable))) {
         showToast('背景设置失败，请重试', 'error', 4000);
         return false;
       }
+      await syncVisibility();
       favoritesTab.refreshSelection();
+      refreshChangeSkinWindow();
       showToast('背景设置成功', 'success', 4000);
       return true;
     } catch (error) {
@@ -267,6 +377,7 @@ export function installSkinPaperController(
   /** 按钮本体不接收鼠标，由透明热区驱动按下态并响应点击。 */
   function ensureHitArea(
     win: UnknownRecord,
+    content: UnknownRecord,
     index: number,
     button: UnknownRecord,
     width: number,
@@ -275,7 +386,6 @@ export function installSkinPaperController(
     const key = `myFuncBtnHit${index}`;
     let hit = asRecord(win[key]);
     const SpriteClass = laya()?.Sprite as (new () => UnknownRecord) | undefined;
-    const content = asRecord(win.contentSprite);
     if (!hit) {
       if (!SpriteClass || !content) return null;
       hit = new SpriteClass();
@@ -284,7 +394,7 @@ export function installSkinPaperController(
         mouseEnabled: true,
         mouseChildren: false,
         mouseThrough: false,
-        hitTestPrior: true
+        hitTestPrior: false
       });
       const event = layaEvent();
       callMethod(hit, 'on', event?.MOUSE_OVER, hit, () => setButtonPhase(button, 1));
@@ -300,7 +410,7 @@ export function installSkinPaperController(
     }
     callMethod(hit, 'size', width, DETAIL_BUTTON_HEIGHT);
     callMethod(hit, 'pos', button.x, button.y);
-    hit.zOrder = Math.max(10000, Number(button.zOrder) + 1 || 10000);
+    hit.zOrder = Math.max(Number(button.zOrder) + 2 || 50, 50);
     const Rectangle = laya()?.Rectangle as (new (x: number, y: number, w: number, h: number) => unknown) | undefined;
     hit.hitArea = Rectangle ? new Rectangle(0, 0, width, DETAIL_BUTTON_HEIGHT) : null;
     hit.mouseEnabled = true;
@@ -421,40 +531,61 @@ export function installSkinPaperController(
     return true;
   }
 
+  const detailInstallSignature = new WeakMap<UnknownRecord, string>();
+
   function installDetailButtons(win: UnknownRecord): boolean {
-    const frame = asRecord(win.skinFrame);
-    const content = asRecord(win.contentSprite);
-    if (!frame || !content) return false;
+    if (!isSkinDetailWindowCandidate(win)) {
+      hideInjectedDetailButtons(win);
+      return false;
+    }
+    const mount = resolveSkinDetailMount(win);
+    if (!mount) {
+      skinTrace('skin-detail-mount-missing', {
+        hasContentSprite: Boolean(win.contentSprite),
+        hasSkinFrame: Boolean(win.skinFrame),
+        hasSkinImg: Boolean(win.skinImg),
+        windowName: String(win.name ?? win.sceneName ?? '')
+      });
+      return false;
+    }
+    const { mountParent, frame } = mount;
+    hookSkinDetailWindowRefresh(win, patcher, () => tryInstallDetailButtons());
+    const layout = computeDetailButtonLayout(win, frame, mountParent);
     rememberDetailEffectClasses(win);
-    const frameX = Number(frame.x) || 0;
-    const frameY = Number(frame.y) || 0;
-    const frameWidth = Number(frame.width) || 360;
-    const totalWidth = Math.min(360, frameWidth);
-    const portrait = isPortrait(win.is169, win.isHor);
-    const handlers = portrait
-      ? [(target: UnknownRecord) => saveDetailImage(target)]
-      : [(target: UnknownRecord) => saveDetailImage(target), setDetailAsBackground, toggleDetailFavorite];
-    const width = Math.floor((totalWidth - DETAIL_BUTTON_GAP * (handlers.length - 1)) / handlers.length);
-    const left = frameX + frameWidth / 2 - totalWidth / 2;
+    wireNativeSkinDetailButtons(win, patcher, {
+      save: () => saveDetailImage(win),
+      background: () => setDetailAsBackground(win),
+      favorite: () => toggleDetailFavorite(win)
+    });
+    const favoriteId = detailFavoriteId(win);
+    const favorited = Boolean(favoriteId) && store.isFavorite(favoriteId);
     const video = isVideoDetail(win);
-    for (let index = 0; index < 3; index += 1) {
-      const handler = handlers[index];
+    const signature = `v6-three:${layout.left}:${layout.top}:${layout.totalWidth}:${Boolean(win.isDynamicPlay)}:${favorited}:${video}`;
+    if (detailInstallSignature.get(win) === signature) return true;
+    detailInstallSignature.set(win, signature);
+    const totalWidth = layout.totalWidth;
+    const detailHandlers: Array<(target: UnknownRecord) => unknown> = [
+      (target) => saveDetailImage(target),
+      setDetailAsBackground,
+      toggleDetailFavorite
+    ];
+    const buttonCount = 3;
+    const width = Math.floor((totalWidth - DETAIL_BUTTON_GAP * (buttonCount - 1)) / buttonCount);
+    const left = layout.left;
+    for (let index = 0; index < buttonCount; index += 1) {
+      const handler = detailHandlers[index]!;
       let button = asRecord(win[`myFuncBtn${index}`]);
       const existingHit = asRecord(win[`myFuncBtnHit${index}`]);
-      if (!handler) {
-        if (button) Object.assign(button, { visible: false, enabled: false });
-        if (existingHit) Object.assign(existingHit, { visible: false, mouseEnabled: false });
-        continue;
-      }
       if (!button) {
         button = createFlatButton();
         if (!button) return false;
-        callMethod(button, 'InitSkin', 'skinInfo_dynamicBtn_normal', 'skinInfo_dynamicBtn_over', 'skinInfo_dynamicBtn_down', 'skinInfo_dynamicBtn_disable');
+        callMethod(button, 'InitSkin', ...SKIN_DETAIL_FLAT_BUTTON_SKINS);
         win[`myFuncBtn${index}`] = button;
-        if (typeof content.addDrawChild === 'function') callMethod(content, 'addDrawChild', button);
-        else callMethod(content, 'addChild', button);
+        if (typeof mountParent.addDrawChild === 'function') callMethod(mountParent, 'addDrawChild', button);
+        else callMethod(mountParent, 'addChild', button);
       }
       callMethod(button, 'removeEventListener');
+      const favoriteDisabled = index === 2 && video;
       Object.assign(button, {
         label: ['保存图片', video ? '保存视频' : '设为背景', '收藏背景'][index],
         width,
@@ -468,28 +599,111 @@ export function installSkinPaperController(
         visible: true,
         mouseEnabled: false,
         mouseChildren: false,
-        enabled: true,
-        phase: 0
+        enabled: !favoriteDisabled,
+        phase: favoriteDisabled ? 3 : 0,
+        zOrder: Math.max(Number(frame.zOrder) + 5 || 60, 60)
       });
       callMethod(button, 'changeState');
-      callMethod(button, 'pos', left + index * (width + DETAIL_BUTTON_GAP), frameY - DETAIL_BUTTON_HEIGHT);
-      const hit = ensureHitArea(win, index, button, width, handler);
+      callMethod(button, 'pos', left + index * (width + DETAIL_BUTTON_GAP), layout.top);
+      const hit = ensureHitArea(win, mountParent, index, button, width, handler);
       if (hit) {
         hit.visible = true;
-        if (index === 2 && video) hit.mouseEnabled = false;
+        hit.mouseEnabled = !favoriteDisabled;
+      }
+      if (existingHit && existingHit.parent !== mountParent) {
+        callMethod(asRecord(existingHit.parent), 'removeChild', existingHit);
+        callMethod(mountParent, 'addChild', existingHit);
       }
     }
-    if (!portrait) updateDetailFavoriteButton(win);
+    updateDetailFavoriteButton(win);
     return true;
+  }
+
+  function tryInstallDetailButtons(): void {
+    cleanupMisplacedDetailButtons(locator, globalObject);
+    const win = resolveSkinDetailWindow(locator, globalObject);
+    if (!win || win.destroyed || win.visible === false || !isOn()) return;
+    if (!isSkinDetailWindowCandidate(win)) return;
+    const installed = installDetailButtons(win);
+    if (!installed) {
+      skinTrace('skin-detail-install-failed', { windowName: String(win.name ?? win.sceneName ?? '') });
+    } else {
+      skinTrace('skin-detail-install-ok', { windowName: String(win.name ?? win.sceneName ?? '') });
+    }
   }
 
   function onSkinInfoWindow(): void {
     void tasks.poll(() => {
-      const win = locator.window('SkinInfoWindow');
-      return win && !win.isShowWait ? win : null;
-    }, 50, 100).then((win) => {
-      if (win && !win.destroyed && isOn()) installDetailButtons(win);
+      const win = resolveSkinDetailWindow(locator, globalObject);
+      if (!win || win.destroyed || win.visible === false) return null;
+      return win;
+    }, 80, 120).then((win) => {
+      if (!win || win.destroyed || !isOn()) return;
+      tryInstallDetailButtons();
+      tasks.later(() => tryInstallDetailButtons(), 250);
+      tasks.later(() => tryInstallDetailButtons(), 800);
+      tasks.later(() => tryInstallDetailButtons(), 1600);
     });
+  }
+
+  let detailButtonPollStarted = false;
+
+  function startDetailButtonPoll(): void {
+    if (detailButtonPollStarted) return;
+    detailButtonPollStarted = true;
+    let idleRounds = 0;
+    let activeRounds = 0;
+    let probeCounter = 0;
+    const tick = () => {
+      if (!isOn()) {
+        tasks.later(tick, 2000);
+        return;
+      }
+      const probe: SkinDetailResolveProbe = { dictKeys: [], layerHits: 0, picked: '' };
+      const win = resolveSkinDetailWindow(locator, globalObject, probe);
+      if (win && win.visible !== false && !win.destroyed) {
+        idleRounds = 0;
+        activeRounds += 1;
+        if (activeRounds % 4 === 1) tryInstallDetailButtons();
+      } else {
+        idleRounds += 1;
+        activeRounds = 0;
+        probeCounter += 1;
+        if (probeCounter % 6 === 0) {
+          skinTrace('skin-detail-probe', {
+            idleRounds,
+            layerHits: probe.layerHits,
+            picked: probe.picked,
+            scene: String(locator.scene()?.SceneName ?? '')
+          });
+        }
+      }
+      const delay = idleRounds > 8 ? 2500 : 700;
+      tasks.later(tick, delay);
+    };
+    tasks.later(tick, 700);
+  }
+
+  let skinDetailHooksStarted = false;
+
+  function startSkinDetailHooks(): void {
+    if (skinDetailHooksStarted) return;
+    skinDetailHooksStarted = true;
+    skinTrace('skin-detail-hooks', {
+      phase: 'started',
+      scene: String(locator.scene()?.SceneName ?? ''),
+      gameplayReady: isXiaochaoGameplayUiReady(locator, globalObject)
+    });
+    watchWindowShow(locator, patcher, tasks, [...SKIN_DETAIL_WINDOW_NAMES], () => onSkinInfoWindow(), globalObject);
+    startDetailButtonPoll();
+    tryInstallDetailButtons();
+  }
+
+  function waitForSkinDetailHooks(): void {
+    void tasks.poll(() => {
+      if (!isOn() || !isXiaochaoGameplayUiReady(locator, globalObject)) return null;
+      return true;
+    }, Infinity, 800).then(() => startSkinDetailHooks());
   }
 
   // ---------- 换肤窗口悬停图标 ----------
@@ -523,9 +737,10 @@ export function installSkinPaperController(
     if (!icon) return;
     const update = () => {
       const data = asRecord(item.skinData);
-      const visible = isOn() && !isPortrait(data?.Is169, data?.IsBanner)
-        && Boolean(item.__xcPaperSurfaceHovered || item.__xcPaperActionsHovered);
-      Object.assign(icon, { visible, mouseEnabled: visible });
+      const canUse = isOn() && !isPortrait(data?.Is169, data?.IsBanner);
+      const hovered = Boolean(item.__xcPaperSurfaceHovered || item.__xcPaperActionsHovered);
+      const visible = canUse && (hovered || item.__xcPaperActionsPinned !== false);
+      Object.assign(icon, { visible, mouseEnabled: canUse, alpha: hovered ? 1 : 0.82 });
     };
     // 从图标移到列表项时 MOUSE_OUT 先于 MOUSE_OVER，延后一拍避免闪烁。
     if (hovered) update();
@@ -722,6 +937,14 @@ export function installSkinPaperController(
       });
       panel.__xcPaperRefreshBound = true;
     }
+    if (view && !view.__xcPaperUpdateBound && typeof view.updateContent === 'function') {
+      patcher.wrap(view, 'updateContent', (original) => function (this: unknown, ...args: unknown[]) {
+        const result = original.apply(this, args);
+        if (!preparingPaperWindow) queueMicrotask(() => void prepareChangeSkinWindow(win));
+        return result;
+      });
+      view.__xcPaperUpdateBound = true;
+    }
     return true;
     } finally {
       preparingPaperWindow = false;
@@ -741,49 +964,188 @@ export function installSkinPaperController(
 
   // ---------- 开关与场景 ----------
 
-  /** 按开关和场景同步皮肤背景是否显示。 */
-  async function syncVisibility(): Promise<void> {
-    const show = shouldShow();
-    skinTrace('paper-visibility', {
-      show,
-      sceneName: locator.scene()?.SceneName,
-      inGame: Boolean(locator.gameScene()),
-      allPaper: configStore.get('skin.allPaper'),
-      resource: renderer.resource,
-      layerFound: Boolean(locator.layer('BackgroundLayer'))
-    });
-    if (show && useCustom && customResource) {
-      await renderer.setEnabled(true);
-      await renderer.setBackground(customResource, false);
+  function currentBackgroundResource(): BackgroundResource | null {
+    if (useCustom && customResource?.url) return customResource;
+    const saved = store.loadResource();
+    if (String(saved.url || '').trim()) return saved as BackgroundResource;
+    const live = renderer.resource;
+    if (String(live.url || '').trim()) return live as BackgroundResource;
+    return null;
+  }
+
+  function clearDomPageBackgrounds(): void {
+    lobbyPageBackground.clear();
+    viewportPageBackground.clear();
+  }
+
+  /** 微端/浏览器：画布外留白与大厅页用 DOM 铺底，与 Laya 层配合。 */
+  function syncDomPageBackgrounds(show: boolean): void {
+    if (!show) {
+      clearDomPageBackgrounds();
+      return;
+    }
+    const res = currentBackgroundResource();
+    const storedUrl = String(res?.url || '').trim();
+    const url = runtimeBlobUrl || storedUrl;
+    if (!url) {
+      clearDomPageBackgrounds();
+      return;
+    }
+    const payload = { url, type: Number(res?.type) || 0 };
+    const inTable = Boolean(locator.gameScene());
+    const hallAllPaper = configStore.get('skin.allPaper') === true && !inTable;
+    if (inTable) {
+      viewportPageBackground.applyMargins(payload);
     } else {
-      await renderer.setEnabled(show);
+      viewportPageBackground.apply(payload);
+    }
+    if (hasLobbyPageBackgroundContainer() && hallAllPaper) {
+      lobbyPageBackground.clear();
+    } else if (hasLobbyPageBackgroundContainer()) {
+      lobbyPageBackground.apply(payload);
+    } else {
+      lobbyPageBackground.clear();
     }
   }
 
-  async function measureUpload(file: Blob, preferVideo = false): Promise<BackgroundResource> {
-    const url = URL.createObjectURL(file);
-    if (preferVideo || isCustomBackgroundVideo(file)) {
-      return { url, type: 1, width: 1920, height: 1080 };
+  /** 开关和 paperRes 都在，但 Laya 层上还没挂上背景。 */
+  function needsBackgroundRestore(): boolean {
+    if (!isOn() || !shouldShow()) return false;
+    const url = String(currentBackgroundResource()?.url || '').trim();
+    if (!url) return false;
+    if (useCustom && customResource?.url) return !renderer.isMounted();
+    return !renderer.isMounted();
+  }
+
+  /** 按开关和场景同步皮肤背景是否显示。 */
+  async function syncVisibility(): Promise<boolean> {
+    if (syncingVisibility) return true;
+    syncingVisibility = true;
+    try {
+      if (!isBackgroundUiScene(locator, globalObject) || !mayMutateSkinBackground(locator, globalObject, isOn)) {
+        return true;
+      }
+      reloadAccountBackground();
+      const show = shouldShow();
+      skinTrace('paper-visibility', {
+        show,
+        sceneName: locator.scene()?.SceneName,
+        inGame: Boolean(locator.gameScene()),
+        allPaper: configStore.get('skin.allPaper'),
+        resource: renderer.resource,
+        customResource,
+        useCustom,
+        layerFound: Boolean(locator.layer('BackgroundLayer')),
+        sceneLayerFound: Boolean(locator.layer('SceneLayer'))
+      });
+      const allPaper = configStore.get('skin.allPaper') === true;
+      if (!show) {
+        await renderer.syncSceneVisibility(false, allPaper);
+        clearDomPageBackgrounds();
+        return true;
+      }
+      if (useCustom && customResource) {
+        const playable = await resolvePlayableResource(customResource);
+        const ok = await renderer.setBackground(playable, false);
+        if (ok) {
+          await renderer.syncSceneVisibility(true, allPaper);
+          syncDomPageBackgrounds(true);
+        } else clearDomPageBackgrounds();
+        return ok;
+      }
+      let applied = await renderer.setEnabled(true);
+      if (!applied) {
+        applied = await reapplyStoredBackground();
+      }
+      if (!applied && show) {
+        const saved = await resolvePlayableResource(store.loadResource());
+        applied = await renderer.setBackground(saved, false);
+      }
+      if (!applied) {
+        await renderer.syncSceneVisibility(false, allPaper);
+        clearDomPageBackgrounds();
+        return false;
+      }
+      await renderer.syncSceneVisibility(true, allPaper);
+      syncDomPageBackgrounds(true);
+      return true;
+    } finally {
+      syncingVisibility = false;
     }
-    if (typeof createImageBitmap !== 'function') return { url, type: 0, width: 1920, height: 1080 };
+  }
+
+  async function measureUpload(
+    file: Blob,
+    options: {
+      preferVideo?: boolean;
+      isVideo?: boolean;
+      width?: number;
+      height?: number;
+      fileName?: string;
+    } = {}
+  ): Promise<BackgroundResource> {
+    const video = options.preferVideo === true || isCustomBackgroundVideo(file, options);
+    const playback = blobForBackgroundPlayback(
+      file,
+      video,
+      video ? 'video/mp4' : 'image/png'
+    );
+    const url = URL.createObjectURL(playback);
+    if (video) {
+      return {
+        url,
+        type: 1,
+        width: Number(options.width) || DEFAULT_STAGE_WIDTH,
+        height: Number(options.height) || DEFAULT_STAGE_HEIGHT
+      };
+    }
+    if (Number(options.width) > 0 && Number(options.height) > 0) {
+      return { url, type: 0, width: Number(options.width), height: Number(options.height) };
+    }
+    if (typeof createImageBitmap !== 'function') return { url, type: 0, width: DEFAULT_STAGE_WIDTH, height: DEFAULT_STAGE_HEIGHT };
     try {
       const bitmap = await createImageBitmap(file);
       const size = { width: bitmap.width, height: bitmap.height };
       bitmap.close?.();
       return { url, type: 0, ...size };
     } catch {
-      return { url, type: 0, width: 1920, height: 1080 };
+      if (detectCustomBackgroundVideo(file, options)) {
+        return { url, type: 1, width: Number(options.width) || DEFAULT_STAGE_WIDTH, height: Number(options.height) || DEFAULT_STAGE_HEIGHT };
+      }
+      return { url, type: 0, width: DEFAULT_STAGE_WIDTH, height: DEFAULT_STAGE_HEIGHT };
     }
   }
 
   async function applyCustom(record: CustomBackgroundRecord): Promise<void> {
     if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
-    customResource = await measureUpload(record.blob, isCustomBackgroundVideo(record.blob));
+    customResource = await measureUpload(record.blob, {
+      preferVideo: record.isVideo === true,
+      width: record.width,
+      height: record.height,
+      fileName: record.fileName,
+      isVideo: record.isVideo
+    });
     useCustom = true;
-    await syncVisibility();
+    let applied = false;
+    try {
+      applied = await syncVisibility();
+    } catch (error) {
+      console.warn('[自定义背景] 应用失败:', error);
+      applied = false;
+    }
+    if (!applied) {
+      showToast(
+        customResource && Number(customResource.type) === 1
+          ? '视频背景加载失败，换 H.264 编码的 MP4 或先用图片'
+          : '背景加载失败，换一张图或稍后再试',
+        'error',
+        5000
+      );
+      return;
+    }
     if (!shouldShow()) showToast('已保存，进局后会换成这张背景', 'success');
     else showToast(
-      isCustomBackgroundVideo(record.blob) ? '背景已换成上传的视频' : '背景已换成上传的图片',
+      isCustomBackgroundVideo(record.blob, record) ? '背景已换成上传的视频' : '背景已换成上传的图片',
       'success'
     );
   }
@@ -802,7 +1164,13 @@ export function installSkinPaperController(
     const saved = await customStore.load();
     if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
     if (saved?.active) {
-      customResource = await measureUpload(saved.blob, saved.isVideo === true);
+      customResource = await measureUpload(saved.blob, {
+        preferVideo: saved.isVideo === true,
+        width: saved.width,
+        height: saved.height,
+        fileName: saved.fileName,
+        isVideo: saved.isVideo
+      });
       useCustom = true;
     } else {
       customResource = null;
@@ -813,8 +1181,16 @@ export function installSkinPaperController(
   }
 
   function onSwitchChanged(): void {
-    syncVisibility();
     options.syncWallpaperMenu();
+    if (!isOn()) {
+      if (isBackgroundUiScene(locator, globalObject)) void renderer.syncSceneVisibility(false, false);
+      clearDomPageBackgrounds();
+      refreshChangeSkinWindow();
+      return;
+    }
+    if (mayMutateSkinBackground(locator, globalObject, isOn)) {
+      void syncVisibility();
+    }
     refreshChangeSkinWindow();
   }
 
@@ -851,47 +1227,113 @@ export function installSkinPaperController(
       useCustom = false;
       void customStore.setActive(false);
       if (renderer.hasBackground()) renderer.clearBackground(true);
+      clearDomPageBackgrounds();
       favoritesTab.refreshSelection();
     },
     attachMenu: (menu) => favoritesTab.attach(menu),
     detachMenu: (menu) => favoritesTab.detach(menu)
   };
 
+  async function releaseMatchBackground(): Promise<void> {
+    if (!isOn()) return;
+    const allPaper = configStore.get('skin.allPaper') === true;
+    if (allPaper) {
+      await syncVisibility();
+      return;
+    }
+    await renderer.syncSceneVisibility(false, allPaper);
+    clearDomPageBackgrounds();
+  }
+
   const unsubscribes = [
     configStore.subscribe('skin.skinPaper', onSwitchChanged),
-    configStore.subscribe('skin.allPaper', syncVisibility)
+    configStore.subscribe('skin.allPaper', onSwitchChanged),
+    configStore.subscribe('skin.officialBackground', onSwitchChanged)
   ];
-  watchWindowShow(locator, patcher, tasks, ['SkinInfoWindow', 'ChangeSkinWindow'], (name) => {
-    if (name === 'SkinInfoWindow') onSkinInfoWindow();
-    else onChangeSkinWindow();
-  });
+  if (options.gameEvents) {
+    unsubscribes.push(options.gameEvents.subscribe((event) => {
+      if (event.type === 'game-ended') void releaseMatchBackground();
+      else if (event.type === 'game-started') void syncVisibility();
+    }));
+  }
   const unbindCustom = bindCustomBackgroundActions({
     apply: applyCustom,
     clear: clearCustom
   });
-  watchSceneSwitch(locator, patcher, tasks, () => {
+  async function applyHallBackgroundOnce(): Promise<void> {
+    if (!isOn()) return;
+    reloadAccountBackground();
+    await restoreCustom();
+    await syncVisibility();
+  }
+
+  const wantsHallAutoBackground = () => configStore.get('skin.allPaper') === true;
+
+  function onBackgroundSceneReady(): void {
+    if (!isOn()) return;
+    const allPaper = configStore.get('skin.allPaper') === true;
+    const sceneName = String(locator.scene()?.SceneName ?? '');
+    if (sceneName === 'HallScene') {
+      if (!isBackgroundUiScene(locator, globalObject)) return;
+      if (wantsHallAutoBackground()) void applyHallBackgroundOnce();
+      else void renderer.syncSceneVisibility(false, false);
+      return;
+    }
+    if (!mayMutateSkinBackground(locator, globalObject, isOn)) return;
+    renderer.onSceneChange(allPaper);
     void syncVisibility();
-  });
-  void tasks.poll(() => locator.dispatcher() && locator.scene(), Infinity, 1000).then((ready) => {
-    if (ready) void restoreCustom();
-  });
-  let seenAccount = accountStorageKey(storage);
-  const watchAccount = () => {
-    tasks.later(() => {
-      const next = accountStorageKey(storage);
-      if (next !== seenAccount) {
-        seenAccount = next;
-        void restoreCustom();
-      }
-      watchAccount();
-    }, 1000);
+  }
+
+  let backgroundHooksStarted = false;
+
+  function startBackgroundLifecycleHooks(): void {
+    if (backgroundHooksStarted) return;
+    backgroundHooksStarted = true;
+    watchWindowShow(locator, patcher, tasks, ['ChangeSkinWindow'], () => onChangeSkinWindow(), globalObject);
+    watchSceneSwitch(locator, patcher, tasks, onBackgroundSceneReady, globalObject);
+    void tasks.poll(() => {
+      if (!isOn() || !mayMutateSkinBackground(locator, globalObject, isOn)) return null;
+      return true;
+    }, Infinity, 2000).then(() => {
+      void syncVisibility();
+    });
+  }
+
+  function waitForSafeBackgroundHooks(): void {
+    void tasks.poll(() => {
+      if (!isOn() || !isBackgroundUiScene(locator, globalObject)) return null;
+      return true;
+    }, Infinity, 1000).then(() => startBackgroundLifecycleHooks());
+  }
+
+  if (isOn()) {
+    waitForSkinDetailHooks();
+    waitForSafeBackgroundHooks();
+  } else {
+    const unsubPaper = configStore.subscribe('skin.skinPaper', (detail) => {
+      if (detail.value !== true) return;
+      waitForSkinDetailHooks();
+      waitForSafeBackgroundHooks();
+    });
+    unsubscribes.push(unsubPaper);
+  }
+  const onAccountBucketChange = () => {
+    if (!mayMutateSkinBackground(locator, globalObject, isOn)) return;
+    void syncVisibility();
   };
-  watchAccount();
+  if (typeof window !== 'undefined') {
+    window.addEventListener(CONFIG_ACCOUNT_SYNC_EVENT, onAccountBucketChange);
+  }
 
   return {
     menuExtension,
     filterMessage,
     dispose() {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(CONFIG_ACCOUNT_SYNC_EVENT, onAccountBucketChange);
+      }
+      revokeRuntimeBlobUrl();
+      clearDomPageBackgrounds();
       unbindCustom();
       unsubscribes.splice(0).forEach((unsubscribe) => unsubscribe());
       tasks.dispose();

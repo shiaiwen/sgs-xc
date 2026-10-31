@@ -2,7 +2,9 @@
  * 皮肤背景收藏与选项持久化存储。
  */
 
+import { readBrowserSetting } from '../../adapters/browser-settings.ts';
 import { accountStorageKey, readJson, removeStored, writeJson } from './skin-runtime.ts';
+import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 
 /** type：0 静态图，1 视频（不支持做背景），2 骨骼 .sk，3 新版 Spine，4 旧版 Spine。 */
 export interface BackgroundResource {
@@ -66,10 +68,35 @@ export function normalizeFavorite(value: unknown): BackgroundFavorite | null {
   };
 }
 
+export interface SkinBackgroundStoreOptions {
+  /** 与参考脚本一致：优先 UserData.clientId，否则登录名。 */
+  resolveAccountId?: () => string;
+}
+
+function readStorageHint(
+  storage: BackgroundStorage | undefined,
+  name: string
+): string {
+  const fromShared = readBrowserSetting(name);
+  if (fromShared) return fromShared;
+  try {
+    return storage?.getItem(name) ?? '';
+  } catch {
+    return '';
+  }
+}
+
 /** 创建皮肤背景收藏仓库。 */
-export function createSkinBackgroundStore(storage: BackgroundStorage | undefined): SkinBackgroundStore {
-  const resourceKey = () => `${accountStorageKey(storage)}${RESOURCE_SUFFIX}`;
-  const favoritesKey = () => `${accountStorageKey(storage)}${FAVORITES_SUFFIX}`;
+export function createSkinBackgroundStore(
+  storage: BackgroundStorage | undefined,
+  options: SkinBackgroundStoreOptions = {}
+): SkinBackgroundStore {
+  const resolveAccountId = () => {
+    const resolved = options.resolveAccountId?.().trim();
+    return resolved || accountStorageKey(storage);
+  };
+  const resourceKey = () => `${resolveAccountId()}${RESOURCE_SUFFIX}`;
+  const favoritesKey = () => `${resolveAccountId()}${FAVORITES_SUFFIX}`;
   const listeners = new Set<() => void>();
 
   function favorites(): BackgroundFavorite[] {
@@ -94,13 +121,81 @@ export function createSkinBackgroundStore(storage: BackgroundStorage | undefined
     });
   }
 
+  function candidateResourceKeys(): string[] {
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    const push = (key: string) => {
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      keys.push(key);
+    };
+    push(resourceKey());
+    push(`default${RESOURCE_SUFFIX}`);
+    const legacyKey = `${accountStorageKey(storage)}${RESOURCE_SUFFIX}`;
+    push(legacyKey);
+    for (const name of ['LastUserName', 'SGS_LASTLOGIN_ACCOUNT', 'SGS_LASTLOGIN_ACCOUNT1'] as const) {
+      const account = readStorageHint(storage, name).trim();
+      if (account) push(`${account}${RESOURCE_SUFFIX}`);
+    }
+    return keys;
+  }
+
+  function readRecordFromKey(key: string): Partial<BackgroundResource> | null {
+    const parse = (raw: string | null): Partial<BackgroundResource> | null => {
+      if (!raw) return null;
+      try {
+        const value = JSON.parse(raw) as Partial<BackgroundResource>;
+        if (!value || typeof value !== 'object') return null;
+        return String(value.url || '').trim() ? value : null;
+      } catch {
+        return null;
+      }
+    };
+    const fromShared = parse(readBrowserSetting(key));
+    if (fromShared) return fromShared;
+    try {
+      return parse(storage?.getItem(key) ?? null);
+    } catch {
+      return null;
+    }
+  }
+
+  function readStoredResource(): Partial<BackgroundResource> {
+    const currentKey = resourceKey();
+    for (const key of candidateResourceKeys()) {
+      const value = readRecordFromKey(key);
+      if (!value) continue;
+      if (key !== currentKey) writeJson(storage, currentKey, value);
+      return value;
+    }
+    return {};
+  }
+
   return {
     loadResource() {
-      const value = readJson<Partial<BackgroundResource>>(storage, resourceKey(), {});
-      return value && typeof value === 'object' ? value : {};
+      return readStoredResource();
     },
     saveResource(resource) {
-      writeJson(storage, resourceKey(), resource);
+      const url = String(resource.url || '').trim();
+      if (!url) return;
+      let width = Number(resource.width);
+      let height = Number(resource.height);
+      if (!(width > 0 && height > 0)) {
+        width = DEFAULT_STAGE_WIDTH;
+        height = DEFAULT_STAGE_HEIGHT;
+      }
+      const payload = {
+        url,
+        type: Number(resource.type) || 0,
+        width,
+        height
+      };
+      writeJson(storage, resourceKey(), payload);
+      const loginName = accountStorageKey(storage);
+      const activeId = resolveAccountId();
+      if (loginName && loginName !== 'default' && loginName !== activeId) {
+        writeJson(storage, `${loginName}${RESOURCE_SUFFIX}`, payload);
+      }
     },
     clearResource() {
       removeStored(storage, resourceKey());

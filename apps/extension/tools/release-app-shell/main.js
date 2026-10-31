@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const path = require('path')
 const os = require('os')
 const { createSharedStore, createJsonConfig, normalizeCredentials: normalizeSharedCredentials } = require('./shared-store')
+const { createCustomBackgroundDiskStore } = require('./shared-data-store')
 const { selectInstanceProfile } = require('./instance-profile')
 const instanceProfile = selectInstanceProfile(app)
 const { createHtmlReportOpener } = require('./report-window')
@@ -830,6 +831,16 @@ ipcMain.on('xiaochao-credentials-set-sync', (event, payload) => {
         console.error('shared credentials write failed:', error);
         event.returnValue = false;
     }
+});
+
+let customBackgroundDiskStore;
+ipcMain.handle('xiaochao-custom-background', async (_event, operation) => {
+    if (!customBackgroundDiskStore) {
+        customBackgroundDiskStore = createCustomBackgroundDiskStore(
+            path.join(instanceProfile.sharedUserData, 'xiaochao', 'custom-backgrounds')
+        );
+    }
+    return customBackgroundDiskStore(operation);
 });
 
 function readLocalScriptCached() {

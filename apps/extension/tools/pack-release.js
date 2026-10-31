@@ -22,7 +22,8 @@ const viteBin = path.join(path.dirname(vitePackageJson), 'bin', 'vite.js');
 const assetsDir = path.join(root, 'tools', 'release-assets');
 /** 已验证可启动的微端壳（不含 xiaochao.js）；打包时只替换脚本。 */
 const shellDir = path.join(root, 'tools', 'release-app-shell');
-const stagingRoot = path.join(root, 'release', '.staging');
+const releaseDir = path.join(root, 'release');
+const stagingRoot = path.join(releaseDir, '.staging');
 const appDir = path.join(stagingRoot, 'app');
 const packDir = path.join(stagingRoot, 'pack');
 const builtScript = path.join(root, 'dist', 'electron', 'xiaochao.js');
@@ -66,6 +67,20 @@ function bumpProjectVersion() {
   return pkg.version;
 }
 
+/** 正式发版前删掉 release 里上一版的 zip、脚本和清单，避免旧包残留在目录里。 */
+function clearPreviousReleaseOutput() {
+  if (process.env.RELEASE_BUILD !== '1') return;
+  if (!existsSync(releaseDir)) {
+    mkdirSync(releaseDir, { recursive: true });
+    console.log('[pack] 创建 release 目录');
+    return;
+  }
+  for (const name of readdirSync(releaseDir)) {
+    rmSync(path.join(releaseDir, name), { recursive: true, force: true });
+  }
+  console.log('[pack] 已清空 release 目录（删除上一版发布产物）');
+}
+
 function resolveVersion() {
   if (process.env.RELEASE_BUILD === '1') {
     const bumped = bumpProjectVersion();
@@ -98,6 +113,8 @@ async function createZip(zipPath, entries, cwd) {
 }
 
 async function main() {
+  clearPreviousReleaseOutput();
+
   const requiredShellFiles = [
     'main.js',
     'package.json',
@@ -167,24 +184,23 @@ async function main() {
     copyFileSync(from, path.join(packDir, file));
   }
 
-  mkdirSync(path.join(root, 'release'), { recursive: true });
-  const releaseZipPath = path.join(root, 'release', releaseZipName(scriptVersion));
-  const releaseAppZipPath = path.join(root, 'release', 'app.zip');
+  mkdirSync(releaseDir, { recursive: true });
+  const releaseZipPath = path.join(releaseDir, releaseZipName(scriptVersion));
+  const releaseAppZipPath = path.join(releaseDir, 'app.zip');
   copyFileSync(appZipPath, releaseAppZipPath);
   console.log(`[pack] 生成 ${releaseZipName(scriptVersion)}…`);
   await createZip(releaseZipPath, RELEASE_ASSET_FILES.concat('app.zip'), packDir);
 
   const stagedScript = path.join(appDir, 'xiaochao.js');
-  const releaseScriptPath = path.join(root, 'release', 'xiaochao.js');
+  const releaseScriptPath = path.join(releaseDir, 'xiaochao.js');
   if (!existsSync(stagedScript)) throw new Error('缺少组装后的 xiaochao.js');
-  mkdirSync(path.join(root, 'release'), { recursive: true });
   copyFileSync(stagedScript, releaseScriptPath);
 
   rmSync(stagingRoot, { recursive: true, force: true });
 
   const zipSize = statSync(releaseZipPath).size;
   const appSha256 = createHash('sha256').update(readFileSync(releaseAppZipPath)).digest('hex');
-  const scriptSha256 = createHash('sha256').update(readFileSync(path.join(root, 'release', 'xiaochao.js'))).digest('hex');
+  const scriptSha256 = createHash('sha256').update(readFileSync(releaseScriptPath)).digest('hex');
   const manifest = {
     version: scriptVersion,
     notes: '',
@@ -194,7 +210,7 @@ async function main() {
     scriptUrl: 'https://xc.95chong.cn/downloads/xiaochao.js',
     scriptSha256
   };
-  const manifestPath = path.join(root, 'release', 'xiaochao-manifest.json');
+  const manifestPath = path.join(releaseDir, 'xiaochao-manifest.json');
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   const serverManifest = path.resolve(root, '..', 'server', 'data', 'xiaochao-manifest.json');
   if (existsSync(path.dirname(serverManifest))) {

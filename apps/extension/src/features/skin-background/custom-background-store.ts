@@ -1,7 +1,14 @@
 /**
  * 自定义背景图存在本机，每个登录账号一张。
+ * 微端大文件走主进程磁盘；油猴/网页仍用 IndexedDB。
  */
 
+import {
+  assertCustomBackgroundMediaKind,
+  blobForBackgroundPlayback,
+  detectCustomBackgroundVideo,
+  probeCustomBackgroundFile
+} from './custom-background-media.ts';
 import { accountStorageKey } from './skin-runtime.ts';
 
 const DB_NAME = 'xiaochao-custom-background';
@@ -15,6 +22,12 @@ export interface CustomBackgroundRecord {
   updatedAt: number;
   /** IndexedDB 里 blob 可能没有 mime，恢复时用此标记区分视频。 */
   isVideo?: boolean;
+  width?: number;
+  height?: number;
+  fileName?: string;
+  mime?: string;
+  /** 微端：正文在磁盘，IndexedDB 只留元数据。 */
+  storage?: 'disk';
 }
 
 export interface CustomBackgroundActions {
@@ -30,15 +43,26 @@ export interface CustomBackgroundStore {
   subscribe(listener: () => void): () => void;
 }
 
-export function isCustomBackgroundVideo(file: Blob): boolean {
-  const mime = String(file.type || '').toLowerCase();
-  if (mime.startsWith('video/')) return true;
-  if (file instanceof File) return file.name.toLowerCase().endsWith('.mp4');
-  return false;
+interface CustomBackgroundDiskMeta {
+  type?: string;
+  isVideo?: boolean;
+  width?: number;
+  height?: number;
+  fileName?: string;
+  active?: boolean;
+  updatedAt?: number;
 }
 
-export function assertCustomBackgroundFile(file: Blob): void {
+type CustomBackgroundBridge = (operation: Record<string, unknown>) => Promise<unknown>;
+
+export function isCustomBackgroundVideo(file: Blob, hint?: Pick<CustomBackgroundRecord, 'isVideo' | 'fileName'>): boolean {
+  if (hint?.isVideo === true) return true;
+  return detectCustomBackgroundVideo(file, hint?.fileName || (file instanceof File ? file.name : ''));
+}
+
+export function assertCustomBackgroundFile(file: Blob, fileName = ''): void {
   if (file.size <= 0) throw new Error('文件不能为空');
+  assertCustomBackgroundMediaKind(file, fileName || (file instanceof File ? file.name : ''));
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -71,6 +95,29 @@ function currentAccountKey(): string {
   return `account:${safe}`;
 }
 
+function diskBridge(): CustomBackgroundBridge | null {
+  const bridge = (globalThis as { xiaochaoStorage?: { customBackground?: CustomBackgroundBridge } }).xiaochaoStorage
+    ?.customBackground;
+  return typeof bridge === 'function' ? bridge : null;
+}
+
+function normalizeRecord(row: unknown, blob: Blob): CustomBackgroundRecord {
+  const record = (row && typeof row === 'object' ? row : {}) as Partial<CustomBackgroundRecord>;
+  const fileName = String(record.fileName || '');
+  const isVideo = record.isVideo === true || isCustomBackgroundVideo(blob, { isVideo: record.isVideo, fileName });
+  return {
+    blob: blobForBackgroundPlayback(blob, isVideo, String(record.mime || '')),
+    active: record.active !== false,
+    updatedAt: Number(record.updatedAt) || 0,
+    isVideo,
+    width: Number(record.width) || undefined,
+    height: Number(record.height) || undefined,
+    fileName: fileName || undefined,
+    mime: String(record.mime || blob.type || '') || undefined,
+    storage: record.storage === 'disk' ? 'disk' : undefined
+  };
+}
+
 export function createCustomBackgroundStore(): CustomBackgroundStore {
   const listeners = new Set<() => void>();
   let database: Promise<IDBDatabase> | null = null;
@@ -100,48 +147,142 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
     listeners.forEach((listener) => listener());
   }
 
+  async function readDiskRecord(accountKey: string, row: Partial<CustomBackgroundRecord>): Promise<CustomBackgroundRecord | null> {
+    const bridge = diskBridge();
+    if (!bridge) return null;
+    const payload = await bridge({ action: 'get', accountKey }) as { buffer?: ArrayBuffer; meta?: CustomBackgroundDiskMeta } | null;
+    if (!payload?.buffer) return null;
+    const meta = payload.meta || {};
+    const isVideo = meta.isVideo === true || row.isVideo === true;
+    const blob = blobForBackgroundPlayback(
+      new Blob([payload.buffer], { type: String(meta.type || row.mime || '') }),
+      isVideo,
+      String(meta.type || row.mime || '')
+    );
+    return normalizeRecord({ ...row, ...meta, storage: 'disk' }, blob);
+  }
+
   async function load(): Promise<CustomBackgroundRecord | null> {
     await migrateLegacy();
     const account = currentAccountKey();
     const store = (await db()).transaction(STORE, 'readonly').objectStore(STORE);
     const row = await requestToPromise(store.get(account));
-    if (!row || typeof row !== 'object' || !(row.blob instanceof Blob)) return null;
-    const record = row as Partial<CustomBackgroundRecord>;
-    return {
-      blob: row.blob,
-      active: row.active !== false,
-      updatedAt: Number(row.updatedAt) || 0,
-      isVideo: record.isVideo === true || isCustomBackgroundVideo(row.blob)
-    };
+    if (!row || typeof row !== 'object') return null;
+    const partial = row as Partial<CustomBackgroundRecord>;
+    if (partial.storage === 'disk') return readDiskRecord(account, partial);
+    if (!(partial.blob instanceof Blob)) return null;
+    return normalizeRecord(partial, partial.blob);
   }
 
   return {
     load,
     async save(file) {
-      assertCustomBackgroundFile(file);
+      const fileName = file instanceof File ? file.name : '';
+      assertCustomBackgroundFile(file, fileName);
+      const probed = file instanceof File ? await probeCustomBackgroundFile(file) : null;
+      const isVideo = probed?.isVideo ?? isCustomBackgroundVideo(file, { fileName });
+      const width = probed?.width;
+      const height = probed?.height;
+      const mime = probed?.mime || file.type || (isVideo ? 'video/mp4' : '');
+      const playbackBlob = blobForBackgroundPlayback(file, isVideo, mime);
+      const account = currentAccountKey();
+      const bridge = diskBridge();
+      const updatedAt = Date.now();
+      if (bridge) {
+        await bridge({
+          action: 'put',
+          accountKey: account,
+          buffer: await playbackBlob.arrayBuffer(),
+          meta: {
+            type: mime,
+            isVideo,
+            width,
+            height,
+            fileName,
+            active: true,
+            updatedAt
+          }
+        });
+        const record: CustomBackgroundRecord = {
+          blob: playbackBlob,
+          active: true,
+          updatedAt,
+          isVideo,
+          width,
+          height,
+          fileName: fileName || undefined,
+          mime: mime || undefined,
+          storage: 'disk'
+        };
+        await migrateLegacy();
+        const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
+        await requestToPromise(store.put({
+          active: true,
+          updatedAt,
+          isVideo,
+          width,
+          height,
+          fileName,
+          mime,
+          storage: 'disk'
+        }, account));
+        notify();
+        return record;
+      }
       const record: CustomBackgroundRecord = {
-        blob: file,
+        blob: playbackBlob,
         active: true,
-        updatedAt: Date.now(),
-        isVideo: isCustomBackgroundVideo(file)
+        updatedAt,
+        isVideo,
+        width,
+        height,
+        fileName: fileName || undefined,
+        mime: mime || undefined
       };
       await migrateLegacy();
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
-      await requestToPromise(store.put(record, currentAccountKey()));
+      await requestToPromise(store.put(record, account));
       notify();
       return record;
     },
     async setActive(active) {
       const current = await load();
       if (!current) return;
+      const account = currentAccountKey();
+      const bridge = diskBridge();
+      if (current.storage === 'disk' && bridge) {
+        const existing = await bridge({ action: 'get', accountKey: account }) as {
+          buffer?: ArrayBuffer;
+          meta?: CustomBackgroundDiskMeta;
+        } | null;
+        if (existing?.buffer) {
+          await bridge({
+            action: 'put',
+            accountKey: account,
+            buffer: existing.buffer,
+            meta: {
+              ...(existing.meta || {}),
+              active,
+              updatedAt: current.updatedAt
+            }
+          });
+        }
+      }
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
-      await requestToPromise(store.put({ ...current, active }, currentAccountKey()));
+      const row = await requestToPromise(store.get(account));
+      const next = row && typeof row === 'object'
+        ? { ...(row as Record<string, unknown>), active }
+        : { active, updatedAt: Date.now(), isVideo: current.isVideo, storage: current.storage };
+      await requestToPromise(store.put(next, account));
       notify();
     },
     async clear() {
       await migrateLegacy();
+      const account = currentAccountKey();
+      const bridge = diskBridge();
+      if (bridge) await bridge({ action: 'remove', accountKey: account });
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
-      await requestToPromise(store.delete(currentAccountKey()));
+      await requestToPromise(store.delete(account));
       notify();
     },
     subscribe(listener) {
