@@ -1,18 +1,18 @@
 /**
- * 本地开发启动器：在加载正式 main.cjs 之前配置隔离环境。
+ * 本地开发启动器：在加载正式 main.js 之前配置隔离环境。
  *
  * - 将 userData 指到仓库内 .dev-data，避免污染正式微端数据；
  * - 关闭首次公告、清理过期远程脚本配置项；
  * - 可选诊断模式（SGSOL_DIAGNOSTICS=1）轮询 webview 健康、明牌/皮肤追踪、probe.js；
  * - 将渲染进程错误与加载失败写入 .dev-data/runtime.log。
  *
- * 用法：electron 指向本文件（或 npm 脚本包装），最终 require('./main.cjs')。
+ * 用法：electron 指向本文件。用户数据目录设好之后，再动态加载 main.js。
  */
 
-const { app } = require('electron');
-const fs = require('node:fs');
-const path = require('node:path');
-const root = __dirname;
+import { app } from 'electron';
+import fs from 'node:fs';
+import path from 'node:path';
+const root = import.meta.dirname;
 // 尽早关掉 Chromium 文件日志，避免在仓库里生成 debug.log
 app.commandLine.appendSwitch('disable-logging');
 app.commandLine.appendSwitch('log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
@@ -120,4 +120,4 @@ app.on('browser-window-created', (_, win) => {
   });
 });
 log('runtime', {electron:process.versions.electron,appPath:app.getAppPath(),data});
-require('./main.cjs');
+await import('./main.js');

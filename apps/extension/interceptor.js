@@ -6,12 +6,14 @@
  * 2. 将官服卡牌贴图重定向到本地 cards.webp；
  * 3. 将壁纸资源替换为本地 MP4/JPG/PNG（经 myprotocol 自定义协议提供）。
  *
- * 由 main.cjs 在 createWindow 后调用：await interceptor(mainWindow)。
+ * 由 main.js 在 createWindow 后调用：await interceptor(mainWindow)。
  */
 
-const {protocol} = require('electron');
-const path = require('path');
-const fs = require('fs');
+import { protocol } from 'electron';
+import path from 'node:path';
+import fs from 'node:fs';
+
+const moduleDirectory = import.meta.dirname;
 
 /** 官服壁纸编号 → 本地资源序号（1-based）的映射表。 */
 const bgList = [1,15,2,3,4,5,6,23,9,10,11,12,13,14,26,17,18,19,20,21]
@@ -20,7 +22,7 @@ const bgList = [1,15,2,3,4,5,6,23,9,10,11,12,13,14,26,17,18,19,20,21]
  * 注册自定义协议与请求拦截，仅作用于传入主窗口的 session。
  * @param {import('electron').BrowserWindow} mainWindow
  */
-module.exports = async function (mainWindow) {
+export default async function interceptor(mainWindow) {
     // const programDir = path.dirname(require('electron').app.getPath('exe')); // 程序目录
     // let afterjs = false;
     //
@@ -49,7 +51,7 @@ module.exports = async function (mainWindow) {
     async function createFileExistenceDictionary(type) {
         const fileExistDict = {};
         for (let index = 1; index <= 16; index++) {
-            const basePath = path.join(__dirname, `${index}`);
+            const basePath = path.join(moduleDirectory, `${index}`);
             const Path = `${basePath}` + '.' + type;
             const exists = await checkFileExists(Path);
             fileExistDict[index] = exists;
@@ -65,12 +67,12 @@ module.exports = async function (mainWindow) {
     // ]);
     // protocol.registerFileProtocol('myprotocol', (request, callback) => {
     //     const url = request.url.substr(12); // remove 'myprotocol://'
-    //     callback({ path: path.join(__dirname, url) });
+    //     callback({ path: path.join(moduleDirectory, url) });
     // });
     // 注册 myprotocol，把本地壁纸/贴图以带 CORS 头的文件响应出去
     protocol.registerFileProtocol('myprotocol', (request, callback) => {
         const url = request.url.substr(12); // 去掉协议部分
-        const localPath = path.join(__dirname, url); // 基于 URL 的本地文件路径
+        const localPath = path.join(moduleDirectory, url); // 基于 URL 的本地文件路径
 
         // 读取文件并添加 CORS 头
         const mimeType = getMimeType(localPath);
@@ -130,7 +132,7 @@ module.exports = async function (mainWindow) {
         if (url === 'https://mygame.5054399.com/js/stat.js' || url.startsWith('https://4399logs.4399doc.com/event/')) {
             callback({cancel: true});
         } else if (url.startsWith('https://web.sanguosha.com/220/h5_2/res/assets/cards/normal/officerCards.webp')) {
-            const Path = path.join(__dirname, `cards.webp`);
+            const Path = path.join(moduleDirectory, `cards.webp`);
             try {
                 if (await checkFileExists(Path)) {
                     const localImagePath = `myprotocol:/cards.webp`;
@@ -147,7 +149,7 @@ module.exports = async function (mainWindow) {
             const match = url.match(regex);
             if (match) {
                 const index = bgList.indexOf(parseInt(match[1])) + 1;
-                const basePath = path.join(__dirname, `${index}`);
+                const basePath = path.join(moduleDirectory, `${index}`);
                 const videoPath = `${basePath}.MP4`;
                 const jpgPath = `${basePath}.JPG`;
                 const pngPath = `${basePath}.PNG`;

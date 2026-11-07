@@ -2,9 +2,9 @@
  * 微端侧大文件存储：自定义背景视频等，避免 IndexedDB 配额与 mime 丢失。
  */
 
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 function accountPaths(directory, accountKey) {
     const hash = crypto.createHash('sha256').update(String(accountKey)).digest('hex').slice(0, 32);
@@ -59,4 +59,4 @@ function createCustomBackgroundDiskStore(directory) {
     };
 }
 
-module.exports = { createCustomBackgroundDiskStore };
+export { createCustomBackgroundDiskStore };

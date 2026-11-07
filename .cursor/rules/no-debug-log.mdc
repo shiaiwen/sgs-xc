@@ -16,6 +16,6 @@ Chromium/Electron 默认会在 cwd 或 `electron.exe` 旁写 `debug.log`（crash
 
 - `.gitignore`：`*.log` / `debug.log`
 - `tools/dev.js`：启动清残留 + Electron `--disable-logging --log-file=NUL`
-- `dev-main.cjs` / `main.cjs` / release 壳：`disable-logging`
+- `dev-main.js` / `main.js` / release 壳：`disable-logging`
 
 若仍看到新的 `debug.log`，先查是否有未带上述开关的 Electron 进程，再删文件。

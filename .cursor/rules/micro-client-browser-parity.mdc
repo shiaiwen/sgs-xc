@@ -19,7 +19,7 @@ alwaysApply: true
 动手前或改完问自己：
 
 1. 若用户只装油猴、不装微端，这个改动是否仍完整？
-2. 是否新增了只在 `apps/extension/main.cjs`、preload、Electron 专有工具里实现、却影响功能正确性的逻辑？
+2. 是否新增了只在 `apps/extension/main.js`、preload、Electron 专有工具里实现、却影响功能正确性的逻辑？
 3. 是否用了浏览器 CSP 或混合内容下会失败的请求方式，而微端里碰巧能通？
 
 ## 验证建议

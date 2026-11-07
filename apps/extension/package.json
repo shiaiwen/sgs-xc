@@ -46,7 +46,7 @@
   ],
   "description": "sgs Electron application",
   "productName": "SGSOL",
-  "main": "dev-main.cjs",
+  "main": "dev-main.js",
   "author": "yoka",
   "license": "CC0-1.0",
   "scripts": {

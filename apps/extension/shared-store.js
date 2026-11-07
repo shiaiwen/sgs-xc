@@ -5,8 +5,8 @@
  * 负责两类数据：小抄设置项（xiaochaoSettings）与按大区隔离的账号密码。
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
 
 /** 同步短暂休眠，仅用于目录锁轮询等待。 */
 function sleepSync(milliseconds) {
@@ -203,4 +203,4 @@ function createSharedStore(filePath) {
     };
 }
 
-module.exports = { createSharedStore, normalizeCredentials };
+export { createSharedStore, normalizeCredentials };

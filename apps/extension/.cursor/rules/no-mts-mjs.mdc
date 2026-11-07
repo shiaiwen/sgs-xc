@@ -1,5 +1,5 @@
 ---
-description: 禁止新增 .mts / .mjs；统一用 .ts / .js（CommonJS 用 .cjs）
+description: 禁止新增 .mts / .mjs。主进程用 .js ESM，沙箱 preload 保持 .cjs
 alwaysApply: true
 ---
 
@@ -11,6 +11,8 @@ alwaysApply: true
 |------|--------|
 | TypeScript 源码 / 测试 / Vite 配置 | `.ts` |
 | ESM JavaScript（`package.json` 已 `"type": "module"`） | `.js` |
-| 必须 CommonJS 的 Electron 壳 / 预加载等 | `.cjs` |
+| Electron 主进程 | `.js`。开发包是 `type: module`，Electron 44 直接按 ESM 加载 |
+| 沙箱 preload | `.cjs`。沙箱里写 `import` 会语法错误 |
+| 外框和游戏页 preload | `.cjs`。发布壳目录没有 `"type": "module"`，其中 `.js` 仍按 CommonJS 执行 |
 
-对照：`tools/dev.js`、`vite.electron.config.ts`、`tests/*.test.ts`、`main.cjs`。
+对照：`tools/dev.js`、`vite.electron.config.ts`、`tests/*.test.ts`、`main.js`、`script/electron_frame.cjs`。

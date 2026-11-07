@@ -10,26 +10,43 @@
  * - 开发时监视 dist/electron/xiaochao.js 变更并通知渲染进程热重载。
  *
  * 本地脚本注入由 preload（electron_frame.cjs）通过 read-local-script 完成；
- * 网络层壁纸/贴图替换见 interceptor.cjs。
+ * 网络层壁纸/贴图替换见 interceptor.js。
  */
 
-const { app, BrowserWindow, ipcMain, shell, dialog, globalShortcut, Menu, systemPreferences, screen, powerSaveBlocker } = require('electron')
-const { crashReporter, session  } = require('electron')
+import {
+    app,
+    BrowserWindow,
+    crashReporter,
+    dialog,
+    globalShortcut,
+    ipcMain,
+    Menu,
+    powerSaveBlocker,
+    screen,
+    session,
+    shell,
+    systemPreferences
+} from 'electron';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import interceptor from './interceptor.js';
+import appPackage from './package.json' with { type: 'json' };
+import { createHtmlReportOpener } from './report-window.js';
+import { createCustomBackgroundDiskStore } from './shared-data-store.js';
+import { createSharedStore, normalizeCredentials as normalizeSharedCredentials } from './shared-store.js';
+import microClientUpdate from './tools/release-app-shell/micro-client-update.js';
+
+const { scheduleMicroClientUpdate } = microClientUpdate;
+const moduleDirectory = import.meta.dirname;
+const requireNative = createRequire(import.meta.url);
+
 /** electron-updater 实例；加载失败时保持 null 并记录原因。 */
 let autoUpdater = null;
 let autoUpdaterLoadError = null;
 let updateHandleInitialized = false;
-
-const { scheduleMicroClientUpdate } = require('./tools/release-app-shell/micro-client-update');
-const fs = require('fs');
-const crypto = require('crypto');
-const path = require('path')
-const os = require('os')
-const { createSharedStore, normalizeCredentials: normalizeSharedCredentials } = require('./shared-store.cjs')
-const { createCustomBackgroundDiskStore } = require('./shared-data-store.cjs')
-const { createHtmlReportOpener } = require('./report-window.cjs')
-
-
 /** Steam 应用 ID（platform==1 渠道使用）。 */
 const steamAppID = 4209770;
 let mainWindow;
@@ -44,7 +61,7 @@ let tempScriptPath = '';
 let logFilePath = '';
 let config = null;
 /** Vite 开发产物路径；存在时优先于内置/用户目录脚本。 */
-const developmentScriptPath = path.join(__dirname, 'dist', 'electron', 'xiaochao.js');
+const developmentScriptPath = path.join(moduleDirectory, 'dist', 'electron', 'xiaochao.js');
 let developmentScriptWatcher = null;
 let developmentReloadTimer = null;
 global.config = config;
@@ -57,12 +74,6 @@ const localScriptCache = {
     size: -1,
     data: ''
 };
-let interceptor = null;
-try {
-    interceptor = require('./interceptor.cjs');
-} catch (error) {
-    console.error('interceptor load failed:', error);
-}
 const openXcWindow = createHtmlReportOpener({
     BrowserWindow,
     getUserDataPath: () => app.getPath('userData'),
@@ -84,25 +95,26 @@ app.commandLine.appendSwitch('ignore-gpu-blacklist');
 app.commandLine.appendSwitch('disable-logging');
 app.commandLine.appendSwitch('log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
 
-var package = require("./package.json");
-global.Version = package.version;
-global.IsTest = package.IsTest;
-global.PackageId = package.packageId;
-global.URLOffTest = package.URLOffTest;
-global.URLLYTest = package.URLLYTest;
-global.platform = package.platform;
+global.Version = appPackage.version;
+global.IsTest = appPackage.IsTest;
+global.PackageId = appPackage.packageId;
+global.URLOffTest = appPackage.URLOffTest;
+global.URLLYTest = appPackage.URLLYTest;
+global.platform = appPackage.platform;
 
-global.AutoUpdaterURL = package.AutoUpdaterURL;
-global.JumpURL = package.JumpURL;
-global.FeedURL = package.FeedURL;
-global.LoginURL = package.LoginURL;
-global.IsDebug = package.IsDebug;
-global.ChannelId = package.ChannelId;
+global.AutoUpdaterURL = appPackage.AutoUpdaterURL;
+global.JumpURL = appPackage.JumpURL;
+global.FeedURL = appPackage.FeedURL;
+global.LoginURL = appPackage.LoginURL;
+global.IsDebug = appPackage.IsDebug;
+global.ChannelId = appPackage.ChannelId;
 
 let steamworks = null;
+let client = null;
 if (global.platform == 1) {
     try {
-        steamworks = require('steamworks.js');
+        // 可选原生模块，只在 Steam 渠道、窗口创建前同步加载。
+        steamworks = requireNative('steamworks.js');
         let relaunch = steamworks.restartAppIfNecessary(steamAppID);
         if (relaunch) {
             app.quit();
@@ -150,7 +162,7 @@ function loadWindow() {
  */
 async function createWindow() {
     await initConfig();
-    global.PackageId = config.get('packageId', package.packageId);
+    global.PackageId = config.get('packageId', appPackage.packageId);
 
     // Create the browser window.
     console.log("createWindow");
@@ -270,7 +282,7 @@ async function createWindow() {
         mainWindow.webContents.send('onF6', 1);
     })
     if (global.platform == 0) {
-        updateHandle();
+        await updateHandle();
     }
 }
 
@@ -507,7 +519,7 @@ app.on('web-contents-created', (e, webContents) => {
 // code. You can also put them in separate files and require them here.
 
 /** 惰性加载 electron-updater；Node 过旧或缺 fs/promises 时禁用。 */
-function loadAutoUpdaterCompat() {
+async function loadAutoUpdaterCompat() {
     if (autoUpdater) return autoUpdater;
     if (autoUpdaterLoadError) return null;
 
@@ -519,8 +531,11 @@ function loadAutoUpdaterCompat() {
     }
 
     try {
-        require('fs/promises');
-        autoUpdater = require("electron-updater").autoUpdater;
+        await import('node:fs/promises');
+        const imported = await import('electron-updater');
+        const exported = imported.default ?? imported;
+        autoUpdater = exported.autoUpdater;
+        if (!autoUpdater) throw new Error('electron-updater has no autoUpdater export');
         return autoUpdater;
     } catch (error) {
         autoUpdaterLoadError = error;
@@ -530,12 +545,12 @@ function loadAutoUpdaterCompat() {
 }
 
 /** 正式包自动更新：检查、下载进度转发、下载完成后 quitAndInstall。 */
-function updateHandle() {
+async function updateHandle() {
     if (!app.isPackaged) return;
     if (updateHandleInitialized) return;
     updateHandleInitialized = true;
 
-    const updater = loadAutoUpdaterCompat();
+    const updater = await loadAutoUpdaterCompat();
     if (!updater) {
         ipcMain.on("checkForUpdate", () => {
             const reason = autoUpdaterLoadError ? autoUpdaterLoadError.message : 'unknown reason';
@@ -715,7 +730,7 @@ function createJsonConfig(filePath) {
     };
 }
 
-/** 惰性获取跨实例共享存储（shared-store.cjs）。 */
+/** 惰性获取跨实例共享存储。 */
 function getSharedConfig() {
     if (!sharedConfig) {
         const filePath = sharedConfigPath || path.join(app.getPath('userData'), 'xiaochao', 'shared.json');
@@ -874,37 +889,37 @@ function clearLocalScriptCache() {
 /** 合并 package.json 与当前 config 中的 packageId，供渲染进程查询。 */
 function getPackageSnapshot() {
     return {
-        ...package,
-        packageId: config.get('packageId', package.packageId),
-        IsDebug: package.IsDebug,
-        IsTest: package.IsTest,
-        LoginURL: package.LoginURL,
-        ADLoginURL: package.ADLoginURL,
-        AutoUpdaterURL: package.AutoUpdaterURL,
-        JumpURL: package.JumpURL,
-        FeedURL: package.FeedURL,
-        ChannelId: package.ChannelId,
-        URLLYTest: package.URLLYTest,
-        URLOffTest: package.URLOffTest,
-        platform: package.platform
+        ...appPackage,
+        packageId: config.get('packageId', appPackage.packageId),
+        IsDebug: appPackage.IsDebug,
+        IsTest: appPackage.IsTest,
+        LoginURL: appPackage.LoginURL,
+        ADLoginURL: appPackage.ADLoginURL,
+        AutoUpdaterURL: appPackage.AutoUpdaterURL,
+        JumpURL: appPackage.JumpURL,
+        FeedURL: appPackage.FeedURL,
+        ChannelId: appPackage.ChannelId,
+        URLLYTest: appPackage.URLLYTest,
+        URLOffTest: appPackage.URLOffTest,
+        platform: appPackage.platform
     };
 }
 
 /** 按名称返回运行时全局量（供 preload 同步 IPC 使用）。 */
 function getRuntimeGlobal(name) {
     switch (name) {
-        case 'PackageId': return config.get('packageId', package.packageId);
-        case 'Version': return package.version;
-        case 'IsTest': return package.IsTest;
-        case 'IsDebug': return package.IsDebug;
-        case 'LoginURL': return package.LoginURL;
-        case 'AutoUpdaterURL': return package.AutoUpdaterURL;
-        case 'JumpURL': return package.JumpURL;
-        case 'FeedURL': return package.FeedURL;
-        case 'ChannelId': return package.ChannelId;
-        case 'URLLYTest': return package.URLLYTest;
-        case 'URLOffTest': return package.URLOffTest;
-        case 'platform': return package.platform;
+        case 'PackageId': return config.get('packageId', appPackage.packageId);
+        case 'Version': return appPackage.version;
+        case 'IsTest': return appPackage.IsTest;
+        case 'IsDebug': return appPackage.IsDebug;
+        case 'LoginURL': return appPackage.LoginURL;
+        case 'AutoUpdaterURL': return appPackage.AutoUpdaterURL;
+        case 'JumpURL': return appPackage.JumpURL;
+        case 'FeedURL': return appPackage.FeedURL;
+        case 'ChannelId': return appPackage.ChannelId;
+        case 'URLLYTest': return appPackage.URLLYTest;
+        case 'URLOffTest': return appPackage.URLOffTest;
+        case 'platform': return appPackage.platform;
         case 'scriptPath': return scriptPath;
         case 'configPath': return configPath;
         default: return global[name];
@@ -1068,7 +1083,7 @@ function createContextMenu() {
         { label: '修改分辨率', click: () => resizeWindow(mainWindow) },
         { label: '查看微端说明', click: () => firstTimeAnnouncement(mainWindow, true) },
         { type: 'separator' },
-        { label: `微端版本 ${package.version}`, enabled: false }
+        { label: `微端版本 ${appPackage.version}`, enabled: false }
     ]);
 }
 
@@ -1105,7 +1120,7 @@ function compareVersions(left, right) {
 
 /** 安装包内置小抄脚本路径（与 main 同级的 xiaochao.js）。 */
 function bundledScriptPath() {
-    return path.join(__dirname, 'xiaochao.js');
+    return path.join(moduleDirectory, 'xiaochao.js');
 }
 
 /**
@@ -1203,14 +1218,14 @@ async function initConfig() {
     initializeWritablePaths();
     await syncBundledScriptIfNewer();
     config.ensureDefaults({
-        packageId: package.packageId || 1,
+        packageId: appPackage.packageId || 1,
         width: 1400,
         height: 820,
         firstTime: true,
         firstTimeAnnouncementSeen: false
     });
     global.config = config;
-    global.PackageId = config.get('packageId', package.packageId);
+    global.PackageId = config.get('packageId', appPackage.packageId);
     logMessage('Application started');
 }
 if (steamworks && typeof steamworks.electronEnableSteamOverlay === 'function') {

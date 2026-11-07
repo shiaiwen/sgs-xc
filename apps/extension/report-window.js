@@ -1,8 +1,6 @@
-'use strict';
-
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const reportWindowInteractionScript = `(() => {
     if (window.__XIAOCHAO_REPORT_INTERACTION__) return;
@@ -117,7 +115,7 @@ function createHtmlReportOpener({ BrowserWindow, getUserDataPath, getWorkAreaSiz
     };
 }
 
-module.exports = {
+export {
     createHtmlReportOpener,
     decodeHtmlDataUrl,
     getReportWindowSize,
