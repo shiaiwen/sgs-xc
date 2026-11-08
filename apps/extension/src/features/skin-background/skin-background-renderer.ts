@@ -193,6 +193,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
 
   function bitmapSize(node: UnknownRecord | null): { width: number; height: number } {
     const texture = asRecord(node?.texture);
+    // 视频贴图自己的宽高永远是 1，真实尺寸只能用视频的画面尺寸。
+    if (texture && texture === videoTexture && videoDrawSize.width > 0 && videoDrawSize.height > 0) {
+      return { width: videoDrawSize.width, height: videoDrawSize.height };
+    }
     return {
       width: Number(texture?.sourceWidth) || Number(texture?.width) || 0,
       height: Number(texture?.sourceHeight) || Number(texture?.height) || 0
@@ -954,6 +958,18 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (typeof flat.repaint === 'function') callMethod(flat, 'repaint');
   }
 
+  /** 视频贴图只有在「开始播放」之后才会把画面传给显卡，不调用的话整张图是黑的。 */
+  function enableVideoBitmapUpload(bitmap: UnknownRecord): void {
+    if (typeof bitmap.videoPlay === 'function') {
+      try {
+        callMethod(bitmap, 'videoPlay');
+      } catch {
+        // 视频已经在播，忽略重复播放失败。
+      }
+    }
+    bitmap.updatable = true;
+  }
+
   function updateVideoBitmapData(bitmap: UnknownRecord): void {
     if (typeof bitmap._updateVideoData === 'function') callMethod(bitmap, '_updateVideoData');
     else if (typeof bitmap.onVideoMetaLoaded === 'function') callMethod(bitmap, 'onVideoMetaLoaded');
@@ -993,7 +1009,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (!sprite?._parent && !(await tasks.poll(() => init(), 20, 500))) return;
     layout();
     await startVideoElementPlayback(videoElement);
-    if (videoBitmap) videoBitmap.updatable = true;
+    if (videoBitmap) enableVideoBitmapUpload(videoBitmap);
     lastVideoFrameTime = -1;
     if (videoUsesCanvas) refreshCanvasVideoTexture();
     else if (videoBitmap) updateVideoBitmapData(videoBitmap);
@@ -1229,7 +1245,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     videoBitmap = bitmap;
     videoTexture = new TextureClass(bitmap);
     videoDisplaySprite = null;
-    bitmap.updatable = true;
+    enableVideoBitmapUpload(bitmap);
     updateVideoBitmapData(bitmap);
     redrawVideoTexture();
     return finalizeBackgroundVideo(video);
