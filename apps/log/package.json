@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "node --test scripts/new-release.test.js",
     "new-release": "node scripts/new-release.js",
+    "ensure-changelog": "node scripts/ensure-release-changelog.js",
     "deploy": "node deploy/push.js"
   },
   "dependencies": {

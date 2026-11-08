@@ -9,6 +9,7 @@
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
+import { DOCK_COLLAPSED_PANEL_WIDTH, resolveDockedReserveWidth } from '../const/panel-dock';
 import { accountScopedStorageKey } from '../features/skin-background/skin-runtime';
 // Vite 在构建时解析这些 Vue 单文件；类型检查缺少项目声明时会误报，这里压掉误报。
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -84,7 +85,7 @@ const props = defineProps<{
 }>();
 /** 折叠态只保留标题栏，做成状态胶囊。 */
 const COLLAPSED_PANEL_HEIGHT = '34px';
-const COLLAPSED_PANEL_WIDTH = '96px';
+const COLLAPSED_PANEL_WIDTH = `${DOCK_COLLAPSED_PANEL_WIDTH}px`;
 const EXPANDED_PANEL_MIN_HEIGHT = 160;
 const DEFAULT_EXPANDED_PANEL_HEIGHT = 640;
 const savedTabId = props.configStore.get('panel.activeTab');
@@ -130,6 +131,10 @@ let expandedHeight = '';
 let expandedWidth = '';
 let stopDragging: (() => void) | undefined;
 let stopResizing: (() => void) | undefined;
+/** 侧栏已展示过则切场景不再整栏透明，避免一点击像消失。 */
+let dockSidebarRevealed = false;
+let toggleCollapsedLocked = false;
+let collapseUnlockTimer: ReturnType<typeof setTimeout> | undefined;
 
 onMounted(() => {
   const shell = panelElement.value;
@@ -163,37 +168,41 @@ onBeforeUnmount(() => {
   stopResizing?.();
   stopUpdateNotice?.();
   clearDockRevealTimer();
+  clearCollapseUnlockTimer();
   window.removeEventListener('resize', keepPanelInsideViewport);
   restoreFullGameArea();
 });
 
 function toggleCollapsed(): void {
+  if (toggleCollapsedLocked) return;
+  toggleCollapsedLocked = true;
+  clearCollapseUnlockTimer();
+  collapseUnlockTimer = window.setTimeout(() => {
+    collapseUnlockTimer = undefined;
+    toggleCollapsedLocked = false;
+  }, 360);
   const shell = panelElement.value;
   if (!shell) return;
   if (!panel.isCollapsed.value) {
     // 即将折叠
     if (isDockedRight.value) {
-      // 停靠下折叠：脱离贴边收成胶囊（与拖出停靠一致）；applyRightDock 已改为始终展开，不能再回灌。
       expandedWidth = getOwnedPanelLayoutValue(shell, 'width') || props.layout.width;
-      const bounds = shell.getBoundingClientRect();
-      isDockedRight.value = false;
-      props.configStore.set('panel.dockedRight', false);
-      restoreFullGameArea();
-      clearDockRevealTimer();
-      isDockPending.value = false;
       applyCollapsedDimensions(shell);
       panel.toggleCollapsed();
-      const position = constrainPanelPosition(
-        { left: window.innerWidth - shell.offsetWidth - 8, top: Math.max(8, bounds.top) },
-        { width: shell.offsetWidth, height: shell.offsetHeight },
-        { width: window.innerWidth, height: window.innerHeight }
-      );
+      isDockPending.value = false;
+      clearDockRevealTimer();
       setOwnedPanelLayout(shell, {
-        left: `${position.left}px`,
-        top: `${position.top}px`,
-        right: 'auto'
+        left: 'auto',
+        right: '0px',
+        top: '8px',
+        height: COLLAPSED_PANEL_HEIGHT,
+        minHeight: COLLAPSED_PANEL_HEIGHT,
+        maxHeight: COLLAPSED_PANEL_HEIGHT,
+        width: COLLAPSED_PANEL_WIDTH,
+        minWidth: COLLAPSED_PANEL_WIDTH,
+        maxWidth: COLLAPSED_PANEL_WIDTH
       });
-      persistFloatingPosition(shell);
+      syncDockedGameLayout(shell);
       return;
     }
     const currentHeight = getOwnedPanelLayoutValue(shell, 'height') || `${shell.offsetHeight}px`;
@@ -216,18 +225,11 @@ function toggleCollapsed(): void {
   else syncDockedGameLayout(shell);
 }
 
-function resetXiaochaoConfig(): void {
+async function resetXiaochaoConfig(): Promise<void> {
   try {
-    props.configStore.resetAll();
-    const credentialKeys = ['sgsol.rememberedCredentials.v2', 'sgsol.rememberedCredentials.v2.4399'];
-    for (const key of credentialKeys) {
-      window.localStorage.removeItem(key);
-      window.xiaochaoStorage?.saveCredentials?.(key.endsWith('.4399') ? '4399' : 'official', []);
-    }
-    for (const key of Object.keys(window.sessionStorage)) {
-      if (key.startsWith('XC') || key.toLowerCase().includes('xiaochao')) window.sessionStorage.removeItem(key);
-    }
-    showToast('小抄配置已重置，正在刷新页面', 'success', 1800);
+    const { resetXiaochaoUserData } = await import('../core/reset-xiaochao-user-data');
+    await resetXiaochaoUserData(props.configStore);
+    showToast('小抄本地数据已清除，正在刷新页面', 'success', 1800);
     window.setTimeout(() => window.location.reload(), 600);
   } catch (error) {
     console.warn('[reset-xiaochao] 清除配置失败:', error);
@@ -324,7 +326,13 @@ function handleDragStart(event: PointerEvent): void {
       window.cancelAnimationFrame(animationFrameId);
       renderMove();
     }
-    if (!dragStarted) return stopDragging?.();
+    if (!dragStarted) {
+      if (panel.isCollapsed.value) {
+        const target = upEvent.target as HTMLElement | null;
+        if (!target?.closest('.xc-frame-toggle')) toggleCollapsed();
+      }
+      return stopDragging?.();
+    }
     const bounds = shell.getBoundingClientRect();
     if (shouldDockToRight(upEvent.clientX, bounds.right, window.innerWidth)) {
       applyRightDock(shell);
@@ -409,7 +417,7 @@ function applyRightDock(shell: HTMLElement): void {
     minHeight: undefined,
     maxHeight: undefined
   });
-  // 先写入展开宽度再 reserve，避免用折叠胶囊 rect 把游戏只让出 ~96px。
+  // 先写入展开宽度再 reserve，避免折叠过渡帧把游戏只让出小条的宽度。
   reserveGameAreaForDockedPanel(resolveDockReserveWidth(shell));
   props.configStore.set('panel.dockedRight', true);
   // 用展开宽度再 reserve 一次，并在下一帧复同步（防同帧 rect 仍是胶囊宽）。
@@ -488,6 +496,12 @@ function keepPanelInsideViewport(): void {
 
 /** 停靠初始化：游戏 bgDiv/Laya 未就绪时先隐藏侧栏，就绪或超时后再显示，避免遮盖游戏。 */
 let dockRevealTimer: ReturnType<typeof setInterval> | undefined;
+function clearCollapseUnlockTimer(): void {
+  if (collapseUnlockTimer !== undefined) {
+    window.clearTimeout(collapseUnlockTimer);
+    collapseUnlockTimer = undefined;
+  }
+}
 function clearDockRevealTimer(): void {
   if (dockRevealTimer !== undefined) {
     clearInterval(dockRevealTimer);
@@ -507,9 +521,10 @@ function revealDockedPanelWhenGameReady(shell: HTMLElement): void {
   }
   const reveal = () => {
     isDockPending.value = false;
+    dockSidebarRevealed = true;
     syncDockedGameLayout(shell);
   };
-  if (isGameViewportReadyForDock()) {
+  if (dockSidebarRevealed || isGameViewportReadyForDock()) {
     reveal();
     return;
   }
@@ -530,19 +545,20 @@ function revealDockedPanelWhenGameReady(shell: HTMLElement): void {
   }, 200);
 }
 
-/** 解析停靠应预留的宽度：展开侧栏宽度，避免布局未刷出时误用折叠胶囊的 rect。 */
+/** 停靠且已折叠时让出折叠宽度。贴边展开时才用展开宽度。 */
 function resolveDockReserveWidth(shell: HTMLElement): number {
   const owned = Number.parseFloat(getOwnedPanelLayoutValue(shell, 'width') || '');
   const expanded = Number.parseFloat(String(expandedWidth || ''));
   const rect = shell.getBoundingClientRect().width;
-  // 展开侧栏通常 >= 200；折叠胶囊约 96。过渡帧优先采信 CSS 变量 / expandedWidth。
-  const solid = [owned, expanded].filter((n) => Number.isFinite(n) && n >= 160);
-  if (solid.length) return Math.round(Math.max(...solid));
-  if (Number.isFinite(rect) && rect >= 160) return Math.round(rect);
-  return Math.round(Math.max(owned || 0, expanded || 0, rect || 0, 340));
+  return resolveDockedReserveWidth({
+    collapsed: panel.isCollapsed.value,
+    ownedWidth: owned,
+    expandedWidth: expanded,
+    rectWidth: rect
+  });
 }
 
-/** 贴在右边时按展开侧栏宽度压缩游戏区域。 */
+/** 贴在右边时按当前侧栏宽度压缩游戏区域。 */
 function syncDockedGameLayout(shell: HTMLElement): void {
   if (isDockedRight.value) {
     reserveGameAreaForDockedPanel(resolveDockReserveWidth(shell));
@@ -728,7 +744,7 @@ function handleResizeStart(event: PointerEvent): void {
     dialog-class="xiaochao-reset-dialog"
     @close="isResetDialogOpen = false"
   >
-    <p>确定清除小抄配置数据吗？此操作无法撤销。</p>
+    <p>将清除本页小抄全部本地数据：开关、皮肤与背景、自定义上传图、记住的登录账号等。微端与浏览器各自一份，在哪用就在哪重置。无法撤销。</p>
     <template #footer>
       <button type="button" class="xiaochao-reset-dialog__cancel" @click="isResetDialogOpen = false">取消</button>
       <button type="button" class="xiaochao-reset-dialog__confirm" @click="resetXiaochaoConfig">清除并重载</button>

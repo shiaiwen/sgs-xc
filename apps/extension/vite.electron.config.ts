@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
 import { isElectronDevBuild } from './tools/vite-dev-fast.ts';
 
 const xiaochaoVersion = JSON.parse(
@@ -16,7 +17,10 @@ export default defineConfig({
   // 注入目标是普通游戏网页，没有 Node.js 的 process 全局对象。
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
-    __XIAOCHAO_VERSION__: JSON.stringify(String(xiaochaoVersion || '0.0.0'))
+    __XIAOCHAO_VERSION__: JSON.stringify(String(xiaochaoVersion || '0.0.0')),
+    __XIAOCHAO_ACCOUNT_CONFIG_URL__: JSON.stringify(
+      devFast ? ACCOUNT_CONFIG_LOCAL_URL : ACCOUNT_CONFIG_REMOTE_URL
+    )
   },
   build: {
     outDir: 'dist/electron',

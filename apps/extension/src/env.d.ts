@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 declare const __XIAOCHAO_VERSION__: string;
+declare const __XIAOCHAO_ACCOUNT_CONFIG_URL__: string;
 declare const __XIAOCHAO_BUILD_STAMP__: string;
 
 declare module '*.vue' {
@@ -41,6 +42,8 @@ interface Window {
   __XC_PROBE_AUTO_TASK__?: () => unknown;
   __xcProbeAutoTask?: () => unknown;
   __XIAOCHAO_GAME_SCENE__?: unknown;
+  __XIAOCHAO_SKIN_TRACE__?: Array<{ time: number; kind: string; detail: Record<string, unknown> }>;
+  __XIAOCHAO_SKIN_TRACE_RECENT__?: Array<{ time: number; kind: string; detail: Record<string, unknown> }>;
   Laya?: {
     ClassUtils?: { getInstance?: (className: string) => unknown };
   };

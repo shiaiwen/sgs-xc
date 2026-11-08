@@ -13,6 +13,14 @@ import { createMethodPatcher, type PatchableFunction } from '../../runtime/metho
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
+  LEGACY_LOCAL_SKINS_STORAGE_KEY,
+  LOCAL_SKINS_STORAGE_KEY
+} from '../../const/local-skins-storage.ts';
+import {
+  OTHER_SKIN_BUTTON_FALLBACK_WIDTH,
+  OTHER_SKIN_BUTTON_X
+} from '../../const/other-skin-button.ts';
+import {
   asRecord,
   callMethod,
   createTaskScope,
@@ -31,8 +39,8 @@ import {
   type SeatGeneralInfo,
   type UnknownRecord
 } from './skin-runtime.ts';
-
-const SAVED_SKINS_KEY = 'XC::localSkins';
+import { isOtherLocalSkinActive } from './skin-other-local-guards.ts';
+import { hookMethodOntoEachInstance } from './skin-background-instance-method.ts';
 const SKIN_WINDOWS = ['ChangeSkinWindow', 'SelectSkinWindow'] as const;
 /** 未拥有皮肤项上表示限时、合成等状态的节点，本地解锁后隐藏。 */
 const LOCKED_ITEM_NODES = ['timeBg', 'composeBg', 'composeIcon', 'composeTxt1', 'composeTxt2', 'composeTxt', 'timeLimiteTxt'];
@@ -110,6 +118,7 @@ export function installSkinChangeController(
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const storage = options.storage ?? globalObject.localStorage;
   const patcher = createMethodPatcher();
+  const pickerMethodUnhooks: Array<() => void> = [];
   const tasks = createTaskScope();
   const unsubscribes: Array<() => void> = [];
 
@@ -131,25 +140,36 @@ export function installSkinChangeController(
 
   const localOn = () => configStore.get('skin.localSkin') === true;
   const otherOn = () => configStore.get('skin.otherLocalSkin') === true;
+  const otherActive = (target?: UnknownRecord | null) => isOtherLocalSkinActive({
+    otherSwitchOn: otherOn(),
+    gameScene: asRecord(locator.gameScene()),
+    target,
+    isSpectatingManager: isSpectating
+  });
   const layaEvent = () => asRecord(globalObject.Laya?.Event);
 
   // ---------- 自己的皮肤选择 ----------
 
   function skinsKey(): string {
-    return accountScopedStorageKey(SAVED_SKINS_KEY, storage);
+    return accountScopedStorageKey(LOCAL_SKINS_STORAGE_KEY, storage);
+  }
+
+  function migrateLegacySavedSkins(key: string): Record<string, SavedSkin> | null {
+    for (const legacyKey of [LOCAL_SKINS_STORAGE_KEY, LEGACY_LOCAL_SKINS_STORAGE_KEY]) {
+      const legacy = readJson<unknown>(storage, legacyKey, null);
+      if (!legacy || typeof legacy !== 'object') continue;
+      writeJson(storage, key, legacy);
+      removeStored(storage, legacyKey);
+      return legacy as Record<string, SavedSkin>;
+    }
+    return null;
   }
 
   function savedSkins(): Record<string, SavedSkin> {
     const key = skinsKey();
     const current = readJson<unknown>(storage, key, null);
     if (current && typeof current === 'object') return current as Record<string, SavedSkin>;
-    const legacy = readJson<unknown>(storage, SAVED_SKINS_KEY, null);
-    if (legacy && typeof legacy === 'object') {
-      writeJson(storage, key, legacy);
-      removeStored(storage, SAVED_SKINS_KEY);
-      return legacy as Record<string, SavedSkin>;
-    }
-    return {};
+    return migrateLegacySavedSkins(key) ?? {};
   }
 
   function savedSkin(generalID: unknown): SavedSkin | null {
@@ -822,7 +842,7 @@ export function installSkinChangeController(
   }
 
   function sessionValid(session: OtherSkinSession | null): session is OtherSkinSession {
-    if (!session || session.cancelled || session.completed || session.epoch !== epoch || !otherOn()) return false;
+    if (!session || session.cancelled || session.completed || session.epoch !== epoch || !otherActive(session.seat)) return false;
     if (session.scene !== locator.gameScene() || session.seat.destroyed || session.seat.IsSelf) return false;
     if (seatIndex(session.seat) !== session.seatIndex) return false;
     const info = seatGeneral(session.seat, session.isZhu);
@@ -904,6 +924,7 @@ export function installSkinChangeController(
 
   function isDynamicChoice(view: UnknownRecord, skinID: number, dynamicState: unknown): boolean {
     const preview = findPreviewItem(view, skinID);
+    if (localOn() && preview?.item?.__xcSkinPickerMotion === false) return false;
     if (preview) return preview.original.supportsDynamic;
     if (typeof dynamicState === 'boolean') return dynamicState;
     const state = Number(dynamicState) || 0;
@@ -989,34 +1010,35 @@ export function installSkinChangeController(
     if (button) {
       button.mouseEnabled = true;
       button.mouseThrough = true;
+      button.__xcOtherLocalSkinButton = true;
       button.__xcOtherSkinIsZhu = isZhu;
       if (seat.General2 && typeof manager.getTipGeneral === 'function') {
-        const half = Math.round(Number(manager.width || 146) / 2);
-        button.x = isZhu ? Math.max(0, 104 - half) : 104;
+        const half = Math.round(Number(manager.width || OTHER_SKIN_BUTTON_FALLBACK_WIDTH) / 2);
+        button.x = isZhu ? Math.max(0, OTHER_SKIN_BUTTON_X - half) : OTHER_SKIN_BUTTON_X;
       }
     }
   }
 
   function patchSeatManager(manager: UnknownRecord): void {
-    if (!otherOn()) return;
+    if (!otherActive(manager)) return;
     const prototype = prototypeOf(manager);
     if (!prototype) return;
-    patcher.wrap(prototype, 'onSKinClick', (original) => {
+    patcher.wrap(manager, 'onSKinClick', (original) => {
       originalSkinClick.set(prototype, original);
       return function (this: UnknownRecord, ...args: unknown[]) {
         const seat = asRecord(this.seat);
-        if (!otherOn() || !seat || seat.IsSelf || isSpectating(this)) return original.apply(this, args);
+        if (!otherActive(this) || !seat || seat.IsSelf || isSpectating(this)) return original.apply(this, args);
         return openOtherPicker(this, args, original) || original.apply(this, args);
       };
     });
-    patcher.wrap(prototype, 'OnSomeTextureOver', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+    patcher.wrap(manager, 'OnSomeTextureOver', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       const seat = asRecord(this.seat);
       if (!seat || seat.IsSelf) return original.apply(this, args);
       if (shouldDeferSeatTopManagerSync(window as LayaRuntimeWindow)) {
         return original.apply(this, args);
       }
       const result = original.apply(this, args);
-      if (!otherOn()) {
+      if (!otherActive(this)) {
         const button = asRecord(this.skinBtn);
         if (button) Object.assign(button, { visible: false, mouseEnabled: false });
         return result;
@@ -1025,7 +1047,7 @@ export function installSkinChangeController(
       const isZhu = hoveredIsZhu(manager);
       tasks.later(() => {
         if (shouldDeferSeatTopManagerSync(window as LayaRuntimeWindow)) return;
-        if (!otherOn()) return;
+        if (!otherActive(manager)) return;
         const liveSeat = asRecord(manager.seat);
         if (!liveSeat || liveSeat.IsSelf || isSpectating(manager)) return;
         hoverAsSelf(manager, args, isZhu, original);
@@ -1037,11 +1059,13 @@ export function installSkinChangeController(
 
   /** 打开原生换肤框，并把窗口绑定到这次他人换肤会话。 */
   function openOtherPicker(manager: UnknownRecord, args: unknown[], original: PatchableFunction): boolean {
+    const seat = asRecord(manager.seat);
+    if (!seat || seat.IsSelf || !otherActive(seat)) return false;
     const button = asRecord(manager.skinBtn);
     const isZhu = typeof button?.__xcOtherSkinIsZhu === 'boolean' ? button.__xcOtherSkinIsZhu : hoveredIsZhu(manager);
-    const info: SeatGeneralInfo | null = seatGeneral(manager.seat, isZhu);
+    const info: SeatGeneralInfo | null = seatGeneral(seat, isZhu);
     const scene = locator.gameScene();
-    if (!info || info.seat.IsSelf || !scene) return false;
+    if (!info || !scene) return false;
     if (openingSession) endSession(openingSession);
     const session: OtherSkinSession = {
       token: ++sessionToken,
@@ -1116,9 +1140,9 @@ export function installSkinChangeController(
     if (scene) currentScene = scene;
     const managers = seatManagers(scene);
     managers.forEach((manager) => {
-      if (otherOn()) patchSeatManager(manager);
+      if (otherActive(manager)) patchSeatManager(manager);
     });
-    if (!otherOn()) {
+    if (!otherActive()) {
       hideOwnSkinButtons();
       cancelAllSessions();
       overrides.clear();
@@ -1140,22 +1164,25 @@ export function installSkinChangeController(
   function patchPickerPrototype(view: unknown): void {
     const prototype = prototypeOf(view);
     if (!prototype) return;
-    patcher.wrap(prototype, 'initUsingSKinID', (original) => function (this: UnknownRecord, generalID: unknown, ...rest: unknown[]) {
+    const hook = (
+      name: string,
+      createWrapper: (original: PatchableFunction) => PatchableFunction
+    ) => {
+      const unhook = hookMethodOntoEachInstance(patcher, prototype, name, createWrapper);
+      if (unhook) pickerMethodUnhooks.push(unhook);
+    };
+    hook('initUsingSKinID', (original) => function (this: UnknownRecord, generalID: unknown, ...rest: unknown[]) {
       const session = sessionFor(this, Number(generalID));
+      const saved = localOn() && isOwnGeneral(Number(generalID)) ? savedSkin(generalID) : null;
+      const result = original.call(this, generalID, ...rest);
+      if (session && Number(generalID) === session.generalID && sessionValid(session)) {
+        bindSession(this, session);
+        if (openingSession === session) openingSession = null;
+        return result;
+      }
       if (session && Number(generalID) === session.generalID) {
-        if (sessionValid(session)) {
-          bindSession(this, session);
-          if (openingSession === session) openingSession = null;
-          return undefined;
-        }
         sessionByView.set(this, session);
       }
-      const saved = localOn() && isOwnGeneral(Number(generalID)) ? savedSkin(generalID) : null;
-      if (saved) {
-        this.usingSkinID = saved.skinID;
-        if ('usingDynamicState' in this) this.usingDynamicState = saved.isDynamic ? 1 : 0;
-      }
-      const result = original.call(this, generalID, ...rest);
       if (!(Number(this.usingSkinID) > 0)) {
         const manager = locator.manager('GeneralSkinManager');
         const using = callMethod(manager, 'GetSelfUsingSkinID', generalID);
@@ -1179,7 +1206,7 @@ export function installSkinChangeController(
       }
       return result;
     });
-    patcher.wrap(prototype, 'UpdateInfo', (original) => function (this: UnknownRecord, generalID: unknown, ...rest: unknown[]) {
+    hook('UpdateInfo', (original) => function (this: UnknownRecord, generalID: unknown, ...rest: unknown[]) {
       const result = original.call(this, generalID, ...rest);
       const session = sessionFor(this, Number(generalID));
       if (session && Number(generalID) === session.generalID) {
@@ -1199,10 +1226,6 @@ export function installSkinChangeController(
         if (windowName) void applyPreview(windowName);
       });
       return result;
-    });
-    patcher.wrap(prototype, 'closeSelectSure', (original) => function (this: UnknownRecord, ...args: unknown[]) {
-      const other = finishOtherSelection(this);
-      return other.handled ? other.applied : original.apply(this, args);
     });
   }
 
@@ -1280,6 +1303,7 @@ export function installSkinChangeController(
       cancelAllSessions();
       overrides.clear();
       clearSeatHpCache();
+      pickerMethodUnhooks.splice(0).forEach((unhook) => unhook());
       patcher.restoreAll();
     }
   };

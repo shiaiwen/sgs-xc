@@ -49,7 +49,9 @@ export function getReleases(): Release[] {
 
   const releases: Release[] = [];
   const seen = new Set<string>();
-  const files = fs.readdirSync(releasesDir).filter((name) => name.endsWith(".md"));
+  const files = fs.readdirSync(releasesDir).filter(
+    (name) => name.endsWith(".md") && !name.startsWith("_"),
+  );
 
   for (const name of files) {
     const raw = fs.readFileSync(path.join(releasesDir, name), "utf8");

@@ -6,9 +6,11 @@ export const SKIN_DETAIL_WINDOW_NAMES = [
   'GeneralSkinInfoWindow',
   'SkinDetailWindow',
   'SkinPreviewWindow',
-  'GeneralSkinWindow',
   'SkinPopWindow'
 ] as const;
+
+/** 皮肤册列表窗，不是详情弹窗。 */
+export const SKIN_ALBUM_WINDOW_NAMES = ['GeneralSkinWindow'] as const;
 
 /** 皮肤列表 / 选将换肤等窗口，禁止挂详情三按钮。带 Detail / Info / Manage 的仍视为详情。 */
 export const SKIN_DETAIL_WINDOW_BLOCK_NAME_PATTERN = /Collect|Gallery|List|Select|ChangeSkin|Book|WallPaper|册/i;
@@ -36,6 +38,9 @@ export const SKIN_DETAIL_FLAT_BUTTON_SKINS = [
   'skinInfo_dynamicBtn_down',
   'skinInfo_dynamicBtn_disable'
 ] as const;
+
+/** 皮肤详情窗口开着时，每隔几轮检查一次按钮是否还在。 */
+export const SKIN_DETAIL_BUTTON_RECHECK_ROUND_INTERVAL = 4;
 
 /** 参考包 myFuncBtn 高度。 */
 export const SKIN_DETAIL_BUTTON_HEIGHT = 50;

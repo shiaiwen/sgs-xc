@@ -1,5 +1,5 @@
 /**
- * 皮肤详情「保存 / 设为背景 / 收藏」：对齐参考包 myFuncBtn 方案，并兼容新版原生按钮。
+ * 皮肤详情上的保存、设为背景、收藏。新版游戏如果自己有这些按钮，就用游戏的。
  */
 
 import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
@@ -13,7 +13,8 @@ import {
   SKIN_DETAIL_LAYER_SCAN_MAX_NODES,
   SKIN_DETAIL_WINDOW_BLOCK_NAME_ALLOW_PATTERN,
   SKIN_DETAIL_WINDOW_BLOCK_NAME_PATTERN,
-  SKIN_DETAIL_WINDOW_NAMES
+  SKIN_DETAIL_WINDOW_NAMES,
+  SKIN_ALBUM_WINDOW_NAMES
 } from '../../const/skin-detail-window.ts';
 import { asRecord, callMethod, type UnknownRecord } from './skin-runtime.ts';
 
@@ -83,10 +84,13 @@ function isBlockedNonDetailWindow(className: string): boolean {
 function isNamedSkinDetailWindow(win: UnknownRecord): boolean {
   const className = windowClassName(win);
   if (isBlockedNonDetailWindow(className)) return false;
+  for (const name of SKIN_ALBUM_WINDOW_NAMES) {
+    if (className === name) return false;
+  }
   for (const name of SKIN_DETAIL_WINDOW_NAMES) {
     if (className === name) return true;
   }
-  return /SkinInfo|SkinManage|SkinDetail|SkinPreview|GeneralSkin/i.test(className)
+  return /SkinInfo|SkinManage|SkinDetail|SkinPreview/i.test(className)
     && /Window$|Pop$/i.test(className);
 }
 
@@ -102,8 +106,11 @@ export function isSkinDetailCraftFingerprint(win: UnknownRecord): boolean {
 /** 是否皮肤详情弹窗，排除皮肤册 / 列表页。 */
 export function isSkinDetailWindowCandidate(win: UnknownRecord | null): win is UnknownRecord {
   if (!win || win.destroyed || win.visible === false) return false;
-  if (isSkinDetailCraftFingerprint(win)) return true;
   const className = windowClassName(win);
+  for (const name of SKIN_ALBUM_WINDOW_NAMES) {
+    if (className === name) return false;
+  }
+  if (isSkinDetailCraftFingerprint(win)) return true;
   if (isBlockedNonDetailWindow(className)) return false;
   const hasData = Boolean(asRecord(win.skinData));
   const hasImg = Boolean(skinPreviewUrl(win)) || Boolean(asRecord(win.skinImg));
@@ -541,4 +548,24 @@ export function hookSkinDetailWindowRefresh(
       return result;
     });
   }
+}
+
+/** 把详情按钮挂到立绘框所在的容器上。 */
+export function mountSkinDetailButtonNode(parent: UnknownRecord, node: UnknownRecord): void {
+  callMethod(parent, 'addChild', node);
+}
+
+/** 把透明热区挂到和按钮同一个容器上。 */
+export function mountSkinDetailHitNode(parent: UnknownRecord, node: UnknownRecord): void {
+  callMethod(parent, 'addChild', node);
+}
+
+/** 热区放到同容器最上层，避免被立绘挡住点不到。 */
+export function bringSkinDetailHitToFront(parent: UnknownRecord, node: UnknownRecord): void {
+  const childCount = Number(parent.numChildren);
+  if (childCount > 0 && typeof parent.setChildIndex === 'function') {
+    callMethod(parent, 'setChildIndex', node, childCount - 1);
+    return;
+  }
+  callMethod(parent, 'addChild', node);
 }

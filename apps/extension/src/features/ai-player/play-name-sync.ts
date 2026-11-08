@@ -162,7 +162,7 @@ interface PlayNameLayaWindow extends GameRuntimeWindow {
 export type PlayNameMountStrategy = 'native' | 'A' | 'B' | 'C' | 'none';
 
 /**
- * 排位、斗地主、八人匹配会把真人名字藏起来。
+ * 排位、天梯、斗地主、八人匹配和 8人匹配会把真人名字藏起来。
  * 这些局里名字开关有时只在 topManager，普通房间仍只认 otherTopManager，避免把房间和身份局的名字打开。
  */
 export function isRankOrDoudizhuScene(
@@ -277,7 +277,7 @@ export function syncSeatPlayName(
   applyPlayNameDisplay(seatUi, manager, visible, name, globalObject);
 }
 
-/** 排位、斗地主、八人匹配里，真人座位初始化时画出等级和昵称。 */
+/** 排位、天梯、斗地主、八人匹配和 8人匹配里，真人座位初始化时画出等级和昵称。 */
 const PLAY_NAME_INIT_KEY = '__xcPlayNameInitHook';
 
 function revealRankPlayName(

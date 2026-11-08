@@ -1,5 +1,5 @@
 /**
- * 一条命令发版：打包小抄 → 拷贝到门户 → 上传门户下载文件 → 上传版本服务。
+ * 一条命令发版：打包小抄 → 更新日志 → 拷贝到门户 → 上传下载与版本服务 → 发布 log.95chong.cn。
  * 顺序固定，缺一步线上就不一致，不要再分开手敲。
  * 用法：npm run release
  * 只打包不上传：npm run pack
@@ -12,9 +12,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const steps = [
   { name: '打包小抄', command: 'npm', args: ['run', 'pack', '-w', 'apps/extension'] },
+  { name: '写入更新日志', command: 'npm', args: ['run', 'ensure-changelog', '-w', 'apps/log'] },
   { name: '拷贝到门户下载目录', command: 'npm', args: ['run', 'copy:portal', '-w', 'apps/extension'] },
   { name: '上传门户下载文件', command: 'npm', args: ['run', 'deploy:downloads', '-w', 'apps/portal'] },
-  { name: '上传版本服务', command: 'npm', args: ['run', 'deploy', '-w', 'apps/server'] }
+  { name: '上传版本服务', command: 'npm', args: ['run', 'deploy', '-w', 'apps/server'] },
+  { name: '发布更新日志站', command: 'npm', args: ['run', 'deploy', '-w', 'apps/log'] }
 ];
 
 for (const step of steps) {

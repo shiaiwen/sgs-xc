@@ -40,6 +40,7 @@ export interface CustomBackgroundStore {
   save(file: Blob): Promise<CustomBackgroundRecord>;
   setActive(active: boolean): Promise<void>;
   clear(): Promise<void>;
+  clearAll(): Promise<void>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -285,6 +286,22 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
       await requestToPromise(store.delete(account));
       notify();
     },
+    async clearAll() {
+      await migrateLegacy();
+      const bridge = diskBridge();
+      const database = await db();
+      const reading = database.transaction(STORE, 'readonly').objectStore(STORE);
+      const keys = await requestToPromise(reading.getAllKeys());
+      const writing = database.transaction(STORE, 'readwrite').objectStore(STORE);
+      for (const key of keys) {
+        const accountKey = String(key);
+        if (bridge && accountKey.startsWith('account:')) {
+          await bridge({ action: 'remove', accountKey });
+        }
+        await requestToPromise(writing.delete(key));
+      }
+      notify();
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -319,4 +336,9 @@ export async function clearSavedCustomBackground(): Promise<void> {
     return;
   }
   await actions.clear();
+}
+
+/** 删除所有账号的自定义背景 IndexedDB 记录，并清理微端磁盘文件。 */
+export async function clearAllCustomBackgroundPersistence(): Promise<void> {
+  await getCustomBackgroundStore().clearAll();
 }

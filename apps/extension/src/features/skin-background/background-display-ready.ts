@@ -2,6 +2,7 @@ import {
   BACKGROUND_RESOURCE_TYPE_IMAGE,
   BACKGROUND_RESOURCE_TYPE_SK_EFFECT,
   BACKGROUND_RESOURCE_TYPE_SPINE,
+  BACKGROUND_RESOURCE_TYPE_LEGACY_SPINE,
   BACKGROUND_RESOURCE_TYPE_VIDEO
 } from '../../const/background-resource-type.ts';
 
@@ -12,7 +13,7 @@ export interface BackgroundDisplayReadyInput {
   videoFrameReady: boolean;
   videoDrawWidth: number;
   videoDrawHeight: number;
-  effectIdleCount: number;
+  effectDrawn: boolean;
 }
 
 /** 自定义背景已能遮住官方底图时才返回 true，避免仅填了地址就藏底图导致黑屏。 */
@@ -26,8 +27,10 @@ export function isBackgroundDisplayReady(input: BackgroundDisplayReadyInput): bo
       && input.videoDrawWidth > 0
       && input.videoDrawHeight > 0;
   }
-  if (typeNum === BACKGROUND_RESOURCE_TYPE_SK_EFFECT || typeNum === BACKGROUND_RESOURCE_TYPE_SPINE) {
-    return input.effectIdleCount > 0;
+  if (typeNum === BACKGROUND_RESOURCE_TYPE_SK_EFFECT
+    || typeNum === BACKGROUND_RESOURCE_TYPE_SPINE
+    || typeNum === BACKGROUND_RESOURCE_TYPE_LEGACY_SPINE) {
+    return input.effectDrawn;
   }
   return false;
 }

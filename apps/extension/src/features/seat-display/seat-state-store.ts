@@ -3,6 +3,11 @@
  */
 
 import {
+  KNOWN_HAND_MAX_AGE_MS,
+  KNOWN_HAND_STORAGE_KEY_BASE
+} from '../../const/known-hands.ts';
+import { loggedInAccountStorageKey } from '../skin-background/skin-runtime.ts';
+import {
   createEmptySeatState,
   normalizeSeatState,
   type SeatStateSnapshot
@@ -46,8 +51,16 @@ export interface HiddenHandMovement {
 const HAND_ZONE = 5;
 /** 可能位置里的「座位手牌以外的暗区」。 */
 const ELSEWHERE = -1;
-const KNOWN_HAND_STORAGE_KEY = 'XC::knownHands';
-const KNOWN_HAND_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+/** 无账号后缀的旧 session 键，读后迁移到当前账号键。 */
+const LEGACY_KNOWN_HAND_SESSION_KEY = KNOWN_HAND_STORAGE_KEY_BASE;
+
+/** 明牌缓存按登录账号分 session 键。账号还没取到时不生成键。 */
+export function knownHandsSessionStorageKey(
+  session: Storage | null,
+  accountStorage: Pick<Storage, 'getItem'> | null | undefined = getPageLocalStorage()
+): string | null {
+  return loggedInAccountStorageKey(KNOWN_HAND_STORAGE_KEY_BASE, accountStorage);
+}
 
 /** 游戏适配器写入、Vue 订阅的单向座位快照仓库。 */
 export function createSeatStateStore(storage: Storage | null = getSessionStorage()): SeatStateStore {
@@ -248,12 +261,15 @@ function persistKnownHands(
   possible: Map<number, Set<number>>
 ): void {
   if (!storage) return;
+  const key = knownHandsSessionStorageKey(storage);
+  if (!key) return;
   try {
     if (!hands.size && !persistentTags.size && !possible.size) {
-      storage.removeItem(KNOWN_HAND_STORAGE_KEY);
+      storage.removeItem(key);
+      storage.removeItem(LEGACY_KNOWN_HAND_SESSION_KEY);
       return;
     }
-    storage.setItem(KNOWN_HAND_STORAGE_KEY, JSON.stringify({
+    storage.setItem(key, JSON.stringify({
       savedAt: Date.now(),
       hands: [...hands],
       occupants: [...occupants],
@@ -271,8 +287,18 @@ function restoreKnownHands(
   possible: Map<number, Set<number>>
 ): boolean {
   if (!storage) return false;
+  const key = knownHandsSessionStorageKey(storage);
+  if (!key) return false;
   try {
-    const document = JSON.parse(storage.getItem(KNOWN_HAND_STORAGE_KEY) || 'null');
+    let raw = storage.getItem(key);
+    if (!raw) {
+      raw = storage.getItem(LEGACY_KNOWN_HAND_SESSION_KEY);
+      if (raw) {
+        storage.setItem(key, raw);
+        storage.removeItem(LEGACY_KNOWN_HAND_SESSION_KEY);
+      }
+    }
+    const document = JSON.parse(raw || 'null');
     if (!document || Date.now() - Number(document.savedAt) > KNOWN_HAND_MAX_AGE_MS) return false;
     for (const [seatId, hand] of Array.isArray(document.hands) ? document.hands : []) {
       const id = Number(seatId);
@@ -300,6 +326,10 @@ function restoreKnownHands(
 
 function getSessionStorage(): Storage | null {
   try { return typeof window === 'undefined' ? null : window.sessionStorage; } catch { return null; }
+}
+
+function getPageLocalStorage(): Storage | null {
+  try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
 }
 
 function rememberTrackedOccupant(

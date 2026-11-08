@@ -10,8 +10,8 @@ import {
   shouldDeferSeatTopManagerSync,
 } from '../../runtime/game-native-dialog.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
-import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { clearSeatGeneralTips, applySeatGeneralTip } from '../extra-assist/seat-general-tips.ts';
+import { isAiClientId, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
   beginPlayNameScanBatch,
@@ -229,10 +229,22 @@ export function installAiPlayerTipController(
       );
     }
 
-    clearSeatGeneralTips(seatUis.map((seatUi) => ({
+    const idTargets = seatUis.map((seatUi) => ({
       seat: seatUi.seat ?? seatUi,
       seatAvatar: asRecord(seatUi.seatAvatar)
-    })), 'player-id');
+    }));
+    // 排位、斗地主里真人座位把账号编号写在头像上；其他模式清掉。
+    if (isRankOrDoudizhuScene(globalObject, scene)) {
+      applySeatGeneralTip({
+        key: 'player-id',
+        targets: idTargets,
+        enabled: true,
+        getText: (target) => playerIdLabel(readNestedClientId(target.seat), true),
+        globalObject
+      });
+    } else {
+      clearSeatGeneralTips(idTargets, 'player-id');
+    }
 
     const seats = seatUis
       .map((seatUi) => ({ seatUi, seat: asRecord(seatUi.seat) }))

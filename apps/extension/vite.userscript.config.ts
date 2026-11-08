@@ -11,6 +11,7 @@ import {
   userscriptDevReloadEnabled
 } from './src/runtime/userscript-dev-build-id-plugin.ts';
 import { patchUserscriptDevInstallMount } from './tools/patch-userscript-dev-install.js';
+import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
 import { isUserscriptDevBuild } from './tools/vite-dev-fast.ts';
 
 const USERSCRIPT_FILE = resolve(import.meta.dirname, 'dist/userscript/xiaochao.user.js');
@@ -396,6 +397,9 @@ const remoteUserscriptUrl = 'https://xc.95chong.cn/downloads/sgs-xc.user.js';
 export default defineConfig({
   define: {
     __XIAOCHAO_VERSION__: JSON.stringify(xiaochaoVersion),
+    __XIAOCHAO_ACCOUNT_CONFIG_URL__: JSON.stringify(
+      isDevUserscriptBundle ? ACCOUNT_CONFIG_LOCAL_URL : ACCOUNT_CONFIG_REMOTE_URL
+    ),
     __XIAOCHAO_BUILD_STAMP__: JSON.stringify(`${xiaochaoVersion}-panel-gate`),
     __XIAOCHAO_DEV_BUILD_POLL_URL__: JSON.stringify(
       userscriptDevBuildPollUrl(devAutoReloadEnabled, useLocalHttps, devPort, installHttpPort)

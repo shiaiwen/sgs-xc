@@ -2,6 +2,7 @@
  * 官方壁纸/动态背景控制器：与 interceptor 本地资源及皮肤纸扩展菜单协同。
  */
 
+import { createDedupedTrace } from './trace-dedupe.ts';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import {
   createLayaObjectLocator,
@@ -36,6 +37,13 @@ import {
   writeJson,
   type UnknownRecord
 } from './skin-runtime.ts';
+import { readOfficialBackgroundChoice, saveOfficialBackgroundChoice } from './skin-background-document.ts';
+import {
+  paintWallpaperSelectionMarks,
+  showWallpaperSelectedMark,
+  wallpaperChoiceItems,
+  wallpaperItemId
+} from './wallpaper-selection-marks.ts';
 const CHOICE_STORAGE_SUFFIX = '::XC_OFFICIAL_BACKGROUND_CHOICE';
 const BACKGROUND_REQUEST_URL = /\/sgs_ccon(?:[?#]|$)/;
 const BACKGROUND_REQUEST_BODY = /GAME_BG_(?:STRUCT|USEID)/;
@@ -44,12 +52,16 @@ const ITEM_METHOD_OVERRIDE = Symbol.for('sgsxc.officialBackground.itemMethodOver
 const USED_DATA_GETTERS = ['IsCanShow', 'IsCanUse', 'IsInPlatform', 'IsSamePower'];
 const SKIN_TAB_VALUE = 1;
 const REQUEST_URL_KEY = '__xcOfficialBackgroundRequestUrl';
+const LIVE_PANEL_NAME = 'WallLivePanel';
+const LIVE_PANEL_CLICK_SEARCH_DEPTH = 6;
 
 /** 皮肤做背景与背景面板的联动，由皮肤背景控制器提供。 */
 export interface WallpaperMenuExtension {
   enabled(): boolean;
   /** 使用了官方背景，皮肤背景需让位。 */
   onOfficialWallpaperUsed(): void;
+  /** 当前正在用小抄背景，官方列表里不应再有勾。 */
+  usingXiaochaoBackground?(): boolean;
   /** 面板准备完成后挂上「小抄背景」页签；开关关闭时自行移除。 */
   attachMenu(menu: UnknownRecord): void;
   /** 移除「小抄背景」页签。 */
@@ -105,8 +117,10 @@ export function installOfficialBackgroundController(
     return isOn() || extensionOn();
   }
 
+  const traceDeduped = createDedupedTrace(skinTrace);
+
   function traceWallPaperAttach(phase: string, detail: Record<string, unknown> = {}): void {
-    skinTrace('wallpaper-menu', {
+    traceDeduped('wallpaper-menu', {
       phase,
       skinPaper: extensionOn(),
       officialBackground: isOn(),
@@ -123,13 +137,21 @@ export function installOfficialBackgroundController(
   function savedChoice(): number {
     const parsed = readJson<unknown>(storage, choiceStorageKey(), null);
     const id = Number(parsed && typeof parsed === 'object' ? (parsed as UnknownRecord).id : parsed);
-    return Number.isFinite(id) && id > 0 ? id : 0;
+    if (Number.isFinite(id) && id > 0) return id;
+    // 单键没有时，账号文档里可能还留着（旧键迁进文档后会被删掉）。
+    return readOfficialBackgroundChoice(documentStorage(), accountStorageKey(storage))?.id ?? 0;
+  }
+
+  function documentStorage(): Parameters<typeof readOfficialBackgroundChoice>[0] {
+    return storage as Parameters<typeof readOfficialBackgroundChoice>[0];
   }
 
   function saveChoice(value: unknown): boolean {
     const id = Number(value);
     if (suppressChoiceSave || !isOn() || !Number.isFinite(id) || id <= 0) return false;
     writeJson(storage, choiceStorageKey(), { id, savedAt: Date.now() });
+    // 同时写进账号文档，文档一变才会触发上传。
+    saveOfficialBackgroundChoice(documentStorage(), accountStorageKey(storage), id);
     return true;
   }
 
@@ -179,7 +201,11 @@ export function installOfficialBackgroundController(
     if (!dispatcher) return;
     if (selectListenerDispatcher !== dispatcher && typeof dispatcher.on === 'function') {
       const listenerOwner = {};
-      const onSelect = (id: unknown) => saveChoice(id);
+      const onSelect = (id: unknown) => {
+        const saved = saveChoice(id);
+        if (saved) tasks.later(() => preparedMenus.forEach(paintMenuMarks), 0);
+        return saved;
+      };
       (dispatcher.on as PatchableFunction).call(dispatcher, 'SELECT_WALLPAPER', listenerOwner, onSelect);
       selectListenerDispatcher = dispatcher;
       cleanups.push(() => callMethod(dispatcher, 'off', 'SELECT_WALLPAPER', listenerOwner, onSelect));
@@ -234,10 +260,6 @@ export function installOfficialBackgroundController(
     if (background && 'Gray' in background) background.Gray = false;
   }
 
-  function itemId(item: UnknownRecord): number {
-    return Number(item.ID ?? item.Id ?? item.id ?? asRecord(item.data)?.ID ?? 0);
-  }
-
   function overrideItemInstanceMethod(
     record: UnknownRecord,
     name: string,
@@ -266,6 +288,39 @@ export function installOfficialBackgroundController(
     });
   }
 
+  /**
+   * 官方背景开着时，勾按本地选择画，不看游戏记的当前背景。
+   * 返回 null 表示交给游戏；0 表示所有官方格子都不该有勾。
+   */
+  function localMarkChoice(): number | null {
+    if (!isOn()) return null;
+    if (extensionOn() && extension?.usingXiaochaoBackground?.()) return 0;
+    const chosen = savedChoice();
+    return chosen > 0 ? chosen : null;
+  }
+
+  function paintItemMark(item: UnknownRecord): void {
+    const chosen = localMarkChoice();
+    if (chosen === null) return;
+    showWallpaperSelectedMark(item, chosen > 0 && wallpaperItemId(item) === chosen);
+  }
+
+  function paintMenuMarks(menu: UnknownRecord): void {
+    const chosen = localMarkChoice();
+    if (chosen !== null) paintWallpaperSelectionMarks(menu, chosen);
+  }
+
+  /** 游戏每次刷新格子都会按它自己记的背景重画勾，这里改成按本地选择画。 */
+  function keepLocalMark(record: UnknownRecord, methodNames: string[]): void {
+    for (const name of methodNames) {
+      overrideItemInstanceMethod(record, name, (original) => function (this: UnknownRecord, ...args: unknown[]) {
+        const result = original.apply(this, args);
+        paintItemMark(this);
+        return result;
+      });
+    }
+  }
+
   /** 背景项去锁，点击直接使用，使用时只写本地。 */
   function prepareItem(item: unknown, isSkinItem: boolean): void {
     const record = asRecord(item);
@@ -275,13 +330,15 @@ export function installOfficialBackgroundController(
       overrideItemInstanceMethod(record, name, (original) => function (this: UnknownRecord, ...args: unknown[]) {
         const result = original.apply(this, args);
         hideLockNodes(this);
+        paintItemMark(this);
         return result;
       });
     }
+    keepLocalMark(record, ['UpdateSelectedUI']);
     overrideItemInstanceMethod(record, 'useWall', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       if (!isOn()) return original.apply(this, args);
       const result = writeLocally(() => original.apply(this, args));
-      saveChoice(itemId(this));
+      saveChoice(wallpaperItemId(this));
       markWallpaperSelection(this);
       return result;
     });
@@ -305,9 +362,10 @@ export function installOfficialBackgroundController(
     const button = asRecord(item.selectedBtn);
     const handler = item.onSelectedClicked;
     const layaEvent = asRecord(globalObject.Laya?.Event);
-    const eventName = isSkinItem ? layaEvent?.CLICK : layaEvent?.MOUSE_DOWN;
-    if (!button || typeof handler !== 'function' || !eventName) return;
     const original = originalSelectHandlers.get(item);
+    const eventName = boundEventName(button, original, [layaEvent?.CLICK, layaEvent?.MOUSE_DOWN])
+      ?? (isSkinItem ? layaEvent?.CLICK : layaEvent?.MOUSE_DOWN);
+    if (!button || typeof handler !== 'function' || !eventName) return;
     if (original) callMethod(button, 'off', eventName, item, original);
     callMethod(button, 'off', eventName, item, handler);
     callMethod(button, 'on', eventName, item, handler);
@@ -343,6 +401,7 @@ export function installOfficialBackgroundController(
   }
 
   function patchSkinItemsBuilder(menu: UnknownRecord): void {
+    patchLiveItemsBuilder(menu);
     const proto = prototypeOf(menu);
     if (typeof menu.onShowSkinitems !== 'function' && typeof proto?.onShowSkinitems !== 'function') return;
     if (patcher.isWrapped(menu, 'onShowSkinitems')) return;
@@ -354,16 +413,36 @@ export function installOfficialBackgroundController(
           if (isOn()) unlockSkinItemData(item.data);
           prepareItem(item, true);
         });
-        const chosen = findItem(this, savedChoice());
-        if (chosen) markWallpaperSelection(chosen);
+        paintMenuMarks(this);
       }
       return result;
     });
   }
 
-  function itemsOf(menu: UnknownRecord, key: 'wallPaperItems' | 'wallPaperSkinItems'): UnknownRecord[] {
+  /** 动态皮肤列表第一次打开时才会建出来，建好后接管格子的勾。 */
+  function patchLiveItemsBuilder(menu: UnknownRecord): void {
+    const proto = prototypeOf(menu);
+    if (typeof menu.onShowLiveitems !== 'function' && typeof proto?.onShowLiveitems !== 'function') return;
+    if (patcher.isWrapped(menu, 'onShowLiveitems')) return;
+    patcher.wrap(menu, 'onShowLiveitems', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      if (this !== menu) return original.apply(this, args);
+      const result = original.apply(this, args);
+      if (isOn() || extensionOn()) {
+        prepareLiveItems(this);
+        paintMenuMarks(this);
+      }
+      return result;
+    });
+  }
+
+  function itemsOf(menu: UnknownRecord, key: 'wallPaperItems' | 'wallPaperSkinItems' | 'wallPaperLiveItems'): UnknownRecord[] {
     const list = menu[key];
     return Array.isArray(list) ? list.map(asRecord).filter((item): item is UnknownRecord => item !== null) : [];
+  }
+
+  /** 动态皮肤格子和静态皮肤格子一样，去锁、点击只写本地。 */
+  function prepareLiveItems(menu: UnknownRecord): void {
+    itemsOf(menu, 'wallPaperLiveItems').forEach((item) => prepareItem(item, true));
   }
 
   function prepareAllItems(menu: UnknownRecord): void {
@@ -372,6 +451,8 @@ export function installOfficialBackgroundController(
       if (isOn()) unlockSkinItemData(item.data);
       prepareItem(item, true);
     });
+    prepareLiveItems(menu);
+    paintMenuMarks(menu);
   }
 
   function destroySkinPanel(menu: UnknownRecord): void {
@@ -383,33 +464,24 @@ export function installOfficialBackgroundController(
     menu.panel = null;
   }
 
-  /** 皮肤背景和主题背景共用勾选图，点中的那一项才显示。 */
+  /** 主题、静态皮肤、动态皮肤共用勾选图，点中的那一项才显示。 */
   function markWallpaperSelection(clicked: UnknownRecord): void {
     for (const menu of preparedMenus) {
-      const skins = itemsOf(menu, 'wallPaperSkinItems');
-      const themes = itemsOf(menu, 'wallPaperItems');
-      if (!skins.includes(clicked) && !themes.includes(clicked)) continue;
-      for (const item of [...themes, ...skins]) showSelectedMark(item, item === clicked);
+      const items = wallpaperChoiceItems(menu);
+      if (!items.includes(clicked)) continue;
+      for (const item of items) showWallpaperSelectedMark(item, item === clicked);
     }
-  }
-
-  function showSelectedMark(item: UnknownRecord, selected: boolean): void {
-    const mark = asRecord(item.selectedImg);
-    if (!mark) return;
-    mark.visible = selected;
-    mark.zOrder = 999;
-    if (selected) callMethod(item, 'setChildIndex', mark, Number(item.numChildren) || 0);
   }
 
   function selectedItemId(menu: UnknownRecord): number {
     const selected = [...itemsOf(menu, 'wallPaperItems'), ...itemsOf(menu, 'wallPaperSkinItems')]
       .find((item) => asRecord(item.selectedImg)?.visible);
-    return selected ? itemId(selected) : 0;
+    return selected ? wallpaperItemId(selected) : 0;
   }
 
   function findItem(menu: UnknownRecord, id: number): UnknownRecord | undefined {
     return [...itemsOf(menu, 'wallPaperItems'), ...itemsOf(menu, 'wallPaperSkinItems')]
-      .find((item) => itemId(item) === id);
+      .find((item) => wallpaperItemId(item) === id);
   }
 
   function useWithoutSaving(item: UnknownRecord): void {
@@ -483,6 +555,7 @@ export function installOfficialBackgroundController(
     }
     itemsOf(record, 'wallPaperItems').forEach((item) => callMethod(item, 'initUI'));
     itemsOf(record, 'wallPaperSkinItems').forEach((item) => callMethod(item, 'updateUI'));
+    itemsOf(record, 'wallPaperLiveItems').forEach((item) => callMethod(item, 'updateUI'));
     preparedMenus.delete(record);
   }
 
@@ -597,9 +670,23 @@ export function installOfficialBackgroundController(
     });
   }
 
+  /** 点在动态皮肤列表里时，不让游戏当成点了面板外面而把背景面板关掉。 */
+  function keepLiveWallpaperClickInside(topMenu: UnknownRecord): void {
+    const proto = prototypeOf(topMenu);
+    if (typeof topMenu.stageclickHandler !== 'function' && typeof proto?.stageclickHandler !== 'function') return;
+    if (patcher.isWrapped(topMenu, 'stageclickHandler')) return;
+    patcher.wrap(topMenu, 'stageclickHandler', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      if (this === topMenu && shouldSyncBackgroundUi() && isInsideLiveWallpaperPanel(asRecord(args[0])?.target)) {
+        return undefined;
+      }
+      return original.apply(this, args);
+    });
+  }
+
   function ensureTopMenuPatched(topMenu: UnknownRecord): void {
     if (patchedTopMenus.has(topMenu)) return;
     patchedTopMenus.add(topMenu);
+    keepLiveWallpaperClickInside(topMenu);
     for (const methodName of WALLPAPER_TOP_MENU_OPEN_METHODS) {
       wrapTopMenuOpenMethod(topMenu, methodName);
     }
@@ -670,6 +757,10 @@ export function installOfficialBackgroundController(
 
   /** 场景就绪后安装拦截；小抄页签只在用户打开背景面板时挂上。 */
   function sync(): void {
+    if (!extensionOn()) {
+      const openMenu = asRecord(findTopMenu()?.wallPaperUI);
+      if (openMenu) extension?.detachMenu(openMenu);
+    }
     if (!wallPaperHooksEnabled) return;
     if (!shouldSyncBackgroundUi()) {
       const topMenu = findTopMenu();
@@ -717,6 +808,15 @@ export function installOfficialBackgroundController(
     if (token === 'enable') enableWallPaperHooks();
   });
   tasks.later(() => scheduleSync(), 0);
+  const watchOpenMenu = () => {
+    if (shouldSyncBackgroundUi() && isBackgroundUiScene(locator, globalObject)) {
+      const menu = findWallPaperMenuOnStage(globalObject, WALLPAPER_MENU_STAGE_SEARCH_DEPTH);
+      const buttons = wallPaperTabButtons(resolveWallPaperTabGroup(menu) ?? {});
+      if (menu && menu.visible !== false && buttons.length) applyMenuExtension(menu, findTopMenu());
+    }
+    tasks.later(watchOpenMenu, WALLPAPER_VISIBLE_MENU_POLL_MS);
+  };
+  tasks.later(watchOpenMenu, WALLPAPER_VISIBLE_MENU_POLL_MS);
 
   return {
     sync,
@@ -728,6 +828,33 @@ export function installOfficialBackgroundController(
       patcher.restoreAll();
     }
   };
+}
+
+/** 点击落在动态皮肤列表里（含它的格子）。 */
+export function isInsideLiveWallpaperPanel(target: unknown): boolean {
+  let node = asRecord(target);
+  for (let depth = 0; node && depth < LIVE_PANEL_CLICK_SEARCH_DEPTH; depth += 1) {
+    if (node.name === LIVE_PANEL_NAME) return true;
+    node = asRecord(node.parent) ?? asRecord(node._parent);
+  }
+  return false;
+}
+
+/** 按钮上这个处理函数实际挂在哪个事件上；找不到时返回 undefined。 */
+export function boundEventName(
+  button: UnknownRecord | null,
+  method: unknown,
+  eventNames: unknown[]
+): unknown {
+  const events = asRecord(button?._events);
+  if (!events || typeof method !== 'function') return undefined;
+  for (const name of eventNames) {
+    if (typeof name !== 'string') continue;
+    const entry = events[name];
+    const handlers = Array.isArray(entry) ? entry : [entry];
+    if (handlers.some((handler) => asRecord(handler)?.method === method)) return name;
+  }
+  return undefined;
 }
 
 /** 这条上报是不是背景设置结果。 */

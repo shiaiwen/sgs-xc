@@ -848,15 +848,19 @@ function execute(webview) {
       '.sgsol-remark-input{flex:1 1 auto;min-width:0;box-sizing:border-box;border:1px solid rgba(226,199,137,.6);border-radius:3px;background:#1b1712;color:#f3ead5;padding:1px 6px;font-size:14px;line-height:20px;outline:none}',
       '.sgsol-delete{width:22px;height:22px;border:0;background:transparent;color:#b6aa96;font-size:18px;line-height:20px;cursor:pointer}',
       '.sgsol-delete:hover{color:#ffcf8a}',
-      '.sgsol-save-wrap{position:fixed;z-index:2147483599;display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:0;color:#cfc4b2;font-size:15px;line-height:20px;vertical-align:middle;max-width:min(320px,calc(100vw - 16px))}',
+      '.sgsol-save-wrap{position:fixed;z-index:2147483599;display:inline-flex;align-items:center;flex-wrap:nowrap;gap:8px;margin-left:0;color:#cfc4b2;font-size:15px;line-height:22px;height:22px;vertical-align:middle;max-width:min(320px,calc(100vw - 16px))}',
       '.login_vertical .login_hor .sgsol-save-wrap.sgsol-save-wrap--4399{position:absolute;float:none;width:auto;margin-left:0;padding:0}',
-      '.sgsol-save-line{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;white-space:nowrap}',
+      '.sgsol-save-line{display:inline-flex;align-items:center;gap:6px;height:22px;cursor:pointer;user-select:none;white-space:nowrap;flex:none}',
       '.login_vertical .login_hor .sgsol-save-wrap.sgsol-save-wrap--4399 .sgsol-save-line>span{float:none;width:auto;overflow:visible;line-height:20px}',
       '.sgsol-save-line input[type="checkbox"]{width:14px;height:14px;margin:0;accent-color:#c9984d;cursor:pointer}',
       '.sgsol-save-line:hover{color:#ead8b8}',
       '.sgsol-save-hint{margin-left:6px;color:#9f9381;font-size:12px}',
-      '.sgsol-save-remark-input{display:none;box-sizing:border-box;width:132px;border:1px solid rgba(226,199,137,.45);border-radius:3px;background:#1b1712;color:#f3ead5;padding:2px 6px;font-size:13px;line-height:18px;outline:none;cursor:text}',
-      '.sgsol-save-wrap.sgsol-save-expanded .sgsol-save-remark-input{display:inline-block}'
+      '.sgsol-save-hint:empty{display:none}',
+      '.sgsol-save-remark-input{display:inline-block;box-sizing:border-box;flex:none;width:132px;height:22px;margin:0;border:1px solid rgba(201,152,77,.5);border-radius:2px;background:rgba(32,22,15,.72);color:#ecdcb8;padding:0 6px;font-size:13px;line-height:20px;outline:none;cursor:text;transition:border-color .15s,background .15s}',
+      '.sgsol-save-remark-input::placeholder{color:#8f8068}',
+      '.sgsol-save-remark-input:hover{border-color:rgba(224,184,102,.75)}',
+      '.sgsol-save-remark-input:focus{border-color:#e0b866;background:rgba(40,28,18,.88)}',
+      '.sgsol-save-remark-input.sgsol-save-remark-input--floating{position:fixed;z-index:2147483599}'
     ].join('');
     (loginDocument.head || loginDocument.documentElement).appendChild(style);
   }
@@ -914,7 +918,14 @@ function execute(webview) {
     saveRemarkInput.setAttribute('autocomplete', 'off');
     saveRemarkInput.setAttribute('spellcheck', 'false');
     saveWrap.appendChild(saveLine);
-    saveWrap.appendChild(saveRemarkInput);
+    // 官方「自动登录」勾选框存在时，备注框单独摆在它左边；否则跟在勾选框后面。
+    const remarkFloating = !parts.is4399 && !!parts.nativeRemember;
+    if (remarkFloating) {
+      saveRemarkInput.classList.add('sgsol-save-remark-input--floating');
+      loginDocument.body.appendChild(saveRemarkInput);
+    } else {
+      saveWrap.appendChild(saveRemarkInput);
+    }
 
     const rememberAnchor = parts.nativeRemember && (parts.nativeRemember.closest('label') || parts.nativeRemember.parentElement || parts.nativeRemember);
     if (parts.is4399 && parts.loginButton && parts.loginButton.parentElement) {
@@ -1087,9 +1098,28 @@ function execute(webview) {
       positionSaveLine();
     }
 
+    const REMARK_INPUT_MIN_WIDTH = 72;
+    const REMARK_INPUT_HEIGHT = 22;
+    // 备注框左边比密码框左边再往左多出密码框宽度的这个比例，正好和「密码」两个字的左边对齐。
+    const REMARK_LEFT_SHIFT_RATIO = 0.45;
+    // 备注框右边离官方勾选框的距离。
+    const REMARK_RIGHT_GAP = 14;
+
+    /** 备注框摆在官方勾选框左边：左边对齐「密码」字样，右边留出间距。 */
+    function positionRemarkInput(nativeRect, anchorRect) {
+      const passRect = parts.password.getBoundingClientRect();
+      const left = Math.max(8, passRect.left - passRect.width * REMARK_LEFT_SHIFT_RATIO);
+      const right = nativeRect.left - REMARK_RIGHT_GAP;
+      const width = Math.max(REMARK_INPUT_MIN_WIDTH, Math.floor(right - left));
+      const lineRect = nativeRect.height > 0 ? nativeRect : anchorRect;
+      const top = lineRect.top + (lineRect.height - REMARK_INPUT_HEIGHT) / 2;
+      saveRemarkInput.style.left = Math.round(left) + 'px';
+      saveRemarkInput.style.top = Math.round(top) + 'px';
+      saveRemarkInput.style.width = width + 'px';
+    }
+
     function positionSaveLine() {
-      const lineWidth = saveWrap.offsetWidth || 120;
-      const lineHeight = saveWrap.offsetHeight || 20;
+      const lineHeight = saveWrap.offsetHeight || 22;
       const gap = 18;
       let left;
       let top;
@@ -1110,13 +1140,17 @@ function execute(webview) {
         const anchorLooksTooWide = anchorRect.width > Math.max(220, accountRect.width * 0.7);
         const anchorRight = anchorLooksTooWide ? nativeRect.right + 96 : anchorRect.right;
         left = anchorRight + gap;
-        top = anchorRect.top + Math.max(0, (anchorRect.height - lineHeight) / 2);
+        // 以原生勾选框的中线为准，和同一行的文字对齐。
+        const lineRect = nativeRect.height > 0 ? nativeRect : anchorRect;
+        top = lineRect.top + (lineRect.height - lineHeight) / 2;
+        if (remarkFloating) positionRemarkInput(nativeRect, anchorRect);
       } else {
         const passRect = parts.password.getBoundingClientRect();
         left = passRect.left;
         top = passRect.bottom + 10;
       }
 
+      const lineWidth = saveWrap.offsetWidth || 120;
       left = Math.max(8, Math.min(left, loginWindow.innerWidth - lineWidth - 8));
       top = Math.max(8, Math.min(top, loginWindow.innerHeight - lineHeight - 8));
       saveWrap.style.left = Math.round(left) + 'px';
@@ -1257,6 +1291,13 @@ function execute(webview) {
       if (saveCheckbox.checked) setSaveHint('登录时保存，可填备注');
     });
 
+    // 第一次登录时直接填备注：写了内容就自动勾上「记住账号密码」，登录时一起存下。
+    saveRemarkInput.addEventListener('input', () => {
+      if (!saveRemarkInput.value || saveCheckbox.checked) return;
+      saveCheckbox.checked = true;
+      userWantsSave = true;
+      setSaveExpanded(true);
+    });
     saveRemarkInput.addEventListener('mousedown', (event) => event.stopPropagation());
     saveRemarkInput.addEventListener('click', (event) => event.stopPropagation());
     saveRemarkInput.addEventListener('keydown', (event) => event.stopPropagation());

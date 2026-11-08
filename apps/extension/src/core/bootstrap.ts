@@ -82,6 +82,11 @@ import { installHandSortController } from '../features/cards/hand-sort-controlle
 import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-controller';
 import { installClassicRoomFilterController } from '../features/room-filter/classic-room-filter-controller';
 import { installCampChatRightPanelController } from '../features/in-game-chat/camp-chat-right-panel';
+import {
+  ensureSkinTraceDiagnostics,
+  installSkinTraceConsoleBridge,
+  skinTrace
+} from '../features/skin-background/skin-runtime.ts';
 
 /** 挂到 window.__XIAOCHAO_STARTUP__，方便控制台看 waiting/ready。 */
 const panelStartupStatus: Record<string, unknown> = {};
@@ -93,6 +98,7 @@ function bindPanelStartupStatus(globalObject: Record<string, unknown>): Record<s
     Object.assign(panelStartupStatus, existing as Record<string, unknown>);
   }
   globalObject.__XIAOCHAO_STARTUP__ = panelStartupStatus;
+  ensureSkinTraceDiagnostics(globalObject);
   return panelStartupStatus;
 }
 
@@ -128,6 +134,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   lifecycle.register(installGameNativePopupProtector(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
   const startupStatus = bindPanelStartupStatus(bootBag);
+  installSkinTraceConsoleBridge(bootBag);
   startupStatus.state = 'starting';
   startupStatus.panelGate = 'login-transition-only';
 
@@ -294,6 +301,7 @@ function startXiaochaoCore(
   const skinPaper = installSkinPaperController(configStore, {
     selfSeatId: () => seatStateStore.getSnapshot().selfSeatId,
     syncWallpaperMenu: () => officialBackground?.sync(),
+    prepareOfficialSkinTab: (menu) => officialBackground?.prepareOfficialSkinTab(menu),
     gameEvents
   });
   lifecycle.register(skinPaper.dispose);
@@ -301,7 +309,16 @@ function startXiaochaoCore(
     menuExtension: skinPaper.menuExtension
   });
   const startupSnapshot = window.__XIAOCHAO_STARTUP__ as Record<string, unknown> | undefined;
-  if (startupSnapshot) startupSnapshot.wallpaperController = 'installed';
+  if (startupSnapshot) {
+    startupSnapshot.wallpaperController = 'installed';
+    startupSnapshot.skinPaperEnabled = configStore.get('skin.skinPaper') === true;
+  }
+  const globalBoot = window as unknown as Record<string, unknown>;
+  installSkinTraceConsoleBridge(globalBoot);
+  skinTrace('skin-background-installed', {
+    skinPaper: configStore.get('skin.skinPaper') === true,
+    officialBackground: configStore.get('skin.officialBackground') === true
+  });
   lifecycle.register(officialBackground.dispose);
   let autoTask: ReturnType<typeof installAutoTaskController>;
   try {

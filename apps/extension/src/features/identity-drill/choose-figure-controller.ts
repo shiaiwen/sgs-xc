@@ -6,6 +6,11 @@ import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
+  CHOOSE_FIGURE_LOCK_KEY_BASE,
+  CHOOSE_FIGURE_LOCK_VERSION
+} from '../../const/choose-figure-lock.ts';
+import { loggedInAccountStorageKey } from '../skin-background/skin-runtime.ts';
+import {
   figureByClientOrder,
   figureConflicts,
   figureForChooseIdentityOrder,
@@ -18,12 +23,26 @@ import {
 
 type UnknownRecord = Record<string, unknown>;
 const DEBUG_KEY = '__XIAOCHAO_CHOOSE_FIGURE_DEBUG__';
-/** 断线重连会重载页面，锁定的身份存这里，重载后接着用。 */
-const FIGURE_LOCK_KEY = '__XIAOCHAO_CHOOSE_FIGURE_LOCK__';
-const FIGURE_LOCK_VERSION = 4;
+/** 无账号后缀的旧 session 键，读后迁移。 */
+const LEGACY_FIGURE_LOCK_SESSION_KEY = CHOOSE_FIGURE_LOCK_KEY_BASE;
 
 function sessionStore(globalObject: GameRuntimeWindow): Storage {
   return (globalObject as unknown as { sessionStorage: Storage }).sessionStorage;
+}
+
+function pageLocalStorage(globalObject: GameRuntimeWindow): Storage | null {
+  try {
+    return (globalObject as unknown as { localStorage: Storage }).localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function figureLockSessionKey(globalObject: GameRuntimeWindow): string | null {
+  return loggedInAccountStorageKey(
+    CHOOSE_FIGURE_LOCK_KEY_BASE,
+    pageLocalStorage(globalObject)
+  );
 }
 
 interface ChooseFigureDebugState {
@@ -55,34 +74,45 @@ export function installChooseFigureController(
   /** 刚和游戏给的身份对不上、被作废的那份房间顺序，不再重复认。 */
   let rejectedOrderKey = '';
   // 断线重连会重载页面，内存里的记录会丢，所以从会话存储恢复上一次锁定的身份。
-  try {
-    const raw = sessionStore(globalObject).getItem(FIGURE_LOCK_KEY);
-    const saved = raw ? JSON.parse(raw) as { version?: unknown; clientIds?: unknown; figures?: unknown; roomKey?: unknown } : null;
-    if (saved?.version !== FIGURE_LOCK_VERSION) throw new Error('stale');
-    if (typeof saved?.roomKey === 'string') cachedRoomKey = saved.roomKey;
-    if (Array.isArray(saved?.clientIds)) stableClientIds = saved.clientIds.map((value) => String(value));
-    if (saved?.figures && typeof saved.figures === 'object') {
-      for (const [clientId, figure] of Object.entries(saved.figures as Record<string, unknown>)) {
-        const value = Number(figure);
-        if (Number.isInteger(value) && value > 0) lockedFigures.set(clientId, value);
+  const lockKey = figureLockSessionKey(globalObject);
+  if (lockKey) {
+    try {
+      const session = sessionStore(globalObject);
+      let raw = session.getItem(lockKey);
+      if (!raw) {
+        raw = session.getItem(LEGACY_FIGURE_LOCK_SESSION_KEY);
+        if (raw) {
+          session.setItem(lockKey, raw);
+          session.removeItem(LEGACY_FIGURE_LOCK_SESSION_KEY);
+        }
       }
-    }
-    if (saved?.figuresBySeat && typeof saved.figuresBySeat === 'object') {
-      for (const [seatId, figure] of Object.entries(saved.figuresBySeat as Record<string, unknown>)) {
-        const key = Number(seatId);
-        const value = Number(figure);
-        if (Number.isInteger(key) && Number.isInteger(value) && value > 0) lockedBySeat.set(key, value);
+      const saved = raw ? JSON.parse(raw) as { version?: unknown; clientIds?: unknown; figures?: unknown; roomKey?: unknown } : null;
+      if (saved?.version !== CHOOSE_FIGURE_LOCK_VERSION) throw new Error('stale');
+      if (typeof saved?.roomKey === 'string') cachedRoomKey = saved.roomKey;
+      if (Array.isArray(saved?.clientIds)) stableClientIds = saved.clientIds.map((value) => String(value));
+      if (saved?.figures && typeof saved.figures === 'object') {
+        for (const [clientId, figure] of Object.entries(saved.figures as Record<string, unknown>)) {
+          const value = Number(figure);
+          if (Number.isInteger(value) && value > 0) lockedFigures.set(clientId, value);
+        }
       }
-    }
-    if (saved?.figuresByName && typeof saved.figuresByName === 'object') {
-      for (const [name, figure] of Object.entries(saved.figuresByName as Record<string, unknown>)) {
-        const value = Number(figure);
-        if (name && Number.isInteger(value) && value > 0) lockedByName.set(name, value);
+      if (saved?.figuresBySeat && typeof saved.figuresBySeat === 'object') {
+        for (const [seatId, figure] of Object.entries(saved.figuresBySeat as Record<string, unknown>)) {
+          const key = Number(seatId);
+          const value = Number(figure);
+          if (Number.isInteger(key) && Number.isInteger(value) && value > 0) lockedBySeat.set(key, value);
+        }
       }
+      if (saved?.figuresByName && typeof saved.figuresByName === 'object') {
+        for (const [name, figure] of Object.entries(saved.figuresByName as Record<string, unknown>)) {
+          const value = Number(figure);
+          if (name && Number.isInteger(value) && value > 0) lockedByName.set(name, value);
+        }
+      }
+      if (lockedFigures.size || lockedByName.size) frozenAfterReconnect = true;
+    } catch {
+      // 会话存储不可用时按没锁定处理。
     }
-    if (lockedFigures.size || lockedByName.size) frozenAfterReconnect = true;
-  } catch {
-    // 会话存储不可用时按没锁定处理。
   }
   let lastDebugSignature = '';
   let lastDebugAt = 0;
@@ -108,9 +138,11 @@ export function installChooseFigureController(
   };
 
   function persistFigureLock(): void {
+    const lockKey = figureLockSessionKey(globalObject);
+    if (!lockKey) return;
     try {
-      sessionStore(globalObject).setItem(FIGURE_LOCK_KEY, JSON.stringify({
-        version: FIGURE_LOCK_VERSION,
+      sessionStore(globalObject).setItem(lockKey, JSON.stringify({
+        version: CHOOSE_FIGURE_LOCK_VERSION,
         roomKey: cachedRoomKey,
         clientIds: stableClientIds,
         figures: Object.fromEntries(lockedFigures),
@@ -133,7 +165,11 @@ export function installChooseFigureController(
     frozenAfterReconnect = false;
     rejectedOrderKey = '';
     try {
-      sessionStore(globalObject).removeItem(FIGURE_LOCK_KEY);
+      const lockKey = figureLockSessionKey(globalObject);
+      if (!lockKey) return;
+      const session = sessionStore(globalObject);
+      session.removeItem(lockKey);
+      session.removeItem(LEGACY_FIGURE_LOCK_SESSION_KEY);
     } catch {
       // 会话存储不可用时忽略。
     }

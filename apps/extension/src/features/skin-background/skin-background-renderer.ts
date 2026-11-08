@@ -11,6 +11,7 @@ import {
   BACKGROUND_RESOURCE_TYPE_SPINE,
   BACKGROUND_RESOURCE_TYPE_VIDEO
 } from '../../const/background-resource-type.ts';
+import { HALL_BACKDROP_REAPPLY_MS } from '../../const/paper-hall-cover.ts';
 import { CUSTOM_BACKGROUND_Z_ORDER, DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 import { isBackgroundDisplayReady } from './background-display-ready.ts';
 import { isSkinFrameSize, resolveBackgroundSourceSize, uniformCoverScale } from './background-fit.ts';
@@ -27,7 +28,11 @@ type EffectConstructor = new () => UnknownRecord;
 export interface SkinBackgroundRenderer {
   readonly resource: Partial<BackgroundResource>;
   hasBackground(): boolean;
-  setBackground(resource?: Partial<BackgroundResource>, persist?: boolean): Promise<boolean>;
+  /**
+   * persistedUrl 只对静态图有用：画的是临时地址，存和对外报的是原图地址，
+   * 这样重启后还能重新加载，收藏项也能认出当前背景。
+   */
+  setBackground(resource?: Partial<BackgroundResource>, persist?: boolean, persistedUrl?: string): Promise<boolean>;
   setEnabled(enabled: boolean): Promise<boolean>;
   /** 清除当前背景；forget 为 true 时同时删除本地记录（改用官方背景时）。 */
   clearBackground(forget?: boolean): void;
@@ -63,6 +68,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   let resource: Partial<BackgroundResource> = store.loadResource();
   let sprite: UnknownRecord | undefined;
   let spriteUrl = '';
+  /** 精灵里当前画的内容类型。资源记录在画完之后才更新，判断是否画好要看这个。 */
+  let spriteType = Number(resource.type) || BACKGROUND_RESOURCE_TYPE_IMAGE;
+  /** 当前画的是临时地址时，它对应的原图地址。 */
+  let spriteSourceUrl = '';
   let spriteSize = { width: 0, height: 0 };
   let idleEffects: Record<string, UnknownRecord> = {};
   let actionEffects: UnknownRecord[] = [];
@@ -88,6 +97,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     layerBgVisible?: unknown;
   };
   let nativeBackground: NativeBackgroundState | null = null;
+  let sceneBackdropWatching = false;
   let sceneBackgroundSnapshot: { node: UnknownRecord; visible: unknown } | null = null;
   let nativeBgSnapshot:
     | {
@@ -132,7 +142,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   function customPictureReady(): boolean {
     const flat = asRecord(sprite?.bg);
     const bitmap = bitmapSize(flat);
-    const typeNum = Number(resource.type) || BACKGROUND_RESOURCE_TYPE_IMAGE;
+    const typeNum = spriteType;
     const video = videoElement;
     return isBackgroundDisplayReady({
       type: typeNum,
@@ -141,7 +151,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       videoFrameReady: Boolean(video && video.readyState >= 2 && videoFirstFrameDrawn),
       videoDrawWidth: videoDrawSize.width,
       videoDrawHeight: videoDrawSize.height,
-      effectIdleCount: Object.keys(idleEffects).length
+      effectDrawn: Object.keys(idleEffects).length > 0
     });
   }
 
@@ -161,7 +171,9 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (sprite) sprite.visible = true;
     layout();
     raiseSpriteAboveWallpaper();
+    // 场景自带的背景特效可能晚建出来，也可能被游戏重建，显示期间持续压着，不然会盖住自己的图。
     suppressNativeGameBackground();
+    keepSceneBackdropHidden();
     applyStageBackdrop(true);
   }
 
@@ -188,13 +200,13 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   }
 
   /** 按原图像素铺满。宽高用同一个倍数，不用皮肤窗口那一格的宽高去拉图片。 */
-  function layoutNativeLayerBg(flat: UnknownRecord, imgW: number, imgH: number): void {
+  function layoutNativeLayerBg(flat: UnknownRecord, imageWidth: number, imageHeight: number): void {
     const { width, height } = gameSize();
     const bitmap = bitmapSize(flat);
-    const source = resolveBackgroundSourceSize(bitmap.width, bitmap.height, imgW, imgH);
-    const sourceW = source.width;
-    const sourceH = source.height;
-    const scale = uniformCoverScale(width, height, sourceW, sourceH);
+    const source = resolveBackgroundSourceSize(bitmap.width, bitmap.height, imageWidth, imageHeight);
+    const sourceWidth = source.width;
+    const sourceHeight = source.height;
+    const scale = uniformCoverScale(width, height, sourceWidth, sourceHeight);
     flat.visible = true;
     if (typeof flat.scale === 'function') callMethod(flat, 'scale', scale, scale);
     else {
@@ -206,7 +218,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       flat.x = width / 2;
       flat.y = height / 2;
     }
-    if (sourceW > 0 && sourceH > 0) callMethod(flat, 'size', sourceW, sourceH);
+    if (sourceWidth > 0 && sourceHeight > 0) callMethod(flat, 'size', sourceWidth, sourceHeight);
   }
 
   function restoreGlobalLayerBackground(): void {
@@ -266,11 +278,11 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       if (bgSprite) bgSprite.visible = false;
       layerBg.visible = true;
 
-      const imgW = Number(next.width) || 0;
-      const imgH = Number(next.height) || 0;
+      const imageWidth = Number(next.width) || 0;
+      const imageHeight = Number(next.height) || 0;
       if (typeof layerBg.loadImage === 'function') callMethod(layerBg, 'loadImage', url);
       else layerBg.skin = url;
-      layoutNativeLayerBg(layerBg, imgW, imgH);
+      layoutNativeLayerBg(layerBg, imageWidth, imageHeight);
 
       const event = layaEvent()?.COMPLETE;
       if (event) {
@@ -281,11 +293,12 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       detachOwnSprite();
       if (sprite) sprite.visible = false;
       spriteUrl = url;
+      spriteSourceUrl = '';
       persistResourceRecord({
         url,
         type: Number(next.type) || 0,
-        width: imgW,
-        height: imgH
+        width: imageWidth,
+        height: imageHeight
       });
       return true;
     } catch (error) {
@@ -337,10 +350,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     );
   }
 
-  function placeFlatAtSpriteCenter(flat: UnknownRecord, sourceW: number, sourceH: number): void {
-    callMethod(flat, 'size', sourceW, sourceH);
-    const offsetX = -sourceW / 2;
-    const offsetY = -sourceH / 2;
+  function placeFlatAtSpriteCenter(flat: UnknownRecord, sourceWidth: number, sourceHeight: number): void {
+    callMethod(flat, 'size', sourceWidth, sourceHeight);
+    const offsetX = -sourceWidth / 2;
+    const offsetY = -sourceHeight / 2;
     if (typeof flat.posInteger === 'function') callMethod(flat, 'posInteger', offsetX, offsetY);
     else if (typeof flat.pos === 'function') callMethod(flat, 'pos', offsetX, offsetY);
     else {
@@ -406,6 +419,21 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     resizeBound = true;
   }
 
+  /**
+   * 游戏更新后类表里不再有 SgsFlatImage 这个名字。
+   * 背景层自己的 bg 只是个不能挂到画面上的辅助对象，不能当图用。
+   * 这里改用 Laya 自带的 Image，它是正常的显示节点，也有 skin、texture 和 loadImage。
+   */
+  function createLayaImage(): UnknownRecord | null {
+    const ImageClass = laya()?.Image as (new () => UnknownRecord) | undefined;
+    if (typeof ImageClass !== 'function') return null;
+    try {
+      return new ImageClass();
+    } catch {
+      return null;
+    }
+  }
+
   function ensureFlatBackgroundImage(): UnknownRecord | null {
     if (!sprite) return null;
     const existing = asRecord(sprite.bg);
@@ -415,7 +443,8 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
         const classUtils = asRecord(laya()?.ClassUtils);
         const ctor = classUtils?.getClass?.('SgsFlatImage') as (new () => UnknownRecord) | undefined;
         return typeof ctor === 'function' ? new ctor() : null;
-      })();
+      })()
+      ?? createLayaImage();
     if (!flat) return null;
     sprite.bg = flat;
     callMethod(sprite, 'addChild', flat);
@@ -543,6 +572,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   }
 
   function restoreNativeGameBackground(): void {
+    sceneBackdropWatching = false;
     applyStageBackdrop(false);
     restoreGlobalLayerBackground();
     restoreSceneBackground();
@@ -628,17 +658,23 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     restoreSceneBackground();
   }
 
-  function suppressNativeGameBackground(): void {
+  /** 返回 false 表示场景自带的背景特效还没建出来，没有可压的。 */
+  function suppressNativeGameBackground(): boolean {
     suppressNativeBackground();
-    const snap: NonNullable<typeof nativeBgSnapshot> = {};
     const scene = locator.scene();
     const bgEffect = asRecord(locator.gameScene()?.bgEffect) ?? asRecord(scene?.bgEffect);
-    if (bgEffect) {
-      snap.bgEffect = bgEffect;
-      snap.bgEffectVisible = bgEffect.visible;
+    if (!bgEffect) return false;
+    const previous = nativeBgSnapshot;
+    if (previous?.bgEffect === bgEffect) {
+      // 同一个特效再次压制时保留最初的显示状态，恢复时才能还原成真正的原状。
       bgEffect.visible = false;
+      return true;
     }
-    if (snap.bgEffect) nativeBgSnapshot = snap;
+    // 场景换了，上一个场景的特效先还原。
+    if (previous?.bgEffect && previous.bgEffectVisible !== undefined) previous.bgEffect.visible = previous.bgEffectVisible;
+    nativeBgSnapshot = { bgEffect, bgEffectVisible: bgEffect.visible };
+    bgEffect.visible = false;
+    return true;
   }
 
   function reloadStoredResource(): Partial<BackgroundResource> {
@@ -651,10 +687,14 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
         width: Number(saved.width) || 0,
         height: Number(saved.height) || 0
       };
-      if (spriteUrl !== url) spriteUrl = '';
+      if (spriteUrl !== url && spriteSourceUrl !== url) {
+        spriteUrl = '';
+        spriteSourceUrl = '';
+      }
     } else {
       resource = {};
       spriteUrl = '';
+      spriteSourceUrl = '';
       if (globalLayerActive) restoreGlobalLayerBackground();
     }
     return resource;
@@ -664,6 +704,11 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (!isLayerAttached() || !sprite || sprite.destroyed === true) return false;
     if (sprite.visible === false) return false;
     return true;
+  }
+
+  /** 自己的精灵已挂在背景层上，图可能还在加载。 */
+  function ownSpriteAttached(): boolean {
+    return isLayerAttached() && Boolean(sprite) && sprite?.destroyed !== true;
   }
 
   async function syncSceneVisibility(shouldShow: boolean, allPaper: boolean): Promise<void> {
@@ -682,17 +727,18 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     const inTable = Boolean(locator.gameScene());
     if (globalLayerActive && inTable) restoreGlobalLayerBackground();
 
-    if (!customBackgroundMounted() && url) {
+    if (!ownSpriteAttached() && url) {
       await setBackground(resource, false);
     }
-    if (!customBackgroundMounted() && allPaper && !inTable) {
+    // 图还在加载时精灵是藏着的，加载好会自己显示，这时不能改走官方壁纸层，否则精灵被摘掉就再也出不来。
+    if (!ownSpriteAttached() && allPaper && !inTable) {
       if (applyGlobalBackgroundToLayer(resource)) {
         globalObject.addEventListener?.('resize', relayoutGlobalNativeLayer);
         if (globalNativeLayerReady()) applyStageBackdrop(true);
         return;
       }
     }
-    if (!customBackgroundMounted()) {
+    if (!ownSpriteAttached()) {
       restoreNativeGameBackground();
       return;
     }
@@ -701,13 +747,29 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (Number(resource.type) === BACKGROUND_RESOURCE_TYPE_VIDEO) await resumeVideoPlayback();
   }
 
+  /**
+   * 新场景的背景特效常常比场景切换回调晚一步才建出来，游戏也可能中途重建它。
+   * 自己的背景显示期间隔一会儿压一次，选模式首页才不会被它盖住自己的图。
+   * 恢复官方背景时停止。
+   */
+  function keepSceneBackdropHidden(): void {
+    if (sceneBackdropWatching) return;
+    sceneBackdropWatching = true;
+    const step = (): void => {
+      if (!sceneBackdropWatching) return;
+      if (customBackgroundMounted() && customPictureReady()) suppressNativeGameBackground();
+      tasks.later(step, HALL_BACKDROP_REAPPLY_MS);
+    };
+    tasks.later(step, HALL_BACKDROP_REAPPLY_MS);
+  }
+
   function onSceneChange(allPaper: boolean): void {
     const url = String(resource.url || '').trim();
     if (!url) {
       restoreNativeGameBackground();
       return;
     }
-    void syncSceneVisibility(true, allPaper);
+    void syncSceneVisibility(true, allPaper).then(keepSceneBackdropHidden);
   }
 
   function applyPresentationFilter(typeNum: number): void {
@@ -960,6 +1022,8 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       flat.visible = true;
     }
     spriteUrl = '';
+    spriteSourceUrl = '';
+    spriteType = BACKGROUND_RESOURCE_TYPE_IMAGE;
   }
 
   function relayoutFromFlatTexture(this: UnknownRecord): void {
@@ -980,10 +1044,30 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     callMethod(flat, 'once', event, resizeOwner, relayoutFromFlatTexture);
   }
 
-  function drawStatic(url: string, width: number, height: number): void {
-    if (!sprite) return;
+  /**
+   * Laya 自带的 Image 加载完图后不会发完成事件，只有贴图自己会发就绪事件。
+   * 不监听的话，图加载好了也没人去显示，精灵一直是隐藏的。
+   */
+  function armTextureReadyLayout(flat: UnknownRecord): void {
+    const texture = asRecord(flat.texture);
+    const event = layaEvent()?.READY;
+    if (!texture || !event) return;
+    const onReady = () => {
+      if (asRecord(sprite?.bg) !== flat) return;
+      relayoutFromFlatTexture.call(flat);
+    };
+    if (typeof texture.getIsReady === 'function' && callMethod(texture, 'getIsReady') === true) {
+      onReady();
+      return;
+    }
+    callMethod(texture, 'once', event, flat, onReady);
+  }
+
+  /** 返回 false 表示建不出平面图，没有画上任何东西。 */
+  function drawStatic(url: string, width: number, height: number): boolean {
+    if (!sprite) return false;
     const flat = ensureFlatBackgroundImage();
-    if (!flat) return;
+    if (!flat) return false;
     setFlatBackgroundVisible(true);
     const measured = resolveBackgroundSourceSize(0, 0, Number(width), Number(height));
     if (measured.width > 0 && measured.height > 0) spriteSize = measured;
@@ -995,11 +1079,13 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       flat.skin = url;
     }
     armStaticLayout(flat);
-    relayoutFromFlatTexture(flat);
+    armTextureReadyLayout(flat);
+    relayoutFromFlatTexture.call(flat);
     if (!(Number(flat.texture ? asRecord(flat.texture)?.width : 0) > 0) && measured.width > 0 && measured.height > 0) {
       placeFlatAtSpriteCenter(flat, measured.width, measured.height);
       layout();
     }
+    return true;
   }
 
   async function waitVideoFrameReady(video: HTMLVideoElement): Promise<void> {
@@ -1216,9 +1302,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     return drawVideoFromCanvas(url, width, height);
   }
 
-  function drawEffects(url: string, type: number, width: number, height: number): void {
+  /** 返回 false 表示找不到特效类，没有画上任何东西。 */
+  function drawEffects(url: string, type: number, width: number, height: number): boolean {
     const EffectClass = resolveEffectClass(type === BACKGROUND_RESOURCE_TYPE_SK_EFFECT ? 'BaseEffect' : 'BaseSpineEffect');
-    if (!EffectClass || !sprite) return;
+    if (!EffectClass || !sprite) return false;
     const extension = type === BACKGROUND_RESOURCE_TYPE_SK_EFFECT ? 'sk' : 'json';
     const [parts, action] = type === BACKGROUND_RESOURCE_TYPE_SPINE
       ? [['beijing', 'daiji', 'qianjing'], 'DaiJi']
@@ -1234,6 +1321,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       }
       idleEffects[part] = effect;
     }
+    return true;
   }
 
   function commitNativeSuppressionOrRestore(): boolean {
@@ -1252,33 +1340,42 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     return true;
   }
 
-  async function setBackground(next: Partial<BackgroundResource> = resource, persist = true): Promise<boolean> {
+  async function setBackground(
+    next: Partial<BackgroundResource> = resource,
+    persist = true,
+    persistedUrl = ''
+  ): Promise<boolean> {
     const { url, type = 0, width = 0, height = 0 } = next;
     if (!url) return false;
     const initPromise = tasks.poll(() => backgroundLayer() && init(), 160, 500);
     if (!(await initPromise)) return false;
     const typeNum = Number(type);
-    const reapply = needsBackgroundReapply() || spriteUrl !== url;
+    const drawnFromSameSource = Boolean(spriteSourceUrl) && spriteSourceUrl === url;
+    const reapply = needsBackgroundReapply() || (spriteUrl !== url && !drawnFromSameSource);
     if (reapply) {
       clearContent();
+      spriteType = typeNum || BACKGROUND_RESOURCE_TYPE_IMAGE;
       spriteSize = { width: Number(width), height: Number(height) };
       let applied = false;
       if (typeNum === BACKGROUND_RESOURCE_TYPE_IMAGE) {
-        drawStatic(url, Number(width), Number(height));
-        applied = true;
+        applied = drawStatic(url, Number(width), Number(height));
       } else if (typeNum === BACKGROUND_RESOURCE_TYPE_VIDEO) {
         applied = await drawVideo(url, Number(width), Number(height));
         if (!applied) restoreNativeGameBackground();
       } else {
-        drawEffects(url, typeNum, Number(width), Number(height));
-        applied = true;
+        applied = drawEffects(url, typeNum, Number(width), Number(height));
       }
-      if (!applied) return false;
+      if (!applied) {
+        restoreNativeGameBackground();
+        return false;
+      }
       applyPresentationFilter(typeNum);
       revealCustomBackground();
       if (customPictureReady() && !commitNativeSuppressionOrRestore()) return false;
+      const keptUrl = typeNum === BACKGROUND_RESOURCE_TYPE_IMAGE && persistedUrl ? persistedUrl : url;
       spriteUrl = url;
-      resource = { url, type: typeNum, width: Number(width), height: Number(height) };
+      spriteSourceUrl = keptUrl === url ? '' : keptUrl;
+      resource = { url: keptUrl, type: typeNum, width: Number(width), height: Number(height) };
       if (persist) store.saveResource(resource as BackgroundResource);
     } else if (typeNum === BACKGROUND_RESOURCE_TYPE_VIDEO) {
       applyPresentationFilter(typeNum);

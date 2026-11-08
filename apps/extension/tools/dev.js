@@ -150,7 +150,7 @@ console.log('[dev] 快速 watch：不压缩、不每次清空 dist/electron，�
 function run(command, args, options = {}) {
   const pipeConsole = options.pipeConsole === true && process.platform === 'win32';
   const child = spawn(command, args, {
-    cwd: root,
+    cwd: options.cwd || root,
     env,
     stdio: pipeConsole ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     windowsHide: false
@@ -191,9 +191,16 @@ run(process.execPath, [
 ]);
 // Chromium 开关必须放在应用路径之前，否则仍会在仓库里写 debug.log
 const electronLogSink = process.platform === 'win32' ? 'NUL' : '/dev/null';
+const DEV_REMOTE_DEBUGGING_PORT = 9333;
 const electron = run(
   resolved.path,
-  ['--trace-warnings', '--disable-logging', `--log-file=${electronLogSink}`, root],
+  [
+    '--trace-warnings',
+    '--disable-logging',
+    `--log-file=${electronLogSink}`,
+    `--remote-debugging-port=${DEV_REMOTE_DEBUGGING_PORT}`,
+    root
+  ],
   { pipeConsole: true }
 );
 

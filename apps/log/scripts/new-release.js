@@ -112,7 +112,7 @@ function readFrontmatter(raw) {
 
 function loadExisting(releasesDir, warn) {
   if (!fs.existsSync(releasesDir)) return [];
-  const names = fs.readdirSync(releasesDir).filter((name) => name.endsWith(".md")).sort();
+  const names = fs.readdirSync(releasesDir).filter((name) => name.endsWith(".md") && !name.startsWith("_")).sort();
   const releases = [];
   for (const name of names) {
     const filePath = path.join(releasesDir, name);

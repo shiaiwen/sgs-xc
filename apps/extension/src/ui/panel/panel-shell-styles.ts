@@ -64,12 +64,12 @@ html.xiaochao-game-viewport--docked #GameDiv {
   border-radius: 8px;
   clip-path: inset(0 round 8px);
   user-select: none;
-  pointer-events: none;
+  pointer-events: auto;
   transition: box-shadow .18s ease;
 }
 #createIframe.createIframe.xiaochao-panel--dock-pending {
   opacity: 0 !important;
-  pointer-events: none !important;
+  visibility: hidden !important;
 }
 #createIframe.createIframe.xiaochao-panel--collapsed {
   width: 96px !important;

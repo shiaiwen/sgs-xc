@@ -4,8 +4,15 @@
 
 import type { LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import { skinFavoritesGridPosition } from '../../const/skin-favorites-grid.ts';
+import {
+  WALLPAPER_BACKGROUND_TAB_LAYOUT_KEY,
+  WALLPAPER_FAVORITES_TAB_DEFAULT_HEIGHT,
+  WALLPAPER_TAB_TEXTURE_SHADOW_WIDTH
+} from '../../const/wallpaper-favorites-tab-layout.ts';
+import { WALLPAPER_LIVE_PANEL_KEY, isWallpaperMenuLiveTabValue } from '../../const/wallpaper-menu.ts';
 import type { MethodPatcher, PatchableFunction } from '../../runtime/method-patch.ts';
 import type { BackgroundFavorite, BackgroundResource, SkinBackgroundStore } from './skin-background-store.ts';
+import { raiseWallpaperSelectedMark } from './wallpaper-selection-marks.ts';
 import {
   asRecord,
   callMethod,
@@ -17,6 +24,10 @@ import {
 
 const TAB_VALUE = 'xcSkinBackgroundFavorites';
 const TAB_MARKER = '__xcSkinBackgroundFavoritesTab';
+const TAB_FLEX_LOOP_KEY = '__xcTabFlexLoop';
+const TAB_KEEP_KEY = '__xcFavoritesTabButton';
+const TAB_DETACHED_KEY = '__xcFavoritesTabDetached';
+const TAB_NATIVE_WIDTH_KEY = '__xcTabNativeWidth';
 const PREVIEW_WIDTH = 95;
 const PREVIEW_HEIGHT = 40;
 
@@ -44,6 +55,8 @@ interface MenuState {
   items: UnknownRecord[];
   empty?: UnknownRecord;
   loadMoreVisibility?: { text: unknown; background: unknown };
+  /** 显示小抄列表时被藏起来的动态皮肤列表，回到动态皮肤页时还回去。 */
+  hiddenLivePanel?: UnknownRecord;
   tabEvent?: string;
   tabBound?: boolean;
 }
@@ -309,7 +322,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     if (mark) {
       mark.visible = options.isCurrent(favorite);
       mark.zOrder = 999;
-      callMethod(item, 'setChildIndex', mark, Number(item.numChildren) || 0);
+      raiseWallpaperSelectedMark(item, mark);
     }
     const { offsetX, offsetY } = skinFavoritesGridPosition(index);
     callMethod(item, 'pos', offsetX, offsetY);
@@ -394,6 +407,30 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     state.loadMoreVisibility = undefined;
   }
 
+  /** 动态皮肤页的列表面板没人收时会盖在小抄列表上，显示小抄列表前先藏起来。 */
+  function hideLiveList(menu: UnknownRecord): void {
+    const live = asRecord(menu[WALLPAPER_LIVE_PANEL_KEY]);
+    if (!live || live.destroyed === true || live.visible !== true) return;
+    stateOf(menu).hiddenLivePanel = live;
+    live.visible = false;
+  }
+
+  /** 回到动态皮肤页时，把被藏起来的列表还给游戏。 */
+  function restoreLiveList(menu: UnknownRecord): void {
+    const state = stateOf(menu);
+    const live = state.hiddenLivePanel;
+    state.hiddenLivePanel = undefined;
+    if (live && live.destroyed !== true) live.visible = true;
+  }
+
+  /** 从页签点击参数里取出被点页签的值，参数可能是值、数组或带 target 的事件。 */
+  function clickedTabValue(argument: unknown): unknown {
+    const first = Array.isArray(argument) ? argument[0] : argument;
+    const event = asRecord(first);
+    const button = asRecord(event?.target) ?? asRecord(event?.currentTarget);
+    return button && 'value' in button ? button.value : first;
+  }
+
   /** 显示或隐藏收藏面板。 */
   function showPanel(menu: UnknownRecord, show: boolean, restoreLoadMore = true): boolean {
     const state = stateOf(menu);
@@ -423,6 +460,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     }
     const nativePanel = asRecord(menu.panel);
     if (nativePanel) nativePanel.visible = false;
+    hideLiveList(menu);
     toggleLoadMore(menu, true);
     const panel = ensurePanel(menu);
     if (!panel) return false;
@@ -440,7 +478,14 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     const buttons = mutableTabButtons(group);
     if (!buttons?.length) return null;
     const existing = buttons.find((button) => button.value === TAB_VALUE || button[TAB_MARKER]);
-    if (existing) return existing;
+    if (existing && existing.destroyed !== true && existing._destroyed !== true) {
+      placeFavoritesTabLast(menu, group, buttons, existing);
+      return existing;
+    }
+    if (existing) {
+      const staleIndex = buttons.indexOf(existing);
+      if (staleIndex >= 0) buttons.splice(staleIndex, 1);
+    }
     const template = buttons[0];
     let tab: UnknownRecord | null = null;
     try {
@@ -474,16 +519,217 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       enabled: true,
       mouseEnabled: true
     });
-    const insertAt = buttons.length >= 2 ? 2 : buttons.length;
-    buttons.splice(insertAt, 0, tab);
-    callMethod(group, 'addChild', tab);
+    group[TAB_KEEP_KEY] = tab;
     if (typeof tab.AfterInitUiByGroup === 'function') {
       callMethod(tab, 'AfterInitUiByGroup', { label: tab.label, value: tab.value });
     }
-    callMethod(group, 'layout');
-    callMethod(group, 'LayoutBtn');
+    placeFavoritesTabLast(menu, group, buttons, tab);
     tab.visible = true;
     return tab;
+  }
+
+  function restoreNativeTabWidths(menu: UnknownRecord, group: UnknownRecord, buttons: UnknownRecord[]): void {
+    const rowWidth = nativeTabRowWidth(menu, group, buttons);
+    const nativeButtons = buttons.filter((button) => !isFavoritesTabButton(button));
+    shareTabRow(group, nativeButtons, rowWidth);
+    bindEqualTabLayout(menu, group, buttons, rowWidth);
+    ensureTabFlexLoop(menu, group, buttons, rowWidth);
+  }
+
+  function isFavoritesTabButton(button: UnknownRecord): boolean {
+    return button.value === TAB_VALUE || button[TAB_MARKER] === true;
+  }
+
+  /** 页签这一行占满整个面板宽度。读不到面板宽时退回页签组和按钮占的宽。 */
+  function nativeTabRowWidth(menu: UnknownRecord, group: UnknownRecord, buttons: UnknownRecord[]): number {
+    const saved = asRecord(group[WALLPAPER_BACKGROUND_TAB_LAYOUT_KEY]);
+    const savedWidth = Number(saved?.rowWidth) || 0;
+    if (savedWidth > 0) return savedWidth;
+    const menuWidth = Number(menu.width) || 0;
+    if (menuWidth > 0) {
+      group[WALLPAPER_BACKGROUND_TAB_LAYOUT_KEY] = { rowWidth: menuWidth, fromMenu: true };
+      return menuWidth;
+    }
+    const groupWidth = Number(group.width) || Number(group.displayWidth) || 0;
+    let right = 0;
+    for (const button of buttons) {
+      if (isFavoritesTabButton(button)) continue;
+      const left = Number(button.x) || 0;
+      const width = Number(button.width) || Number(button.displayWidth) || Number(button._width) || 0;
+      right = Math.max(right, left + width);
+    }
+    const rowWidth = Math.max(groupWidth, right);
+    if (rowWidth > 0) group[WALLPAPER_BACKGROUND_TAB_LAYOUT_KEY] = { rowWidth };
+    return rowWidth;
+  }
+
+  function keptFavoritesTab(group: UnknownRecord): UnknownRecord | null {
+    const kept = asRecord(group[TAB_KEEP_KEY]);
+    if (!kept || kept.destroyed === true || kept._destroyed === true) return null;
+    return kept;
+  }
+
+  /** 游戏排版会把多出来的页签拿掉，这里再放回列表末尾。 */
+  /** 卸载后即使开关还开着也不再补回小抄页签，等下次挂载。 */
+  function wantsFavoritesTab(group: UnknownRecord): boolean {
+    return options.enabled() && group[TAB_DETACHED_KEY] !== true;
+  }
+
+  function holdFavoritesTab(group: UnknownRecord, buttons: UnknownRecord[]): void {
+    if (!wantsFavoritesTab(group)) {
+      for (let index = buttons.length - 1; index >= 0; index -= 1) {
+        if (isFavoritesTabButton(buttons[index]!)) buttons.splice(index, 1);
+      }
+      return;
+    }
+    const tab = keptFavoritesTab(group);
+    if (!tab) return;
+    const currentIndex = buttons.indexOf(tab);
+    if (currentIndex >= 0 && currentIndex !== buttons.length - 1) buttons.splice(currentIndex, 1);
+    if (!buttons.includes(tab)) buttons.push(tab);
+    const parent = asRecord(tab.parent) ?? asRecord(tab._parent);
+    if (parent !== group) callMethod(group, 'addChild', tab);
+    if (tab.visible !== true) tab.visible = true;
+    if (tab.label !== '小抄背景') tab.label = '小抄背景';
+  }
+
+  function ensureTabFlexLoop(menu: UnknownRecord, group: UnknownRecord, buttons: UnknownRecord[], rowWidth: number): void {
+    if (group[TAB_FLEX_LOOP_KEY] === true || rowWidth <= 0) return;
+    group[TAB_FLEX_LOOP_KEY] = true;
+    const timer = asRecord(laya()?.timer);
+    const tick = () => {
+      if (group.destroyed === true) {
+        callMethod(timer, 'clear', group, tick);
+        group[TAB_FLEX_LOOP_KEY] = false;
+        return;
+      }
+      if (wantsFavoritesTab(group) && !keptFavoritesTab(group)) ensureTab(menu);
+      else holdFavoritesTab(group, buttons);
+      shareTabRow(group, buttons, rowWidth);
+    };
+    if (typeof timer?.frameLoop === 'function') callMethod(timer, 'frameLoop', 1, group, tick);
+    else tick();
+  }
+
+  /** 按钮底图按原尺寸画死，改宽度不会拉伸，第一次排版前记下原宽。 */
+  function nativeButtonWidth(button: UnknownRecord): number {
+    const stored = Number(button[TAB_NATIVE_WIDTH_KEY]) || 0;
+    if (stored > 0) return stored;
+    const width = Number(button.width) || Number(button.displayWidth) || 0;
+    if (width > 0) button[TAB_NATIVE_WIDTH_KEY] = width;
+    return width;
+  }
+
+  function setIfChanged(record: UnknownRecord, key: string, value: number): void {
+    if (Number(record[key]) !== value) record[key] = value;
+  }
+
+  /**
+   * 按钮保持原宽，横向缩放让底图的实心部分正好盖满格子，两侧阴影压到相邻页签下面。
+   * 文字反向缩放，字形不变形。
+   */
+  function stretchTabButton(button: UnknownRecord, slotX: number, width: number, height: number): void {
+    if ('anchorX' in button) setIfChanged(button, 'anchorX', 0);
+    if ('pivotX' in button) setIfChanged(button, 'pivotX', 0);
+    const offsetY = Number(button.y) || 0;
+    const nativeWidth = nativeButtonWidth(button);
+    const solidWidth = nativeWidth - WALLPAPER_TAB_TEXTURE_SHADOW_WIDTH * 2;
+    if (solidWidth > 0) {
+      if (Number(button.width) !== nativeWidth) callMethod(button, 'size', nativeWidth, height);
+      const scale = width / solidWidth;
+      setIfChanged(button, 'scaleX', scale);
+      setIfChanged(button, 'x', slotX - WALLPAPER_TAB_TEXTURE_SHADOW_WIDTH * scale);
+      setIfChanged(button, 'y', offsetY);
+      const label = asRecord(button.textField);
+      if (label) {
+        setIfChanged(label, 'x', 0);
+        setIfChanged(label, 'scaleX', 1 / scale);
+        setIfChanged(label, 'width', nativeWidth * scale);
+      }
+      return;
+    }
+    button.x = slotX;
+    button.width = width;
+    button.height = height;
+    callMethod(button, 'size', width, height);
+    for (const key of ['bg', 'back', 'background', 'skinSp', 'image'] as const) {
+      const record = asRecord(button[key]);
+      if (!record) continue;
+      record.x = 0;
+      record.width = width;
+      record.height = height;
+      callMethod(record, 'size', width, height);
+    }
+    const children = Array.isArray(button._children) ? button._children : [];
+    for (const child of children) {
+      const record = asRecord(child);
+      if (!record || record.text != null || record.textField != null) continue;
+      record.x = 0;
+      record.width = width;
+      record.height = height;
+      callMethod(record, 'size', width, height);
+    }
+  }
+
+  function clearTabGap(group: UnknownRecord): void {
+    for (const key of ['space', 'spaceX', '_space', 'itemSpace', 'gap'] as const) {
+      if (key in group) setIfChanged(group, key, 0);
+    }
+  }
+
+  /** 当前还在的页签均分整行，首尾相接，加起来正好是这一行。 */
+  function shareTabRow(group: UnknownRecord, buttons: UnknownRecord[], rowWidth: number): void {
+    const live = buttons.filter((button) => button.destroyed !== true && button._destroyed !== true);
+    if (rowWidth <= 0 || live.length === 0) return;
+    clearTabGap(group);
+    const eachWidth = Math.floor(rowWidth / live.length);
+    if (eachWidth <= 0) return;
+    let offsetX = 0;
+    live.forEach((button, index) => {
+      const width = index === live.length - 1 ? rowWidth - offsetX : eachWidth;
+      const height = Number(button.height) || WALLPAPER_FAVORITES_TAB_DEFAULT_HEIGHT;
+      stretchTabButton(button, offsetX, width, height);
+      if (button.visible !== true) button.visible = true;
+      offsetX += width;
+    });
+    if ('btnWidth' in group) setIfChanged(group, 'btnWidth', eachWidth);
+    setIfChanged(group, 'width', rowWidth);
+    if (asRecord(group[WALLPAPER_BACKGROUND_TAB_LAYOUT_KEY])?.fromMenu === true) setIfChanged(group, 'x', 0);
+  }
+
+  /** 游戏自己排完页签后，再把四个页签拉回同一行均分。 */
+  function bindEqualTabLayout(menu: UnknownRecord, group: UnknownRecord, buttons: UnknownRecord[], rowWidth: number): void {
+    for (const methodName of ['layout', 'LayoutBtn'] as const) {
+      if (typeof group[methodName] !== 'function' || patcher.isWrapped(group, methodName)) continue;
+      patcher.wrap(group, methodName, (original) => function (this: UnknownRecord, ...args: unknown[]) {
+        const live = buttons.filter((button) => button.destroyed !== true && button._destroyed !== true);
+        clearTabGap(this);
+        if (rowWidth > 0 && live.length > 0 && 'btnWidth' in this) {
+          this.btnWidth = Math.floor(rowWidth / live.length);
+        }
+        const result = original.apply(this, args);
+        if (this === group) {
+          if (wantsFavoritesTab(group) && !keptFavoritesTab(group)) ensureTab(menu);
+          else holdFavoritesTab(group, buttons);
+          shareTabRow(group, buttons, rowWidth);
+        }
+        return result;
+      });
+    }
+  }
+
+  /** 小抄页签放在最后，四个页签均分游戏页签原来的那一行。 */
+  function placeFavoritesTabLast(menu: UnknownRecord, group: UnknownRecord, buttons: UnknownRecord[], tab: UnknownRecord): void {
+    const rowWidth = nativeTabRowWidth(menu, group, buttons);
+    const currentIndex = buttons.indexOf(tab);
+    if (currentIndex >= 0 && currentIndex !== buttons.length - 1) buttons.splice(currentIndex, 1);
+    if (!buttons.includes(tab)) buttons.push(tab);
+    const parent = asRecord(tab.parent) ?? asRecord(tab._parent);
+    if (parent !== group) callMethod(group, 'addChild', tab);
+    if (tab.visible !== true) tab.visible = true;
+    bindEqualTabLayout(menu, group, buttons, rowWidth);
+    ensureTabFlexLoop(menu, group, buttons, rowWidth);
+    shareTabRow(group, buttons, rowWidth);
   }
 
   function bindTabGroupSelectTab(menu: UnknownRecord, group: UnknownRecord): boolean {
@@ -501,6 +747,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
         showPanel(menu, true);
       } else if (options.enabled()) {
         showPanel(menu, false, false);
+        if (isWallpaperMenuLiveTabValue(button?.value)) restoreLiveList(menu);
       }
       return result;
     });
@@ -513,7 +760,8 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     patcher.wrap(menu, 'RefreList', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       const result = original.apply(this, args);
       if (this !== menu) return result;
-      if (options.enabled()) ensureTab(menu);
+      const group = resolveWallPaperTabGroup(menu);
+      if (group && wantsFavoritesTab(group)) ensureTab(menu);
       if (isSelected(menu) && options.enabled()) return showPanel(menu, true);
       return result;
     });
@@ -547,6 +795,8 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
             const value = Array.isArray(args[0]) ? args[0][0] : args[0];
             if (value === TAB_VALUE && options.enabled()) return showPanel(this, true);
             showPanel(this, false, false);
+            // 先还回动态皮肤列表，再让游戏自己切页，游戏对显隐有最终决定权。
+            if (isWallpaperMenuLiveTabValue(clickedTabValue(args[0]))) restoreLiveList(this);
             try {
               return original.apply(this, args);
             } finally {
@@ -581,12 +831,13 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       detach(menu);
       return;
     }
+    const attachedGroup = resolveWallPaperTabGroup(menu);
+    if (attachedGroup) delete attachedGroup[TAB_DETACHED_KEY];
     if (!bindTabSwitch(menu)) {
       skinTrace('wallpaper-tab-bind-failed', {
         hasTabGroup: Boolean(menu.tabGroup ?? menu.TabGroup),
         hasOnTabClick: typeof menu.onTabClick === 'function'
       });
-      return;
     }
     if (!ensureTab(menu)) {
       skinTrace('wallpaper-tab-create-failed', {
@@ -594,6 +845,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       });
       return;
     }
+    if (menus.has(menu)) return;
     menus.add(menu);
     const group = resolveWallPaperTabGroup(menu);
     callMethod(group, 'layout');
@@ -616,8 +868,11 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       }
     }
     clearItems(menu);
-    const buttons = group?.BtnList;
-    if (Array.isArray(buttons)) {
+    const buttons = Array.isArray(group?.BtnList) ? group.BtnList as UnknownRecord[] : null;
+    if (group && buttons) {
+      group[TAB_DETACHED_KEY] = true;
+      delete group[TAB_KEEP_KEY];
+      restoreNativeTabWidths(menu, group, buttons);
       for (let index = buttons.length - 1; index >= 0; index -= 1) {
         if (!asRecord(buttons[index])?.[TAB_MARKER]) continue;
         callMethod(buttons.splice(index, 1)[0], 'destroy', true);

@@ -7,10 +7,15 @@ import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-o
 import { locateSceneManager } from '../seat-display/game-scene-locator.ts';
 import { PANEL_MOUNT_ENGINE_READY_FALLBACK_MS } from '../../const/panel-startup.ts';
 import {
+  WALLPAPER_FAVORITES_ATTACH_EXCLUDED_MENU_NAMES,
+  WALLPAPER_FAVORITES_ATTACH_MAX_TAB_COUNT
+} from '../../const/wallpaper-favorites-tab-layout.ts';
+import {
   WALLPAPER_MENU_STAGE_SEARCH_DEPTH,
   WALLPAPER_MENU_TREE_SEARCH_DEPTH,
   WALLPAPER_TOP_MENU_OPEN_METHODS,
-  WALLPAPER_TOP_MENU_SEARCH_DEPTH
+  WALLPAPER_TOP_MENU_SEARCH_DEPTH,
+  WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY
 } from '../../const/wallpaper-menu.ts';
 import type { MethodPatcher } from '../../runtime/method-patch.ts';
 
@@ -38,6 +43,70 @@ export function prototypeOf(target: unknown): UnknownRecord | null {
 }
 
 const TRACE_LIMIT = 300;
+const SKIN_TRACE_DIAG_INIT = '__XIAOCHAO_SKIN_TRACE_DIAG_INIT__';
+
+function pushSkinTraceEntryDirect(
+  host: Record<string, unknown>,
+  bufferKey: '__XIAOCHAO_SKIN_TRACE__' | '__XIAOCHAO_SKIN_TRACE_RECENT__',
+  entry: { time: number; kind: string; detail: Record<string, unknown> },
+  maxLength: number
+): void {
+  const buffer = Array.isArray(host[bufferKey]) ? host[bufferKey] as typeof entry[] : [];
+  host[bufferKey] = buffer;
+  buffer.push(entry);
+  if (buffer.length > maxLength) buffer.splice(0, buffer.length - maxLength);
+}
+
+/** 控制台诊断用：微端会抽走 __XIAOCHAO_SKIN_TRACE__，RECENT 与 STARTUP 副本保留最近记录。 */
+export function ensureSkinTraceDiagnostics(host?: Record<string, unknown>): void {
+  const roots: Record<string, unknown>[] = [];
+  if (typeof window !== 'undefined') roots.push(window as Record<string, unknown>);
+  if (typeof globalThis !== 'undefined') {
+    const globalRecord = globalThis as Record<string, unknown>;
+    if (!roots.includes(globalRecord)) roots.push(globalRecord);
+  }
+  if (host && !roots.includes(host)) roots.push(host);
+  for (const root of roots) {
+    if (!Array.isArray(root.__XIAOCHAO_SKIN_TRACE__)) root.__XIAOCHAO_SKIN_TRACE__ = [];
+    if (!Array.isArray(root.__XIAOCHAO_SKIN_TRACE_RECENT__)) root.__XIAOCHAO_SKIN_TRACE_RECENT__ = [];
+    const startup = root.__XIAOCHAO_STARTUP__;
+    if (startup && typeof startup === 'object') {
+      const panel = startup as Record<string, unknown>;
+      if (!Array.isArray(panel.favoritesTrace)) panel.favoritesTrace = [];
+      if (!Array.isArray(panel.wallpaperTrace)) panel.wallpaperTrace = [];
+      if (!Array.isArray(panel.skinDetailTrace)) panel.skinDetailTrace = [];
+    }
+    if (root[SKIN_TRACE_DIAG_INIT]) continue;
+    root[SKIN_TRACE_DIAG_INIT] = true;
+    const bootEntry = {
+      time: Date.now(),
+      kind: 'skin-trace-diagnostics-ready',
+      detail: { note: '若仍为空，说明控制台不在游戏页 window 上' }
+    };
+    pushSkinTraceEntryDirect(root, '__XIAOCHAO_SKIN_TRACE__', bootEntry, TRACE_LIMIT);
+    pushSkinTraceEntryDirect(root, '__XIAOCHAO_SKIN_TRACE_RECENT__', bootEntry, 50);
+  }
+}
+
+/** 挂到 __XIAOCHAO_ENGINEERING__.dumpSkinTrace，避免控制台选错 iframe 时误判。 */
+export function installSkinTraceConsoleBridge(globalObject: Record<string, unknown>): void {
+  ensureSkinTraceDiagnostics(globalObject);
+  const bridge = (globalObject.__XIAOCHAO_ENGINEERING__ as Record<string, unknown> | undefined) ?? {};
+  globalObject.__XIAOCHAO_ENGINEERING__ = bridge;
+  bridge.dumpSkinTrace = () => {
+    ensureSkinTraceDiagnostics(globalObject);
+    const startup = globalObject.__XIAOCHAO_STARTUP__ as Record<string, unknown> | undefined;
+    return {
+      recent: [...(globalObject.__XIAOCHAO_SKIN_TRACE_RECENT__ as unknown[] | undefined ?? [])],
+      favorites: [...(startup?.favoritesTrace as unknown[] | undefined ?? [])],
+      wallpaper: [...(startup?.wallpaperTrace as unknown[] | undefined ?? [])],
+      startupState: startup?.state,
+      wallpaperController: startup?.wallpaperController,
+      skinPaperEnabled: startup?.skinPaperEnabled,
+      logFile: 'apps/extension/.dev-data/skin-trace.log'
+    };
+  };
+}
 
 function pushSkinTraceEntry(
   host: { __XIAOCHAO_SKIN_TRACE__?: unknown[] },
@@ -51,6 +120,7 @@ function pushSkinTraceEntry(
 
 /** 实机诊断：记录到页面全局缓冲，开发版主进程定时取走写入 .dev-data/skin-trace.log。 */
 export function skinTrace(kind: string, detail: Record<string, unknown> = {}): void {
+  ensureSkinTraceDiagnostics();
   const entry = { time: Date.now(), kind, detail };
   const roots: unknown[] = [];
   if (typeof window !== 'undefined') roots.push(window);
@@ -58,11 +128,18 @@ export function skinTrace(kind: string, detail: Record<string, unknown> = {}): v
   for (const root of roots) {
     try {
       pushSkinTraceEntry(root as { __XIAOCHAO_SKIN_TRACE__?: unknown[] }, entry);
+      const recentHost = root as { __XIAOCHAO_SKIN_TRACE_RECENT__?: typeof entry[] };
+      const recentBuffer = Array.isArray(recentHost.__XIAOCHAO_SKIN_TRACE_RECENT__)
+        ? recentHost.__XIAOCHAO_SKIN_TRACE_RECENT__
+        : [];
+      recentBuffer.push(entry);
+      if (recentBuffer.length > 50) recentBuffer.splice(0, recentBuffer.length - 50);
+      recentHost.__XIAOCHAO_SKIN_TRACE_RECENT__ = recentBuffer;
     } catch {
       // 诊断失败不影响功能。
     }
   }
-  const mirrorToStartup = kind.includes('wallpaper') || kind.includes('skin-detail');
+  const mirrorToStartup = kind.includes('wallpaper') || kind.includes('skin-detail') || kind.includes('favorites');
   if (!mirrorToStartup) return;
   try {
     const startupHost = (typeof window !== 'undefined' ? window : globalThis) as {
@@ -85,6 +162,14 @@ export function skinTrace(kind: string, detail: Record<string, unknown> = {}): v
       startup.wallpaperTrace = wallpaperTrace;
       wallpaperTrace.push(entry);
       if (wallpaperTrace.length > TRACE_LIMIT) wallpaperTrace.splice(0, wallpaperTrace.length - TRACE_LIMIT);
+    }
+    if (kind.includes('favorites')) {
+      const favoritesTrace = Array.isArray(startup.favoritesTrace)
+        ? startup.favoritesTrace as typeof entry[]
+        : [];
+      startup.favoritesTrace = favoritesTrace;
+      favoritesTrace.push(entry);
+      if (favoritesTrace.length > TRACE_LIMIT) favoritesTrace.splice(0, favoritesTrace.length - TRACE_LIMIT);
     }
   } catch {
     // 诊断失败不影响功能。
@@ -130,7 +215,7 @@ export function accountStorageKey(storage: Pick<Storage, 'getItem'> | undefined)
     || 'default';
 }
 
-/** 配置项按当前登录账号分开存。 */
+/** 配置项按当前登录账号分开存。账号还没有时用 default。 */
 export function accountScopedStorageKey(base: string, storage?: Pick<Storage, 'getItem'>): string {
   let account = 'default';
   try {
@@ -139,6 +224,23 @@ export function accountScopedStorageKey(base: string, storage?: Pick<Storage, 'g
     account = 'default';
   }
   const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
+  return `${base}::${safe}`;
+}
+
+/** 登录账号还没取到时返回空。身份锁定和明牌不能落到 default。 */
+export function loggedInAccountStorageKey(base: string, storage?: Pick<Storage, 'getItem'> | null): string | null {
+  let account = '';
+  try {
+    const source = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+    account = source?.getItem('LastUserName')
+      || source?.getItem('SGS_LASTLOGIN_ACCOUNT')
+      || source?.getItem('SGS_LASTLOGIN_ACCOUNT1')
+      || '';
+  } catch {
+    account = '';
+  }
+  const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64);
+  if (!safe) return null;
   return `${base}::${safe}`;
 }
 
@@ -334,20 +436,120 @@ function hasWallPaperMenuHostMethod(node: UnknownRecord): boolean {
   return Boolean(asRecord(node.wallPaperUI));
 }
 
-function findWallPaperMenuHostInTree(root: UnknownRecord, maxDepth: number): UnknownRecord | null {
-  const pending: Array<{ node: UnknownRecord; depth: number }> = [{ node: root, depth: 0 }];
+/** 在场景或舞台子树里找带 onClickSkin / skinBtn 的顶栏宿主。 */
+export function findWallPaperOpenHostInTree(
+  root: unknown,
+  maxDepth = WALLPAPER_TOP_MENU_SEARCH_DEPTH
+): UnknownRecord | null {
+  const pending: Array<{ node: UnknownRecord; depth: number }> = [];
+  const push = (value: unknown, depth: number) => {
+    const record = asRecord(value);
+    if (record) pending.push({ node: record, depth });
+  };
+  push(root, 0);
+  let best: UnknownRecord | null = null;
   while (pending.length) {
     const entry = pending.shift();
     if (!entry) continue;
     const { node, depth } = entry;
-    if (hasWallPaperMenuHostMethod(node)) return node;
+    if (hasWallPaperMenuHostMethod(node)) {
+      if (asRecord(node[WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY])) return node;
+      if (!best) best = node;
+    }
     if (depth >= maxDepth || !Array.isArray(node._children)) continue;
-    for (const child of node._children) {
-      const record = asRecord(child);
-      if (record) pending.push({ node: record, depth: depth + 1 });
+    for (const child of node._children) push(child, depth + 1);
+  }
+  return best;
+}
+
+function findWallPaperMenuHostInTree(root: UnknownRecord, maxDepth: number): UnknownRecord | null {
+  return findWallPaperOpenHostInTree(root, maxDepth);
+}
+
+/** 当前对局或大厅场景上的顶栏，局内换背景也走这里。 */
+export function findSceneTopMenu(
+  locator: LayaObjectLocator,
+  globalObject: LayaRuntimeWindow = globalThis as LayaRuntimeWindow
+): UnknownRecord | null {
+  const scene = asRecord(locator.scene());
+  if (!scene) return null;
+  return asRecord(scene.topMenu) ?? asRecord(scene.TopMenu) ?? null;
+}
+
+/** 顶栏上有皮肤按钮，或者已经挂了背景菜单。 */
+export function topMenuCanOpenWallPaperMenu(topMenu: UnknownRecord): boolean {
+  if (asRecord(topMenu[WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY])) return true;
+  if (asRecord(topMenu.wallPaperUI)) return true;
+  const proto = prototypeOf(topMenu);
+  for (const methodName of WALLPAPER_TOP_MENU_OPEN_METHODS) {
+    if (typeof topMenu[methodName] === 'function') return true;
+    if (typeof proto?.[methodName] === 'function') return true;
+  }
+  return false;
+}
+
+function scoreWallPaperTopMenuCandidate(topMenu: UnknownRecord): number {
+  let score = 0;
+  if (asRecord(topMenu[WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY])) score += 12;
+  if (asRecord(topMenu.wallPaperUI)) score += 6;
+  if (topMenuCanOpenWallPaperMenu(topMenu)) score += 4;
+  const skinButton = asRecord(topMenu[WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY]);
+  if (skinButton && skinButton.visible !== false) score += 3;
+  return score;
+}
+
+/** 打开背景的方法可能在对象自己身上，也可能在原型上。 */
+export function resolveWallPaperOpenMethodHost(
+  topMenu: UnknownRecord,
+  methodName: string
+): UnknownRecord | null {
+  if (Object.hasOwn(topMenu, methodName) && typeof topMenu[methodName] === 'function') {
+    return topMenu;
+  }
+  const constructorProto = asRecord(asRecord(topMenu.constructor)?.prototype);
+  if (typeof constructorProto?.[methodName] === 'function') return constructorProto;
+  const proto = prototypeOf(topMenu);
+  if (proto && typeof proto[methodName] === 'function') return proto;
+  if (typeof topMenu[methodName] === 'function') return topMenu;
+  return null;
+}
+
+/** 先用当前场景的顶栏，再在场景和舞台里找带皮肤按钮的那一个。 */
+export function findWallPaperTopMenu(
+  locator: LayaObjectLocator,
+  globalObject: LayaRuntimeWindow = globalThis as LayaRuntimeWindow
+): UnknownRecord | null {
+  const candidates: UnknownRecord[] = [];
+  const add = (value: unknown) => {
+    const record = asRecord(value);
+    if (record && !candidates.includes(record)) candidates.push(record);
+  };
+  add(findSceneTopMenu(locator, globalObject));
+  const scene = asRecord(locator.scene());
+  if (scene) add(findWallPaperOpenHostInTree(scene, WALLPAPER_TOP_MENU_SEARCH_DEPTH));
+  const gameScene = asRecord(locator.gameScene());
+  add(asRecord(gameScene?.topMenu));
+  if (gameScene) add(findWallPaperOpenHostInTree(gameScene, WALLPAPER_TOP_MENU_SEARCH_DEPTH));
+  const hall = resolveHallScene(locator, globalObject);
+  add(asRecord(hall?.topMenu));
+  add(findHallWallPaperMenuHost(locator, globalObject));
+  const stage = asRecord(globalObject.Laya?.stage);
+  if (stage) add(findWallPaperOpenHostInTree(stage, WALLPAPER_MENU_STAGE_SEARCH_DEPTH));
+
+  let best: UnknownRecord | null = null;
+  let bestScore = -1;
+  for (const topMenu of candidates) {
+    const score = scoreWallPaperTopMenuCandidate(topMenu);
+    if (score > bestScore) {
+      bestScore = score;
+      best = topMenu;
     }
   }
-  return null;
+  if (best && bestScore > 0) return best;
+  for (const topMenu of candidates) {
+    if (topMenuCanOpenWallPaperMenu(topMenu)) return topMenu;
+  }
+  return candidates[0] ?? null;
 }
 
 /** 顶栏对象：优先 scene.topMenu，否则在大厅子树里找带 onClickSkin 的宿主。 */
@@ -510,8 +712,21 @@ export function isXiaochaoGameplayUiReady(
 }
 
 /** 选背景面板的页签容器，兼容大小写。 */
-export function resolveWallPaperTabGroup(menu: UnknownRecord): UnknownRecord | null {
-  return asRecord(menu.tabGroup) ?? asRecord(menu.TabGroup);
+export function resolveWallPaperTabGroup(menu: UnknownRecord | null | undefined): UnknownRecord | null {
+  const record = asRecord(menu);
+  if (!record) return null;
+  return asRecord(record.tabGroup) ?? asRecord(record.TabGroup);
+}
+
+/** 从 tabGroup 向上找 wallPaperUI，SelectTab 包装在 attach 前也要能命中菜单。 */
+export function findWallPaperMenuByTabGroupParent(tabGroup: UnknownRecord): UnknownRecord | null {
+  let node = asRecord(tabGroup.parent) ?? asRecord(tabGroup._parent);
+  for (let depth = 0; depth < 12 && node; depth += 1) {
+    const group = resolveWallPaperTabGroup(node);
+    if (group === tabGroup && isWallPaperMenuRecord(node)) return node;
+    node = asRecord(node.parent) ?? asRecord(node._parent);
+  }
+  return null;
 }
 
 /** 页签按钮列表：兼容 BtnList / btnList / 类数组。 */
@@ -545,6 +760,29 @@ export function isWallPaperMenuRecord(menu: unknown): menu is UnknownRecord {
   if (hasLists && hasTabs) return true;
   if (typeof record.onShowSkinitems === 'function' && hasTabs) return true;
   if (typeof record.RefreList === 'function' && hasLists) return true;
+  if (hasTabs && (record.panel || record.panelHeight) && typeof record.onShowSkinitems === 'function') {
+    return true;
+  }
+  return false;
+}
+
+/** 是否允许在此菜单上挂「小抄背景」页签与收藏列表。 */
+export function isWallPaperBackgroundMenuForFavoritesAttach(menu: unknown): boolean {
+  if (!isWallPaperMenuRecord(menu)) return false;
+  const record = asRecord(menu)!;
+  const menuName = String(record.name ?? '');
+  if ((WALLPAPER_FAVORITES_ATTACH_EXCLUDED_MENU_NAMES as readonly string[]).includes(menuName)) {
+    return false;
+  }
+  const constructorName = typeof record.constructor === 'function' ? record.constructor.name : '';
+  if (constructorName === 'SkinWindow') return false;
+  const group = resolveWallPaperTabGroup(record);
+  const tabCount = wallPaperTabButtons(group).length;
+  if (tabCount > WALLPAPER_FAVORITES_ATTACH_MAX_TAB_COUNT) return false;
+  const hasSkinTabApi = typeof record.onShowSkinitems === 'function';
+  const hasOfficialLists = Array.isArray(record.wallPaperItems) || Array.isArray(record.wallPaperSkinItems);
+  if (hasSkinTabApi) return true;
+  if (typeof record.RefreList === 'function' && hasOfficialLists) return true;
   return false;
 }
 
@@ -591,6 +829,7 @@ export function isBackgroundUiScene(
   const scene = asRecord(locator.scene());
   if (!scene) return false;
   const name = String(scene.SceneName ?? scene.sceneName ?? '');
+  if (name === 'HallScene' && !isHallLoginTransitionLoading(locator, globalObject)) return true;
   if (!name || !locator.gameScene()) return false;
   return /Game|Table|Mode|Rogue|Arena|Battle/i.test(name);
 }
@@ -601,10 +840,12 @@ export function watchSceneSwitch(
   patcher: MethodPatcher,
   tasks: TaskScope,
   onSwitch: () => void,
-  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow,
+  onBeforeSwitch?: () => void,
+  sceneReady: () => boolean = () => isBackgroundUiScene(locator, globalObject)
 ): void {
   void tasks.poll(() => {
-    if (!isBackgroundUiScene(locator, globalObject)) return null;
+    if (!sceneReady()) return null;
     const listeners = asRecord(locator.dispatcher()?._events)?.SWITCH_SCENE;
     for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
       const caller = asRecord(asRecord(listener)?.caller);
@@ -614,10 +855,15 @@ export function watchSceneSwitch(
   }, Infinity, 1000).then((sceneManager) => {
     if (!sceneManager) return;
     patcher.wrap(sceneManager, 'executeSwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
+      try {
+        if (sceneReady()) onBeforeSwitch?.();
+      } catch (error) {
+        console.warn('[皮肤与背景] 场景切换前处理失败:', error);
+      }
       const result = original.apply(this, args);
       tasks.later(() => {
         try {
-          if (isBackgroundUiScene(locator, globalObject)) onSwitch();
+          if (sceneReady()) onSwitch();
         } catch (error) {
           console.warn('[皮肤与背景] 场景切换后处理失败:', error);
         }

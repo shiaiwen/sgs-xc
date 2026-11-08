@@ -36,6 +36,16 @@ npm run log:new -- --version 1.0.41 --today --note "修复记牌闪一下" --rec
 
 不带 `--note`，并且是在本机终端里直接运行时，会一行一行询问，空行结束。
 
+## 发版时怎么维护最省事
+
+推荐日常只改 **`content/releases/_draft.md`**：一行一条，以 `-` 开头。改功能顺手记一笔，不用想版本号。
+
+根目录执行 **`npm run release`** 时流程是：小抄打包并给 `package.json` 末位加一 → 若没有 `content/releases/<新版本>.md`，就用 `_draft.md` 自动生成并清空草稿 → 最后 **`npm run deploy`** 把站点推到 log.95chong.cn。
+
+这一版已经手写好了完整 md，就放在 `content/releases/<版本>.md`，发版会跳过生成。
+
+临时用命令写一版：`npm run log:new -- --version … --note "…"`，参数见上文。
+
 ## 新增一版
 
 也可以自己在 `content/releases` 新建 `.md`。文件名用小抄的版本号，例如 `1.0.41.md`。上面的命令会写成 `<版本号>.md`。版本号和日期写在开头，正文用 Markdown。
