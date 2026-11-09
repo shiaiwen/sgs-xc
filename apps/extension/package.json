@@ -1,6 +1,6 @@
 {
   "name": "SGSOL",
-  "version": "1.0.44",
+  "version": "1.0.45",
   "packageId": 1,
   "IsTest": false,
   "IsDebug": true,
@@ -56,6 +56,7 @@
     "pack": "node tools/pack-release.js",
     "copy:portal": "node tools/copy-to-portal.js",
     "pack:portal": "npm run pack && npm run copy:portal",
+    "install:local": "node tools/install-local.js",
     "deploy": "node tools/deploy-release.js",
     "dev": "npm run dev:electron",
     "dev:electron": "node tools/dev.js",

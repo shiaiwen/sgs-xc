@@ -4,7 +4,7 @@
 
 import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
-import { AI_CLIENT_ID_MIN, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { AI_CLIENT_ID_MIN, playNameVisible, readNestedClientId } from './ai-client.ts';
 import { drawRealPlayerNameOnInit } from './real-player-name-init.ts';
 import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
 import { clampExtensionZOrder, EXTENSION_Z_BELOW_GAME_TIP } from '../../runtime/game-tip-layer.ts';
@@ -16,7 +16,6 @@ const PLAY_NAME_VISIBLE_APPLIED_KEY = '__xcPlayNameVisibleApplied';
 const PLAY_NAME_RANK_SIGNATURE_KEY = '__xcPlayNameRankSignature';
 const PLAY_NAME_MOUNT_KEY = '__xcPlayNameMount';
 const PLAY_NAME_PUSHED_KEY = '__xcPlayNamePushed';
-const PLAY_NAME_NATIVE_DRAW_KEY = '__xcPlayNameNativeDraw';
 const PLAY_NAME_FALLBACK_NAME = 'xcSeatPlayName';
 const GUANJIE_NAME = /guanJie|GuanJie|官阶/i;
 
@@ -245,8 +244,6 @@ export function syncSeatPlayName(
   const seat = asRecord(seatUi.seat);
   const clientId = readSeatClientId(seat);
   const visible = playNameVisible(clientId);
-  const earlyManager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager);
-  if (earlyManager) hookPlayNameInit(earlyManager, globalObject);
   if (visible === null) return;
   if (isOwnSeat(seatUi, seat, globalObject)) return;
 
@@ -277,9 +274,10 @@ export function syncSeatPlayName(
   applyPlayNameDisplay(seatUi, manager, visible, name, globalObject);
 }
 
-/** 排位、天梯、斗地主、八人匹配和 8人匹配里，真人座位初始化时画出等级和昵称。 */
-const PLAY_NAME_INIT_KEY = '__xcPlayNameInitHook';
-
+/**
+ * 排位、天梯、斗地主、八人匹配里，真人座位画出等级和昵称。
+ * 游戏会重建顶部名字层，新的那层没有画过的标记，下一轮扫描会重新画。
+ */
 function revealRankPlayName(
   seatUi: UnknownRecord,
   seat: UnknownRecord | null,
@@ -294,47 +292,47 @@ function revealRankPlayName(
   const id = Number(raw);
   if (!Number.isFinite(id) || !(id < AI_CLIENT_ID_MIN)) return;
   const nick = resolveDisplayName(seatUi, seat, clientId, manager, globalObject, seatListIndex);
-  const displayText = nick || playerIdLabel(id, true);
-  const signature = `${id}:${displayText}`;
-  if (manager[PLAY_NAME_RANK_SIGNATURE_KEY] === signature) return;
-  if (displayText) {
-    const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, displayText);
-    if (info) pushPlayerInfoToManagerOnce(manager, info, displayText);
+  // 昵称还没到时不要记成已经画过，否则下一轮会直接跳过。
+  if (!nick) return;
+
+  const signature = `${id}:${nick}`;
+  if (manager[PLAY_NAME_RANK_SIGNATURE_KEY] === signature && nativeLabelShowsName(manager, nick)) return;
+
+  const info = hydrateSeatPlayerInfo(seat, clientId, globalObject, nick);
+  if (info) {
+    pushPlayerInfoToManagerOnce(manager, info, nick);
+    callManagerMethod(manager, 'UpdatePlayerName', info);
   }
-  hookPlayNameInit(manager, globalObject);
-  ensureNativePlayNameDrawn(manager, displayText);
+
+  // 先打开名字层。游戏可能在这一步换掉顶部管理器，换完再画。
   applySetPlayNameVisible(manager, true);
-  manager[PLAY_NAME_RANK_SIGNATURE_KEY] = signature;
+  const liveManager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager) ?? manager;
+  if (liveManager !== manager && info) callManagerMethod(liveManager, 'UpdatePlayerName', info);
+  ensureNativePlayNameDrawn(liveManager, nick);
+
+  if (nativeLabelShowsName(liveManager, nick)) {
+    liveManager[PLAY_NAME_RANK_SIGNATURE_KEY] = signature;
+    hideFallbackLabel(liveManager, seatUi);
+    return;
+  }
+  applyPlayNameDisplay(seatUi, liveManager, true, nick, globalObject);
 }
 
 function ensureNativePlayNameDrawn(manager: UnknownRecord, displayText: string): void {
-  const nativeLabel = asRecord(manager.playerNameTxt) ?? asRecord(manager.PlayerNameTxt);
-  if (String(nativeLabel?.text ?? '').trim()) return;
-  if (manager[PLAY_NAME_NATIVE_DRAW_KEY] !== true) {
+  let label = asRecord(manager.playerNameTxt) ?? asRecord(manager.PlayerNameTxt);
+  if (String(label?.text ?? '').trim()) return;
+  if (!label) {
     drawRealPlayerNameOnInit(manager);
-    manager[PLAY_NAME_NATIVE_DRAW_KEY] = true;
+    label = asRecord(manager.playerNameTxt) ?? asRecord(manager.PlayerNameTxt);
   }
-  const label = asRecord(manager.playerNameTxt) ?? asRecord(manager.PlayerNameTxt);
-  const text = String(label?.text ?? '').trim();
-  if (!text && displayText && label && 'text' in label) {
+  if (displayText && label && 'text' in label && !String(label.text ?? '').trim()) {
     try {
       label.text = displayText;
       label.visible = true;
-    } catch { /* 下轮再试 */ }
+    } catch {
+      // 字还没挂上时下轮再写。
+    }
   }
-}
-
-function hookPlayNameInit(manager: UnknownRecord, _globalObject: GameRuntimeWindow = window): void {
-  const proto = asRecord(Object.getPrototypeOf(manager));
-  if (!proto || proto[PLAY_NAME_INIT_KEY] === true || typeof proto.initUI !== 'function') return;
-  const original = proto.initUI as (...args: unknown[]) => unknown;
-  proto.initUI = function (this: UnknownRecord, ...args: unknown[]) {
-    const result = original.apply(this, args);
-    // 模式标志进场景早期可能还没置上，等真正执行时再确认是排位斗地主才画名。
-    if (isRankOrDoudizhuScene(window as GameRuntimeWindow)) drawRealPlayerNameOnInit(this);
-    return result;
-  };
-  proto[PLAY_NAME_INIT_KEY] = true;
 }
 
 function callManagerMethod(manager: UnknownRecord, name: string, ...args: unknown[]): void {
@@ -350,12 +348,18 @@ function callManagerMethod(manager: UnknownRecord, name: string, ...args: unknow
 /** 重复 SetPlayNameVisible 会重建 otherTopManager，点头像菜单会立刻被关掉。 */
 function applySetPlayNameVisible(manager: UnknownRecord, visible: boolean): void {
   if (manager[PLAY_NAME_VISIBLE_APPLIED_KEY] === visible) return;
+  if (typeof manager.SetPlayNameVisible !== 'function') return;
   try {
     manager.SetPlayNameVisible.call(manager, visible);
+    manager[PLAY_NAME_VISIBLE_APPLIED_KEY] = visible;
   } catch {
-    try { manager.SetPlayNameVisible(visible); } catch { /* 下轮再试 */ }
+    try {
+      manager.SetPlayNameVisible(visible);
+      manager[PLAY_NAME_VISIBLE_APPLIED_KEY] = visible;
+    } catch {
+      // 没打开成功时下轮再试，不要记成已经打开。
+    }
   }
-  manager[PLAY_NAME_VISIBLE_APPLIED_KEY] = visible;
 }
 
 function isOwnSeat(

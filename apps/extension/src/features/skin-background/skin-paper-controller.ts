@@ -63,7 +63,6 @@ import { getViewportPageBackground } from './viewport-page-background.ts';
 import { PAPER_HOME_SCENE_NAMES } from '../../const/paper-all-paper-scene.ts';
 import { isPaperUiScene, mayMutateSkinBackground } from './skin-background-session.ts';
 import {
-  accountStorageKey,
   asRecord,
   callMethod,
   createTaskScope,
@@ -128,9 +127,7 @@ export function installSkinPaperController(
   const patcher = createMethodPatcher();
   const tasks = createTaskScope();
   function paperAccountId(): string {
-    const gameId = resolveGameAccountId(globalObject, locator);
-    if (gameId) return gameId;
-    return accountStorageKey(storage);
+    return resolveGameAccountId(globalObject, locator);
   }
 
   const store = createSkinBackgroundStore(storage, { resolveAccountId: paperAccountId });

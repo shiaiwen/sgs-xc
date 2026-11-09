@@ -10,8 +10,9 @@ import {
   shouldDeferSeatTopManagerSync,
 } from '../../runtime/game-native-dialog.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import { clearSeatGeneralTips, applySeatGeneralTip } from '../extra-assist/seat-general-tips.ts';
-import { isAiClientId, playerIdLabel, playNameVisible, readNestedClientId } from './ai-client.ts';
+import { RANK_NAME_DEEP_SYNC_MS } from '../../const/play-name-sync.ts';
+import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
+import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
   beginPlayNameScanBatch,
@@ -159,11 +160,15 @@ export function installAiPlayerTipController(
   let profileTipId = 0;
   let aiTipShownThisGame = false;
   let gameEnded = false;
+  // 中途装上时没有开局事件，从装上算起。
+  let deepNameSyncUntil = Date.now() + RANK_NAME_DEEP_SYNC_MS;
   const stopEvents = gameEvents.subscribe((event) => {
     // 仅在结束后的下一局开始时解锁；启动轮询时收到的首个开始事件不重复弹。
     if (event.type === 'game-started') {
       if (gameEnded) aiTipShownThisGame = false;
       gameEnded = false;
+      deepNameSyncUntil = Date.now() + RANK_NAME_DEEP_SYNC_MS;
+      scan();
     } else if (event.type === 'game-ended') {
       gameEnded = true;
     }
@@ -204,7 +209,9 @@ export function installAiPlayerTipController(
     const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const skipNameSync = isPlayNameSyncPaused(globalObject);
     if (!skipNameSync) {
-      const forceFull = debugState?.forceFullSync === true;
+      // 排位斗地主开局时昵称陆续到，这段时间深搜整桌座位数据；之后按普通方式同步，省性能。
+      const forceFull = debugState?.forceFullSync === true
+        || (Date.now() < deepNameSyncUntil && isRankOrDoudizhuScene(globalObject, scene));
       beginPlayNameScanBatch(globalObject, { forceFull });
       try {
         seedPlayNameDirectory(globalObject, seatUis);
@@ -233,18 +240,7 @@ export function installAiPlayerTipController(
       seat: seatUi.seat ?? seatUi,
       seatAvatar: asRecord(seatUi.seatAvatar)
     }));
-    // 排位、斗地主里真人座位把账号编号写在头像上；其他模式清掉。
-    if (isRankOrDoudizhuScene(globalObject, scene)) {
-      applySeatGeneralTip({
-        key: 'player-id',
-        targets: idTargets,
-        enabled: true,
-        getText: (target) => playerIdLabel(readNestedClientId(target.seat), true),
-        globalObject
-      });
-    } else {
-      clearSeatGeneralTips(idTargets, 'player-id');
-    }
+    clearSeatGeneralTips(idTargets, 'player-id');
 
     const seats = seatUis
       .map((seatUi) => ({ seatUi, seat: asRecord(seatUi.seat) }))

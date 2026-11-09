@@ -18,9 +18,11 @@ function asDate(value: unknown) {
     const day = String(value.getUTCDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   }
+  // 新版本写到分钟，例如 2026-11-10 02:35；旧版本只有日期，照原样显示。
   const text = value == null ? "" : String(value).trim();
-  const matched = /^(\d{4}-\d{2}-\d{2})/.exec(text);
-  return matched ? matched[1] : text;
+  const matched = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?/.exec(text);
+  if (!matched) return text;
+  return matched[2] ? `${matched[1]} ${matched[2]}` : matched[1];
 }
 
 function asVersion(value: unknown) {

@@ -10,6 +10,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
+import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   WALLPAPER_MENU_ATTACH_STAGE_DEPTH,
   WALLPAPER_MENU_HOOK_DELAY_MS,
@@ -21,7 +22,6 @@ import {
   WALLPAPER_VISIBLE_MENU_POLL_MS
 } from '../../const/wallpaper-menu.ts';
 import {
-  accountStorageKey,
   asRecord,
   callMethod,
   createTaskScope,
@@ -130,16 +130,22 @@ export function installOfficialBackgroundController(
 
   // ---------- 本地保存的选择 ----------
 
+  /** 按游戏账号编号分。读不到时返回空，这时不读也不写，背景用游戏默认的。 */
+  function choiceAccountId(): string {
+    return resolveGameAccountId(globalObject, locator);
+  }
+
   function choiceStorageKey(): string {
-    return `${accountStorageKey(storage)}${CHOICE_STORAGE_SUFFIX}`;
+    return `${choiceAccountId()}${CHOICE_STORAGE_SUFFIX}`;
   }
 
   function savedChoice(): number {
+    if (!choiceAccountId()) return 0;
     const parsed = readJson<unknown>(storage, choiceStorageKey(), null);
     const id = Number(parsed && typeof parsed === 'object' ? (parsed as UnknownRecord).id : parsed);
     if (Number.isFinite(id) && id > 0) return id;
     // 单键没有时，账号文档里可能还留着（旧键迁进文档后会被删掉）。
-    return readOfficialBackgroundChoice(documentStorage(), accountStorageKey(storage))?.id ?? 0;
+    return readOfficialBackgroundChoice(documentStorage(), choiceAccountId())?.id ?? 0;
   }
 
   function documentStorage(): Parameters<typeof readOfficialBackgroundChoice>[0] {
@@ -148,10 +154,10 @@ export function installOfficialBackgroundController(
 
   function saveChoice(value: unknown): boolean {
     const id = Number(value);
-    if (suppressChoiceSave || !isOn() || !Number.isFinite(id) || id <= 0) return false;
+    if (suppressChoiceSave || !isOn() || !Number.isFinite(id) || id <= 0 || !choiceAccountId()) return false;
     writeJson(storage, choiceStorageKey(), { id, savedAt: Date.now() });
     // 同时写进账号文档，文档一变才会触发上传。
-    saveOfficialBackgroundChoice(documentStorage(), accountStorageKey(storage), id);
+    saveOfficialBackgroundChoice(documentStorage(), choiceAccountId(), id);
     return true;
   }
 

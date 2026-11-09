@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /** 常规页技能辅助区块：宴戏、严教等条文展示。 */
 import { computed, onBeforeUnmount, ref } from 'vue';
-import type { SkillAssistStore } from '../../features/skill-assist/skill-assist-store.ts';
+import type { SkillAssistStore, YanjiaoAssignOutcome } from '../../features/skill-assist/skill-assist-store.ts';
+import type { YanjiaoSide } from '../../features/skill-assist/yanjiao-assign.ts';
+import { YANJIAO_ASSIGN_FEEDBACK_MS } from '../../const/yanjiao.ts';
 import type { GameCardCatalog } from '../../features/cards/game-card-catalog.ts';
 import { parseSuitToken } from '../../features/skill-assist/quanbian.ts';
 import ShoupaiCardFace from './ShoupaiCardFace.vue';
@@ -46,6 +48,26 @@ async function copyOption(key: string, text: string): Promise<void> {
   copiedTimer = setTimeout(() => {
     copiedOptionKey.value = '';
   }, 500);
+}
+
+const ASSIGN_FEEDBACK: Record<YanjiaoAssignOutcome, string> = {
+  assigned: '已分好，点游戏里的确定',
+  'no-window': '严教分牌窗口还没打开',
+  'not-mine': '这次不是你分牌',
+  'cards-mismatch': '窗口里的牌和方案对不上',
+  unavailable: '严教分牌窗口还没打开'
+};
+const assignFeedback = ref<{ key: string; text: string } | null>(null);
+let assignTimer: ReturnType<typeof setTimeout> | undefined;
+onBeforeUnmount(() => clearTimeout(assignTimer));
+
+function assignYanjiao(key: string, index: number, side: YanjiaoSide): void {
+  const outcome = props.skillAssistStore.assignYanjiao(index, side);
+  assignFeedback.value = { key, text: ASSIGN_FEEDBACK[outcome] };
+  clearTimeout(assignTimer);
+  assignTimer = setTimeout(() => {
+    assignFeedback.value = null;
+  }, YANJIAO_ASSIGN_FEEDBACK_MS);
 }
 </script>
 
@@ -105,7 +127,46 @@ async function copyOption(key: string, text: string): Promise<void> {
       </div>
 
       <div
-        v-if="panel.resultOptions.length"
+        v-if="panel.assignable && panel.splitOptions.length"
+        class="xc-skill-options"
+      >
+        <div class="xc-skill-assign-hint">点下方数字可以自动分配牌<br>点想分给自己的那一组</div>
+        <div
+          v-for="(split, index) in panel.splitOptions"
+          :key="`${panel.id}-assign-${index}`"
+          class="xc-skill-option xc-skill-assign-row"
+        >
+          <template v-if="assignFeedback?.key === `${panel.id}-${index}`">
+            {{ assignFeedback.text }}
+          </template>
+          <template v-else-if="copiedOptionKey === `${panel.id}-${index}`">
+            复制成功
+          </template>
+          <template v-else>
+            <button
+              type="button"
+              class="xc-skill-assign-side"
+              title="这一组分给自己"
+              @click="assignYanjiao(`${panel.id}-${index}`, index, 'left')"
+            >{{ split.left }}</button>
+            <span>=</span>
+            <button
+              type="button"
+              class="xc-skill-assign-side"
+              title="这一组分给自己"
+              @click="assignYanjiao(`${panel.id}-${index}`, index, 'right')"
+            >{{ split.right }}</button>
+            <button
+              type="button"
+              class="xc-skill-assign-copy"
+              title="点击复制"
+              @click="copyOption(`${panel.id}-${index}`, panel.resultOptions[index] ?? '')"
+            >复制</button>
+          </template>
+        </div>
+      </div>
+      <div
+        v-else-if="panel.resultOptions.length"
         class="xc-skill-options"
       >
         <button
@@ -227,6 +288,52 @@ async function copyOption(key: string, text: string): Promise<void> {
 .xc-skill-option--highlight {
   border-color: #f2de9c;
   color: #ffd76a;
+}
+
+.xc-skill-assign-hint {
+  text-align: center;
+  color: #c9c1b1;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.xc-skill-assign-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: default;
+}
+
+.xc-skill-assign-side {
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.xc-skill-assign-side:hover {
+  border-color: #f2de9c;
+  color: #ffd76a;
+}
+
+.xc-skill-assign-copy {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid rgba(201, 161, 93, .55);
+  border-radius: 3px;
+  background: none;
+  color: #c9c1b1;
+  font: 400 11px/1.4 SimSun, serif;
+  cursor: pointer;
+}
+
+.xc-skill-assign-copy:hover {
+  border-color: #f2de9c;
+  color: #fff3d0;
 }
 
 .xc-skill-option:hover {

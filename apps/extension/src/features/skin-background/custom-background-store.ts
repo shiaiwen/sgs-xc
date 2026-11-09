@@ -9,11 +9,13 @@ import {
   detectCustomBackgroundVideo,
   probeCustomBackgroundFile
 } from './custom-background-media.ts';
-import { accountStorageKey } from './skin-runtime.ts';
+import type { LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
+import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
+import { safeAccountKeyPart } from './skin-runtime.ts';
+import { CUSTOM_BACKGROUND_ACCOUNT_KEY_PREFIX } from '../../const/account-storage.ts';
 
 const DB_NAME = 'xiaochao-custom-background';
 const STORE = 'background';
-const LEGACY_KEY = 'current';
 const DB_VERSION = 1;
 
 export interface CustomBackgroundRecord {
@@ -85,15 +87,22 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-function currentAccountKey(): string {
-  let account = 'default';
+/** 按游戏账号编号分。编号读不到时返回空，这时不读也不写，背景用游戏默认的。 */
+function currentAccountId(): string {
   try {
-    account = accountStorageKey(typeof localStorage === 'undefined' ? undefined : localStorage);
+    return resolveGameAccountId(globalThis as LayaRuntimeWindow);
   } catch {
-    account = 'default';
+    return '';
   }
-  const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
-  return `account:${safe}`;
+}
+
+function accountKeyFor(account: string): string {
+  const safe = safeAccountKeyPart(account);
+  return safe ? `${CUSTOM_BACKGROUND_ACCOUNT_KEY_PREFIX}${safe}` : '';
+}
+
+function currentAccountKey(): string {
+  return accountKeyFor(currentAccountId());
 }
 
 function diskBridge(): CustomBackgroundBridge | null {
@@ -122,26 +131,10 @@ function normalizeRecord(row: unknown, blob: Blob): CustomBackgroundRecord {
 export function createCustomBackgroundStore(): CustomBackgroundStore {
   const listeners = new Set<() => void>();
   let database: Promise<IDBDatabase> | null = null;
-  let migrated = false;
 
   function db(): Promise<IDBDatabase> {
     database ??= openDb();
     return database;
-  }
-
-  async function migrateLegacy(): Promise<void> {
-    if (migrated) return;
-    migrated = true;
-    const database = await db();
-    const reading = database.transaction(STORE, 'readonly').objectStore(STORE);
-    const legacy = await requestToPromise(reading.get(LEGACY_KEY));
-    if (!legacy) return;
-    const key = currentAccountKey();
-    const existing = await requestToPromise(database.transaction(STORE, 'readonly').objectStore(STORE).get(key));
-    const writing = database.transaction(STORE, 'readwrite').objectStore(STORE);
-    const jobs = [requestToPromise(writing.delete(LEGACY_KEY))];
-    if (!existing) jobs.unshift(requestToPromise(writing.put(legacy, key)));
-    await Promise.all(jobs);
   }
 
   function notify(): void {
@@ -164,8 +157,8 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
   }
 
   async function load(): Promise<CustomBackgroundRecord | null> {
-    await migrateLegacy();
     const account = currentAccountKey();
+    if (!account) return null;
     const store = (await db()).transaction(STORE, 'readonly').objectStore(STORE);
     const row = await requestToPromise(store.get(account));
     if (!row || typeof row !== 'object') return null;
@@ -187,6 +180,7 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
       const mime = probed?.mime || file.type || (isVideo ? 'video/mp4' : '');
       const playbackBlob = blobForBackgroundPlayback(file, isVideo, mime);
       const account = currentAccountKey();
+      if (!account) throw new Error('还没读到游戏账号，进大厅后再设置');
       const bridge = diskBridge();
       const updatedAt = Date.now();
       if (bridge) {
@@ -215,7 +209,6 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
           mime: mime || undefined,
           storage: 'disk'
         };
-        await migrateLegacy();
         const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
         await requestToPromise(store.put({
           active: true,
@@ -240,7 +233,6 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
         fileName: fileName || undefined,
         mime: mime || undefined
       };
-      await migrateLegacy();
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
       await requestToPromise(store.put(record, account));
       notify();
@@ -278,8 +270,8 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
       notify();
     },
     async clear() {
-      await migrateLegacy();
       const account = currentAccountKey();
+      if (!account) return;
       const bridge = diskBridge();
       if (bridge) await bridge({ action: 'remove', accountKey: account });
       const store = (await db()).transaction(STORE, 'readwrite').objectStore(STORE);
@@ -287,7 +279,6 @@ export function createCustomBackgroundStore(): CustomBackgroundStore {
       notify();
     },
     async clearAll() {
-      await migrateLegacy();
       const bridge = diskBridge();
       const database = await db();
       const reading = database.transaction(STORE, 'readonly').objectStore(STORE);

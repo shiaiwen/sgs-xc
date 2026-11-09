@@ -8,7 +8,7 @@ import {
   patchSkinBackgroundDocument,
   readSkinBackgroundDocument
 } from './skin-background-document.ts';
-import { accountStorageKey, readJson, removeStored, writeJson } from './skin-runtime.ts';
+import { readJson, removeStored, writeJson } from './skin-runtime.ts';
 import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 
 /** type：0 静态图，1 视频（不支持做背景），2 骨骼 .sk，3 新版 Spine，4 旧版 Spine。 */
@@ -74,23 +74,8 @@ export function normalizeFavorite(value: unknown): BackgroundFavorite | null {
 }
 
 export interface SkinBackgroundStoreOptions {
-  /** 与参考脚本一致：优先 UserData.clientId，否则登录名。 */
+  /** 游戏账号编号。读不到时返回空，这时不读也不写，背景用游戏默认的。 */
   resolveAccountId?: () => string;
-  /** 当前编号下没有收藏时，再读这些登录名。 */
-  resolveAlternateAccountIds?: () => string[];
-}
-
-function readStorageHint(
-  storage: BackgroundStorage | undefined,
-  name: string
-): string {
-  const fromShared = readBrowserSetting(name);
-  if (fromShared) return fromShared;
-  try {
-    return storage?.getItem(name) ?? '';
-  } catch {
-    return '';
-  }
 }
 
 /** 创建皮肤背景收藏仓库。 */
@@ -98,15 +83,13 @@ export function createSkinBackgroundStore(
   storage: BackgroundStorage | undefined,
   options: SkinBackgroundStoreOptions = {}
 ): SkinBackgroundStore {
-  const resolveAccountId = () => {
-    const resolved = options.resolveAccountId?.().trim();
-    return resolved || accountStorageKey(storage);
-  };
+  const resolveAccountId = () => options.resolveAccountId?.().trim() ?? '';
   const resourceKey = () => `${resolveAccountId()}${RESOURCE_SUFFIX}`;
   const favoritesKey = () => `${resolveAccountId()}${FAVORITES_SUFFIX}`;
   const listeners = new Set<() => void>();
 
   function favoritesFromAccount(accountId: string): BackgroundFavorite[] {
+    if (!accountId) return [];
     const document = readSkinBackgroundDocument(storage, accountId);
     const documentList = Array.isArray(document.favorites) ? document.favorites : [];
     const raw = documentList.length > 0
@@ -122,21 +105,11 @@ export function createSkinBackgroundStore(
   }
 
   function favorites(): BackgroundFavorite[] {
-    const primary = favoritesFromAccount(resolveAccountId());
-    if (primary.length > 0) return primary;
-    const seen = new Set<string>();
-    const merged: BackgroundFavorite[] = [];
-    for (const accountId of options.resolveAlternateAccountIds?.() ?? []) {
-      for (const item of favoritesFromAccount(accountId)) {
-        if (seen.has(item.id)) continue;
-        seen.add(item.id);
-        merged.push(item);
-      }
-    }
-    return merged;
+    return favoritesFromAccount(resolveAccountId());
   }
 
   function saveFavorites(list: BackgroundFavorite[]): void {
+    if (!resolveAccountId()) return;
     writeJson(storage, favoritesKey(), list);
     patchSkinBackgroundDocument(storage, resolveAccountId(), { favorites: list });
     listeners.forEach((listener) => {
@@ -146,25 +119,6 @@ export function createSkinBackgroundStore(
         console.warn('[皮肤做背景] 收藏刷新失败:', error);
       }
     });
-  }
-
-  function candidateResourceKeys(): string[] {
-    const keys: string[] = [];
-    const seen = new Set<string>();
-    const push = (key: string) => {
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      keys.push(key);
-    };
-    push(resourceKey());
-    push(`default${RESOURCE_SUFFIX}`);
-    const legacyKey = `${accountStorageKey(storage)}${RESOURCE_SUFFIX}`;
-    push(legacyKey);
-    for (const name of ['LastUserName', 'SGS_LASTLOGIN_ACCOUNT', 'SGS_LASTLOGIN_ACCOUNT1'] as const) {
-      const account = readStorageHint(storage, name).trim();
-      if (account) push(`${account}${RESOURCE_SUFFIX}`);
-    }
-    return keys;
   }
 
   function readRecordFromKey(key: string): Partial<BackgroundResource> | null {
@@ -188,13 +142,11 @@ export function createSkinBackgroundStore(
   }
 
   function readStoredResource(): Partial<BackgroundResource> {
+    // 只读当前账号自己的那份。没有就用游戏默认背景，不拿别的号顶替。
+    if (!resolveAccountId()) return {};
     const currentKey = resourceKey();
-    for (const key of candidateResourceKeys()) {
-      const value = readRecordFromKey(key);
-      if (!value) continue;
-      if (key !== currentKey) writeJson(storage, currentKey, value);
-      return value;
-    }
+    const value = readRecordFromKey(currentKey);
+    if (value) return value;
     // 旧键迁进账号文档后会被删掉，当前背景只剩文档里这一份。
     const fromDocument = readSkinBackgroundDocument(storage, resolveAccountId()).paperResource;
     if (fromDocument && String(fromDocument.url || '').trim()) {
@@ -210,7 +162,7 @@ export function createSkinBackgroundStore(
     },
     saveResource(resource) {
       const url = String(resource.url || '').trim();
-      if (!url) return;
+      if (!url || !resolveAccountId()) return;
       let width = Number(resource.width);
       let height = Number(resource.height);
       if (!(width > 0 && height > 0)) {
@@ -225,15 +177,10 @@ export function createSkinBackgroundStore(
       };
       writeJson(storage, resourceKey(), payload);
       patchSkinBackgroundDocument(storage, resolveAccountId(), { paperResource: payload });
-      const loginName = accountStorageKey(storage);
-      const activeId = resolveAccountId();
-      if (loginName && loginName !== 'default' && loginName !== activeId) {
-        writeJson(storage, `${loginName}${RESOURCE_SUFFIX}`, payload);
-      }
     },
     clearResource() {
-      // 读取时会从这些键里找回背景，清除要把它们和账号文档里的那份一起删掉。
-      candidateResourceKeys().forEach((key) => removeStored(storage, key));
+      if (!resolveAccountId()) return;
+      removeStored(storage, resourceKey());
       clearSkinBackgroundPaperResource(storage, resolveAccountId());
     },
     favorites,

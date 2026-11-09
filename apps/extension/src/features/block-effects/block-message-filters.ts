@@ -58,7 +58,7 @@ function isChatMessage(className: string): boolean {
   return CHAT_MESSAGE_NAMES.has(className) || /chatmsg/i.test(className);
 }
 
-const MARQUEE_BROADCAST_CLASS = /marquee|broadcastchatgoods|chatgoods|chatsysnews|systemnotice|scrollnotice|luckdraw|lotterybroadcast/i;
+const MARQUEE_BROADCAST_CLASS = /marquee|chatsysnews|systemnotice|scrollnotice|luckdraw|lotterybroadcast/i;
 
 function isGameRewardPointMessage(className: string, payload: UnknownRecord): boolean {
   if (/GameRewardPoint/i.test(className)) return true;
@@ -107,9 +107,9 @@ function isMarqueeBroadcastMessage(
   payload: UnknownRecord,
   inTableGame = false
 ): boolean {
-  if (className === 'GsClientBroadcastChatGoods') return true;
   if (/marquee/i.test(className)) return true;
-  if (/broadcastchatgoods|chatgoods/i.test(className)) return true;
+  // 聊天道具协议也是互动道具（扔鸡蛋、送花）走的通道，只丢带出货广告文字的那种。
+  if (/chatgoods/i.test(className)) return containsDogTuoText(payload);
   if (/chatmsg/i.test(className) && isMarqueeChatPayload(payload, inTableGame)) return true;
   if (MARQUEE_BROADCAST_CLASS.test(className) && !/chatmsg/i.test(className)) return true;
   return false;

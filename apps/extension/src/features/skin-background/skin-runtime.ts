@@ -18,6 +18,8 @@ import {
   WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY
 } from '../../const/wallpaper-menu.ts';
 import type { MethodPatcher } from '../../runtime/method-patch.ts';
+import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
+import { ACCOUNT_STORAGE_KEY_MAX_LENGTH } from '../../const/account-storage.ts';
 
 export type UnknownRecord = Record<string, unknown>;
 
@@ -207,39 +209,37 @@ export function removeStored(storage: Pick<Storage, 'removeItem'> | undefined, k
   }
 }
 
-/** 当前登录账号，用作按账号区分的本地存储前缀。 */
-export function accountStorageKey(storage: Pick<Storage, 'getItem'> | undefined): string {
-  return storage?.getItem('LastUserName')
-    || storage?.getItem('SGS_LASTLOGIN_ACCOUNT')
-    || storage?.getItem('SGS_LASTLOGIN_ACCOUNT1')
-    || 'default';
+/**
+ * 当前游戏账号编号，读不到时返回空。
+ * 按账号分开的存储只认这个编号。最后登录名在多开或切号时会指向别的账号，不能拿来分账号。
+ */
+export function currentGameAccountId(): string {
+  try {
+    return resolveGameAccountId(globalThis as LayaRuntimeWindow);
+  } catch {
+    return '';
+  }
 }
 
-/** 配置项按当前登录账号分开存。账号还没有时用 default。 */
-export function accountScopedStorageKey(base: string, storage?: Pick<Storage, 'getItem'>): string {
-  let account = 'default';
-  try {
-    account = accountStorageKey(storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage));
-  } catch {
-    account = 'default';
-  }
-  const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64) || 'default';
+/** 按账号区分的本地存储前缀。还没读到账号时用 default，这一份只在登录前用，不属于任何账号。 */
+export function accountStorageKey(_storage?: unknown): string {
+  return currentGameAccountId() || 'default';
+}
+
+/** 存储键里的账号部分：去掉存储后端不认的字符并限长。 */
+export function safeAccountKeyPart(account: string): string {
+  return account.replace(/[^\w.@+-]/g, '_').slice(0, ACCOUNT_STORAGE_KEY_MAX_LENGTH);
+}
+
+/** 配置项按当前游戏账号分开存。账号还没有时用 default。 */
+export function accountScopedStorageKey(base: string, _storage?: unknown): string {
+  const safe = safeAccountKeyPart(accountStorageKey()) || 'default';
   return `${base}::${safe}`;
 }
 
-/** 登录账号还没取到时返回空。身份锁定和明牌不能落到 default。 */
-export function loggedInAccountStorageKey(base: string, storage?: Pick<Storage, 'getItem'> | null): string | null {
-  let account = '';
-  try {
-    const source = storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-    account = source?.getItem('LastUserName')
-      || source?.getItem('SGS_LASTLOGIN_ACCOUNT')
-      || source?.getItem('SGS_LASTLOGIN_ACCOUNT1')
-      || '';
-  } catch {
-    account = '';
-  }
-  const safe = account.replace(/[^\w.@+-]/g, '_').slice(0, 64);
+/** 游戏账号还没取到时返回空。身份锁定和明牌不能落到 default。 */
+export function loggedInAccountStorageKey(base: string, _storage?: unknown): string | null {
+  const safe = safeAccountKeyPart(currentGameAccountId());
   if (!safe) return null;
   return `${base}::${safe}`;
 }

@@ -1,6 +1,6 @@
 /**
  * 礼包码自动兑换：登录后拉取线上码列表，对本账号尚未尝试过的码逐个填入游戏兑换窗。
- * 不读自动领取开关。尝试记录按 UserData.Self.clientId 写入 localStorage，避免重复兑换。
+ * 不读自动领取开关。尝试记录按游戏账号编号写入 localStorage，避免重复兑换。
  */
 
 import {
@@ -8,11 +8,7 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import {
-  isValidGameAccountId,
-  readUserDataSelf,
-  resolveGameAccountId
-} from '../../runtime/game-account-session.ts';
+import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import { createTaskScope } from '../skin-background/skin-runtime.ts';
 import { createAutoTaskWindows } from '../auto-task/auto-task-windows.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
@@ -152,16 +148,9 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let runningId = '';
   let missingAccountLogged = false;
-  let cachedUserDataSelf: UnknownRecord | null = null;
+  // 每次都重新读。换号登录后要立刻换成新账号的兑换记录。
   function currentAccountId(): string {
-    const cachedId = cachedUserDataSelf?.clientId ?? cachedUserDataSelf?.ClientId ?? cachedUserDataSelf?.ClientID;
-    if (isValidGameAccountId(cachedId)) {
-      return resolveGameAccountId(globalObject, locator, cachedUserDataSelf);
-    }
-    const found = readUserDataSelf(globalObject);
-    const foundId = found?.clientId ?? found?.ClientId ?? found?.ClientID;
-    if (isValidGameAccountId(foundId)) cachedUserDataSelf = found;
-    return resolveGameAccountId(globalObject, locator, cachedUserDataSelf);
+    return resolveGameAccountId(globalObject, locator);
   }
 
   /** GET 远程礼包码接口，校验 ok 字段后返回码数组。 */

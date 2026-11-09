@@ -26,7 +26,8 @@ import {
   type XiaochaoPanelLayout
 } from '../ui/mount-xiaochao-app';
 import { createConfigStore } from '../config/config-store';
-import { createPlatformConfigStorage } from '../config/config-storage';
+import { createPlatformConfigStorage, currentConfigAccount, NO_CONFIG_ACCOUNT } from '../config/config-storage';
+import { ACCOUNT_ID_WAIT_MS } from '../const/panel-startup';
 import { installSeatDisplayVisibility } from '../features/seat-display/seat-display-visibility';
 import { createSeatStateStore } from '../features/seat-display/seat-state-store';
 import { isNationWarMode } from '../features/seat-display/seat-state';
@@ -59,6 +60,8 @@ import { createMingpaiEngine, installMingpaiController } from '../features/mingp
 import { installNativeMingpaiPreviewController } from '../features/mingpai/native-mingpai-preview-controller';
 import { mingpaiPerf } from '../features/mingpai/mingpai-perf.ts';
 import { createSkillAssistStore } from '../features/skill-assist/skill-assist-store';
+import { assignYanjiaoCards } from '../features/skill-assist/yanjiao-assign';
+import { SKILL_ASSIST_DEFINITIONS } from '../features/skill-assist/skill-definitions';
 import { installSkillAssistController } from '../features/skill-assist/skill-assist-controller';
 import { registerSpellNameLookup } from '../features/skill-assist/skill-visibility';
 import { installBlockEffectsController } from '../features/block-effects/block-effects-controller';
@@ -140,6 +143,8 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
 
   let core: XiaochaoCoreRuntime | null = null;
   let tipHooksCleanedAfterRuntime = false;
+  let runtimeReadyAt: number | null = null;
+  let coreStartError: unknown = null;
 
   const probeRuntimeReady = () => {
     const missing = getMissingGameRuntimeDependencies({ globalObject: window });
@@ -170,7 +175,28 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
       if (!core) startupStatus.state = 'waiting';
       return;
     }
-    if (!core) core = startXiaochaoCore(platform, lifecycle, configStore);
+    if (!core) {
+      // 先等读到账号编号，免得功能先按默认配置跑一段再换成这个号自己的配置。
+      runtimeReadyAt ??= Date.now();
+      const waitingForAccount = currentConfigAccount() === NO_CONFIG_ACCOUNT
+        && Date.now() - runtimeReadyAt < ACCOUNT_ID_WAIT_MS;
+      if (waitingForAccount) {
+        startupStatus.state = 'waiting';
+        startupStatus.missing = ['GameAccountId'];
+        return;
+      }
+      if (coreStartError) return;
+      try {
+        core = startXiaochaoCore(platform, lifecycle, configStore);
+      } catch (error) {
+        // 启动到一半失败时，已经装上的功能还在；再试一次会把它们叠装一遍，背景等会反复重画闪屏。
+        coreStartError = error;
+        startupStatus.state = 'failed';
+        startupStatus.error = String((error as Error)?.message ?? error);
+        console.error('[xiaochao] 启动失败', error);
+        return;
+      }
+    }
     if (!tipHooksCleanedAfterRuntime) {
       tipHooksCleanedAfterRuntime = true;
       disposeOrphanTipStayHooks(window);
@@ -264,6 +290,15 @@ function startXiaochaoCore(
       },
       isNationWar() {
         return isNationWarMode(seatStateStore.getSnapshot().mode);
+      }
+    },
+    SKILL_ASSIST_DEFINITIONS,
+    {
+      assignYanjiao(split, selfSide, rankOfCardId) {
+        return assignYanjiaoCards(window as LayaRuntimeWindow, split, selfSide, rankOfCardId, (seatIndex) => {
+          const snapshot = seatStateStore.getSnapshot();
+          return seatIndex === snapshot.selfSeatId || snapshot.controlledSeatIds.includes(seatIndex);
+        });
       }
     }
   );

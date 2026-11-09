@@ -31,8 +31,8 @@ const helpText = `生成 content/releases/<版本号>.md
 选项：
   --version <版本号>   指定版本，三段数字，例如 1.0.41
   --bump <级别>        不写版本时怎么递增：patch、minor、major。默认 patch
-  --date <YYYY-MM-DD>  发布日期。不写则用上海当天
-  --today              明确使用上海当天
+  --date <时间>        发布时间，YYYY-MM-DD HH:mm，也可以只写 YYYY-MM-DD。不写则用上海当前时间
+  --today              明确使用上海当前时间，精确到分钟
   --title <标题>       不写则是「小抄」加版本号
   --note <条目>        本次更新，可重复，一次一条
   --recent <条目>      近期更新，可重复。一条都不写则不生成这一节
@@ -145,10 +145,13 @@ function normalizeBullets(items) {
 }
 
 function isValidDate(text) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
-  const [year, month, day] = text.split("-").map((part) => Number(part));
+  const matched = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?$/.exec(text);
+  if (!matched) return false;
+  const [year, month, day] = matched.slice(1, 4).map((part) => Number(part));
   const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return false;
+  if (matched[4] === undefined) return true;
+  return Number(matched[4]) < 24 && Number(matched[5]) < 60;
 }
 
 function shanghaiDate(now) {
@@ -166,6 +169,20 @@ function shanghaiDate(now) {
     throw new CliError("算不出上海当天的日期");
   }
   return `${year}-${month}-${day}`;
+}
+
+/** 上海当前时间，精确到分钟：YYYY-MM-DD HH:mm。 */
+function shanghaiDateTime(now) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const pick = (type) => parts.find((part) => part.type === type)?.value ?? "";
+  const text = `${shanghaiDate(now)} ${pick("hour")}:${pick("minute")}`;
+  if (!isValidDate(text)) throw new CliError("算不出上海当前时间");
+  return text;
 }
 
 function renderMarkdown({ version, title, date, notes, recents }) {
@@ -353,8 +370,8 @@ async function run(argv, io = {}) {
     throw new CliError(`版本号格式不对：${version}。用三段数字，例如 1.0.41`);
   }
 
-  const date = args.date == null ? shanghaiDate(now) : String(args.date).trim();
-  if (!isValidDate(date)) throw new CliError(`日期格式不对：${date}。用 YYYY-MM-DD`);
+  const date = args.date == null ? shanghaiDateTime(now) : String(args.date).trim();
+  if (!isValidDate(date)) throw new CliError(`时间格式不对：${date}。用 YYYY-MM-DD HH:mm`);
 
   const titleText = args.title == null ? "" : String(args.title).trim();
   if (/[\r\n]/.test(titleText)) throw new CliError("标题不能换行");
@@ -422,4 +439,5 @@ module.exports = {
   compareVersions,
   run,
   shanghaiDate,
+  shanghaiDateTime,
 };

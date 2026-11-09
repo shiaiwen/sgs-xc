@@ -18,7 +18,7 @@ const settings = [
   {
     key: 'display.deckHudEnabled',
     label: '局内牌堆',
-    tooltip: '在游戏右上角轮次信息旁显示最近用牌与顶/底/弃入口，数字键 1–5 快速查看',
+    tooltip: '在游戏右上角轮次信息旁显示最近用牌与顶/底/弃入口',
   },
   {
     key: 'display.deckRecordEnabled',

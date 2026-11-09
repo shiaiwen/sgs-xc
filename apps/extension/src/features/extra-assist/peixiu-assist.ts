@@ -6,6 +6,11 @@ import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-o
 import { createMethodPatcher, type MethodPatcher } from '../../runtime/method-patch.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import {
+  PEIXIU_ACTIVE_POLL_MS,
+  PEIXIU_HAND_WATCH_MS,
+  PEIXIU_SEARCH_POLL_MS
+} from '../../const/peixiu.ts';
+import {
   fingerprintMapConfig,
   isBoardCell,
   normalizeCell,
@@ -170,18 +175,17 @@ function collectedCellsOf(host: PeixiuOverlayHost): number[] {
 export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
   const patcher = options.patcher ?? createMethodPatcher();
   const globalObject = options.globalObject ?? (typeof window !== 'undefined' ? window as LayaRuntimeWindow : {});
-  let pollIntervalMs = options.pollIntervalMs ?? 800;
+  let pollIntervalMs = options.pollIntervalMs ?? PEIXIU_SEARCH_POLL_MS;
   const tracked = new Set<PeixiuOverlayHost>();
   // 旧实现会按 __xcPeiXiu* 属性清理自己的节点。绘制状态放到独立代理上，
   // 场景刷新时保留当前实现的路线层。
   const overlayHosts = new WeakMap<object, PeixiuOverlayHost>();
   let active: PeixiuOverlayHost | null = null;
-  let patched = false;
-  let classPatchChecked = false;
-  let nodeAttachmentPatched = false;
   let disposed = false;
-  let handRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  const handPatchedMethods = new WeakMap<object, Set<string>>();
+  let handWatchTimer: ReturnType<typeof setInterval> | null = null;
+  let handSignature = '';
+  /** 只在地图实例自己身上挂钩子；地图类的原型由所有地图共用，不能动。 */
+  const patchedHosts = new WeakSet<object>();
   const skillScope: {
     gameContext: object | null;
     selfSeatId: string;
@@ -206,9 +210,7 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
         at: Date.now(),
         stage,
         enabled: options.isEnabled(),
-        nodeAttachmentPatched,
-        classPatchChecked,
-        patched,
+        hostPatched: Boolean(active && patchedHosts.has(active)),
         ...detail
       };
     } catch { /* diagnostics must never affect the assist */ }
@@ -234,84 +236,36 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     return facade;
   }
 
-  function scheduleHandRefresh(): void {
-    if (disposed || !options.isEnabled()) return;
-    if (handRefreshTimer != null) globalObject.clearTimeout?.(handRefreshTimer);
-    handRefreshTimer = globalObject.setTimeout?.(() => {
-      handRefreshTimer = null;
-      if (active && isVisibleMap(active)) redraw(active, true);
-    }, 32) ?? null;
+  /** 手牌、选中、体力等影响路线的东西拼成一串，变了才重画。 */
+  function readHandSignature(): string {
+    const resources = collectPeixiuResources({ globalObject, cardLookup: options.cardLookup });
+    return [
+      resources.handCards.map((card) => [card.key, card.playable ? 1 : 0, card.selected ? 1 : 0].join(':')).join('|'),
+      resources.selectedCardKey,
+      resources.remainingSha,
+      resources.hp ?? '',
+      resources.maxHp ?? ''
+    ].join('#');
   }
 
-  function patchHandMethod(target: UnknownRecord | null, method: string): void {
-    if (!target || typeof target[method] !== 'function') return;
-    let methods = handPatchedMethods.get(target);
-    if (!methods) {
-      methods = new Set<string>();
-      handPatchedMethods.set(target, methods);
-    }
-    if (methods.has(method)) return;
-    const installed = patcher.wrap(target, method, (original) => function (this: unknown, ...args: unknown[]) {
-      const result = original.apply(this, args);
-      scheduleHandRefresh();
-      return result;
-    });
-    if (installed) methods.add(method);
+  /** 定时比对手牌，不包装手牌容器和手牌：那些方法在座位、手牌之间共用。 */
+  function startHandWatch(): void {
+    if (handWatchTimer != null) return;
+    handSignature = '';
+    handWatchTimer = globalObject.setInterval?.(() => {
+      if (disposed || !options.isEnabled() || !active || !isVisibleMap(active)) return;
+      const next = readHandSignature();
+      if (next === handSignature) return;
+      handSignature = next;
+      redraw(active, true);
+    }, PEIXIU_HAND_WATCH_MS) ?? null;
   }
 
-  function ensureHandChangePatches(): void {
-    const scene = asRecord(locateGameScene(globalObject));
-    const selfSeatUi = asRecord(scene?.SelfSeatUi) ?? asRecord(scene?.selfSeatUi);
-    const container = asRecord(selfSeatUi?.cardContainer);
-    if (!container) return;
-    const containerProto = asRecord(Object.getPrototypeOf(container));
-    for (const method of [
-      'layoutCardUIs',
-      'UpdateSelectCards',
-      'OnCardCountChanged',
-      'updateCardUIs',
-      'refreshCardUIs'
-    ]) {
-      patchHandMethod(containerProto, method);
-    }
-    const handCardUis = Array.isArray(container.handCardUis) && container.handCardUis.length
-      ? container.handCardUis as unknown[]
-      : Array.isArray(container.cardUis)
-        ? container.cardUis as unknown[]
-        : [];
-    const cardUi = asRecord(handCardUis[0]);
-    patchHandMethod(asRecord(cardUi && Object.getPrototypeOf(cardUi)), 'setSelected');
-  }
-  const pendingActivations = new WeakSet<object>();
-
-  function scheduleActivation(candidate: unknown): void {
-    if (!candidate || typeof candidate !== 'object' || pendingActivations.has(candidate)) return;
-    const host = candidate as PeixiuOverlayHost;
-    pendingActivations.add(candidate);
-    let attempts = 0;
-    const run = () => {
-      if (disposed || !options.isEnabled() || host.destroyed || host._destroyed) {
-        pendingActivations.delete(candidate);
-        return;
-      }
-      if (isPeixiuMapHost(host)) {
-        pendingActivations.delete(candidate);
-        report('map-attached', { name: host.name, resName: host.resName });
-        activate(host);
-        return;
-      }
-      attempts += 1;
-      if (attempts >= 12) {
-        pendingActivations.delete(candidate);
-        return;
-      }
-      globalObject.setTimeout?.(run, 100);
-    };
-    if (typeof globalObject.requestAnimationFrame === 'function') {
-      globalObject.requestAnimationFrame(run);
-    } else {
-      globalObject.setTimeout?.(run, 0);
-    }
+  function stopHandWatch(): void {
+    if (handWatchTimer == null) return;
+    globalObject.clearInterval?.(handWatchTimer);
+    handWatchTimer = null;
+    handSignature = '';
   }
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -343,8 +297,6 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
       hideAll();
       return;
     }
-    ensureNodeAttachmentPatch();
-    ensureClassPatches();
     const scene = locateGameScene(globalObject);
     const currentScene = options.locator.scene();
     const stage = asRecord((globalObject as UnknownRecord).Laya)?.stage;
@@ -359,8 +311,8 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
       hasStage: Boolean(stage)
     });
     // 当前没有激活的地图时恢复较快扫描，便于及时发现新地图。
-    if (pollIntervalMs !== 800) {
-      pollIntervalMs = 800;
+    if (pollIntervalMs !== PEIXIU_SEARCH_POLL_MS) {
+      pollIntervalMs = PEIXIU_SEARCH_POLL_MS;
       if (pollTimer != null) {
         stopPolling();
         startPolling();
@@ -373,35 +325,7 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     }
   }
 
-  /**
-   * 裴秀背景是动态挂入 Laya 显示树的，不能只依赖场景轮询。
-   * 在节点完成 _setParent 后延迟一帧读取 mapState，避免初始化顺序导致空配置。
-   */
-  function ensureNodeAttachmentPatch(): void {
-    if (nodeAttachmentPatched) return;
-    const laya = asRecord((globalObject as UnknownRecord).Laya);
-    const nodePrototype = asRecord(asRecord(laya?.Node)?.prototype);
-    if (!nodePrototype || typeof nodePrototype._setParent !== 'function') return;
-    nodeAttachmentPatched = patcher.wrap(
-      nodePrototype,
-      '_setParent',
-      (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
-        const result = original.apply(this, args);
-        const parent = args[0];
-        const parentRecord = asRecord(parent);
-        const looksLikePeixiu = isPeixiuBackground(this)
-          || Boolean(asRecord(this.mapState)?.mapConfig)
-          || parentRecord?.peixiuSpBg === this
-          || asRecord(parentRecord?.currentData)?.specialBackground === this;
-        if (parent && looksLikePeixiu) scheduleActivation(this);
-        return result;
-      }
-    );
-    report(nodeAttachmentPatched ? 'node-hook-installed' : 'node-hook-failed');
-  }
-
   function activate(host: PeixiuOverlayHost | null): boolean {
-    // 由 PeiXiuMapBackground 类方法直接传入的实例不再依赖节点名称；
     // 正式服经常混淆 constructor/name，但 mapState 结构保持稳定。
     if (!isVisibleMap(host) || !isPeixiuMapHost(host)) return false;
     if (active && active !== host) clearActive();
@@ -412,13 +336,13 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     }
     tracked.add(host);
     active = host;
-    // 地图已激活且 patch 已挂好时，降低轮询频率；主要靠原型/手牌变化回调刷新。
-    pollIntervalMs = 2000;
+    // 地图已激活后降低轮询频率；地图变化靠地图实例上的钩子，手牌变化靠定时比对。
+    pollIntervalMs = PEIXIU_ACTIVE_POLL_MS;
     if (pollTimer != null) {
       stopPolling();
       startPolling();
     }
-    ensureHandChangePatches();
+    startHandWatch();
     report('map-active', {
       name: host.name,
       resName: host.resName,
@@ -428,61 +352,42 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     });
     // peixiuSpBg 只会挂到当前客户端正在操作的裴秀地图。正式服不同版本的
     // currentID / SeatID 口径并不稳定，不能让座位号误判阻断整条路线功能。
-    if (!patched) patched = installPatches(host);
-    else redraw(host);
+    if (patchedHosts.has(host)) {
+      redraw(host);
+    } else {
+      patchedHosts.add(host);
+      installHostPatches(host);
+      redraw(host, true);
+    }
     return true;
   }
 
-  function installPatches(host: PeixiuOverlayHost): boolean {
-    const proto = asRecord(host.constructor)?.prototype ?? asRecord(Object.getPrototypeOf(host));
-    if (!proto) return false;
-    const installed = installPrototypePatches(proto);
-    redraw(host, true);
-    return installed;
-  }
-
-  function ensureClassPatches(): void {
-    if (classPatchChecked) return;
-    const proto = options.locator.classPrototype('PeiXiuMapBackground');
-    if (!proto) return;
-    classPatchChecked = true;
-    if (installPrototypePatches(proto)) patched = true;
-  }
-
-  function installPrototypePatches(proto: UnknownRecord): boolean {
-    let installed = false;
-    if (typeof proto.renderMapState === 'function') {
-      installed = patcher.wrap(proto, 'renderMapState', (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
+  /** 钩子只定义在这张地图实例自己身上；游戏从原型再调用时走原方法，不会绕回包装。 */
+  function installHostPatches(host: PeixiuOverlayHost): void {
+    const target = host as unknown as UnknownRecord;
+    for (const method of ['renderMapState', 'refreshBoardEffectLayer']) {
+      patcher.wrap(target, method, (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
         const result = original.apply(this, args);
-        if (options.isEnabled()) activate(this);
+        if (options.isEnabled() && this === host) activate(host);
         return result;
-      }) || installed;
+      });
     }
-    if (typeof proto.refreshBoardEffectLayer === 'function') {
-      installed = patcher.wrap(proto, 'refreshBoardEffectLayer', (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
-        const result = original.apply(this, args);
-        if (options.isEnabled()) activate(this);
-        return result;
-      }) || installed;
-    }
-    if (typeof proto.HideOnScene === 'function') {
-      installed = patcher.wrap(proto, 'HideOnScene', (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
-        hidePeixiuOverlay(overlayHostFor(this));
-        options.routeStore?.clear();
-        return original.apply(this, args);
-      }) || installed;
-    }
-    const destroyName = typeof proto.Destroy === 'function' ? 'Destroy' : typeof proto.destroy === 'function' ? 'destroy' : '';
-    if (destroyName) {
-      installed = patcher.wrap(proto, destroyName, (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
-        destroyPeixiuOverlay(overlayHostFor(this), globalObject);
-        tracked.delete(this);
-        if (active === this) active = null;
-        options.routeStore?.clear();
-        return original.apply(this, args);
-      }) || installed;
-    }
-    return installed;
+    patcher.wrap(target, 'HideOnScene', (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
+      hidePeixiuOverlay(overlayHostFor(host));
+      options.routeStore?.clear();
+      return original.apply(this, args);
+    });
+    const destroyName = typeof target.Destroy === 'function' ? 'Destroy' : 'destroy';
+    patcher.wrap(target, destroyName, (original) => function (this: PeixiuOverlayHost, ...args: unknown[]) {
+      destroyPeixiuOverlay(overlayHostFor(host), globalObject);
+      tracked.delete(host);
+      if (active === host) {
+        active = null;
+        stopHandWatch();
+      }
+      options.routeStore?.clear();
+      return original.apply(this, args);
+    });
   }
 
   function redraw(host: PeixiuOverlayHost, _force = false): void {
@@ -634,6 +539,7 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
       options.routeStore?.clear();
     }
     active = null;
+    stopHandWatch();
   }
 
   const teardownBattleOverlays = () => {
@@ -649,8 +555,7 @@ export function installPeixiuAssist(options: PeixiuAssistOptions): () => void {
     disposed = true;
     unregisterHudTeardown();
     stopGameEvents?.();
-    if (handRefreshTimer != null) globalObject.clearTimeout?.(handRefreshTimer);
-    handRefreshTimer = null;
+    stopHandWatch();
     if (pollTimer != null) globalObject.clearInterval?.(pollTimer);
     for (const host of tracked) destroyPeixiuOverlay(overlayHostFor(host), globalObject);
     tracked.clear();

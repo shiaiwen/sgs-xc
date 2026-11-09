@@ -14,7 +14,6 @@ export const SKIN_BACKGROUND_DOCUMENT_VERSION = 1;
 export const LEGACY_PAPER_RESOURCE_SUFFIX = '::paperRes';
 export const LEGACY_FAVORITES_SUFFIX = '::XC_SKIN_BACKGROUND_FAVORITES';
 /** 旧版未带账号前缀时整键即为收藏列表。 */
-export const LEGACY_FAVORITES_BARE_KEY = 'XC_SKIN_BACKGROUND_FAVORITES';
 export const LEGACY_OFFICIAL_CHOICE_SUFFIX = '::XC_OFFICIAL_BACKGROUND_CHOICE';
 
 export interface OfficialBackgroundChoice {
@@ -91,38 +90,17 @@ function readRawKey(storage: BackgroundStorage | undefined, key: string): string
   }
 }
 
-function legacyResourceKeys(storage: BackgroundStorage | undefined, accountId: string): string[] {
-  const keys: string[] = [];
-  const seen = new Set<string>();
-  const push = (key: string) => {
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    keys.push(key);
-  };
-  push(`${accountId}${LEGACY_PAPER_RESOURCE_SUFFIX}`);
-  if (accountId === 'default') {
-    push(`default${LEGACY_PAPER_RESOURCE_SUFFIX}`);
-  }
-  for (const name of ['LastUserName', 'SGS_LASTLOGIN_ACCOUNT', 'SGS_LASTLOGIN_ACCOUNT1'] as const) {
-    const account = readRawKey(storage, name)?.trim();
-    if (account) push(`${account}${LEGACY_PAPER_RESOURCE_SUFFIX}`);
-  }
-  return keys;
-}
-
 function readLegacyPaperResource(
   storage: BackgroundStorage | undefined,
   accountId: string
 ): Partial<BackgroundResource> | undefined {
-  for (const key of legacyResourceKeys(storage, accountId)) {
-    try {
-      const raw = readRawKey(storage, key);
-      if (!raw) continue;
-      const value = JSON.parse(raw) as Partial<BackgroundResource>;
-      if (value && String(value.url || '').trim()) return value;
-    } catch {
-      // 忽略损坏的旧键。
-    }
+  try {
+    const raw = readRawKey(storage, `${accountId}${LEGACY_PAPER_RESOURCE_SUFFIX}`);
+    if (!raw) return undefined;
+    const value = JSON.parse(raw) as Partial<BackgroundResource>;
+    if (value && String(value.url || '').trim()) return value;
+  } catch {
+    // 忽略损坏的旧键。
   }
   return undefined;
 }
@@ -138,15 +116,8 @@ function readLegacyFavorites(
   storage: BackgroundStorage | undefined,
   accountId: string
 ): BackgroundFavorite[] | undefined {
-  const keys = [
-    `${accountId}${LEGACY_FAVORITES_SUFFIX}`,
-    LEGACY_FAVORITES_BARE_KEY
-  ];
-  for (const key of keys) {
-    const parsed = parseLegacyFavoritesRaw(readJson<unknown>(storage, key, null));
-    if (parsed?.length) return parsed;
-  }
-  return undefined;
+  const parsed = parseLegacyFavoritesRaw(readJson<unknown>(storage, `${accountId}${LEGACY_FAVORITES_SUFFIX}`, null));
+  return parsed?.length ? parsed : undefined;
 }
 
 function readLegacyOfficialChoice(
@@ -165,62 +136,9 @@ function readLegacyOfficialChoice(
 }
 
 function removeLegacyKeys(storage: BackgroundStorage | undefined, accountId: string): void {
-  for (const key of legacyResourceKeys(storage, accountId)) removeStored(storage, key);
+  removeStored(storage, `${accountId}${LEGACY_PAPER_RESOURCE_SUFFIX}`);
   removeStored(storage, `${accountId}${LEGACY_FAVORITES_SUFFIX}`);
-  removeStored(storage, LEGACY_FAVORITES_BARE_KEY);
   removeStored(storage, `${accountId}${LEGACY_OFFICIAL_CHOICE_SUFFIX}`);
-}
-
-/**
- * 扫一遍本地存储里所有旧版收藏键。
- * 旧版按账号名/客户端编号分别存过一份，当前账号对不上时也能把收藏捞回来。
- */
-export function readAnyLegacyFavorites(storage: BackgroundStorage | undefined): BackgroundFavorite[] {
-  const bag = storage as (BackgroundStorage & { length?: number; key?: (index: number) => string | null }) | undefined;
-  if (!bag || typeof bag.key !== 'function' || typeof bag.length !== 'number') return [];
-  const found: BackgroundFavorite[] = [];
-  const seen = new Set<string>();
-  for (let index = 0; index < bag.length; index += 1) {
-    const key = bag.key(index);
-    if (!key || (key !== LEGACY_FAVORITES_BARE_KEY && !key.endsWith(LEGACY_FAVORITES_SUFFIX))) continue;
-    const raw = readJson<unknown>(bag, key, null);
-    const list = Array.isArray(raw) ? raw : Array.isArray((raw as { items?: unknown })?.items)
-      ? (raw as { items: unknown[] }).items
-      : [];
-    for (const item of list) {
-      const favorite = item as BackgroundFavorite;
-      const id = String((favorite as { id?: unknown })?.id ?? '');
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      found.push(favorite);
-    }
-  }
-  return found;
-}
-
-/**
- * 扫一遍本地存储里所有 `XC::skinBackground::<账号>` 文档。
- * 登录账号和游戏内编号不一定一致，收藏可能落在别的账号名下。
- */
-export function readAnyDocumentFavorites(storage: BackgroundStorage | undefined): BackgroundFavorite[] {
-  const bag = storage as (BackgroundStorage & { length?: number; key?: (index: number) => string | null }) | undefined;
-  if (!bag || typeof bag.key !== 'function' || typeof bag.length !== 'number') return [];
-  const prefix = `${SKIN_BACKGROUND_DOCUMENT_KEY_BASE}::`;
-  const found: BackgroundFavorite[] = [];
-  const seen = new Set<string>();
-  for (let index = 0; index < bag.length; index += 1) {
-    const key = bag.key(index);
-    if (!key || !key.startsWith(prefix)) continue;
-    const document = parseDocument(readRawKey(bag, key));
-    for (const item of document?.favorites ?? []) {
-      const favorite = item as BackgroundFavorite;
-      const id = String((favorite as { id?: unknown })?.id ?? '');
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      found.push(favorite);
-    }
-  }
-  return found;
 }
 
 /** 读取当前账号的皮肤背景文档，必要时从旧键迁移并写回单文档。 */

@@ -21,8 +21,10 @@ import {
   solveChengxiang,
   solveYanjiao,
   solveYicheng,
-  solveZiyuan
+  solveZiyuan,
+  type YanjiaoSplit
 } from './point-calculators.ts';
+import type { YanjiaoAssignResult, YanjiaoSide } from './yanjiao-assign.ts';
 import {
   CHENGXIANG_SKILL_ID,
   JIE_CHENGXIANG_SKILL_ID,
@@ -59,6 +61,10 @@ export interface SkillAssistPanelSnapshot {
   showResult: boolean;
   shownCardZoneId: string | null;
   emptyCardLabel: string | null;
+  /** 严教：每个方案的两组点数，与 resultOptions 同下标。 */
+  splitOptions: readonly { left: string; right: string }[];
+  /** 严教：这次由自己分牌，点某一组就能自动把牌摆好。 */
+  assignable: boolean;
 }
 
 export interface SkillAssistSnapshot {
@@ -80,6 +86,17 @@ export interface SkillAssistCardKnowledge {
   isNationWar?(): boolean;
 }
 
+/** 技能辅助对游戏的操作，由启动器注入，仓库本身不碰游戏对象。 */
+export interface SkillAssistActions {
+  assignYanjiao?(
+    split: YanjiaoSplit,
+    selfSide: YanjiaoSide,
+    rankOfCardId: (cardId: number) => number
+  ): YanjiaoAssignResult;
+}
+
+export type YanjiaoAssignOutcome = YanjiaoAssignResult | 'unavailable';
+
 export interface SkillAssistStore {
   getSnapshot(): Readonly<SkillAssistSnapshot>;
   setInGame(inGame: boolean): void;
@@ -88,6 +105,8 @@ export interface SkillAssistStore {
   refreshVisibility(scene: GameSceneSeatSource | null): void;
   handleGameEvent(event: Readonly<GameEvent>, scene: GameSceneSeatSource | null): void;
   subscribe(listener: (snapshot: Readonly<SkillAssistSnapshot>) => void): () => void;
+  /** 严教：把第 index 个方案里 selfSide 那组分给自己。 */
+  assignYanjiao(index: number, selfSide: YanjiaoSide): YanjiaoAssignOutcome;
   clear(): void;
 }
 
@@ -100,6 +119,8 @@ interface PanelRuntime {
   highlightedOptions: boolean[];
   /** 技能事件算出过结果：本局保持显示，不受座位技能轮询影响。 */
   pinned: boolean;
+  yanjiaoSplits: YanjiaoSplit[];
+  assignable: boolean;
 }
 
 type CardsUsedEvent = Extract<GameEvent, { type: 'cards-used' }>;
@@ -135,7 +156,8 @@ export function createSkillAssistStore(
   mingpaiEngine: MingpaiEngine,
   gameCardCatalog: GameCardCatalog,
   cardKnowledge: SkillAssistCardKnowledge = EMPTY_CARD_KNOWLEDGE,
-  definitions: readonly SkillAssistDefinition[] = SKILL_ASSIST_DEFINITIONS
+  definitions: readonly SkillAssistDefinition[] = SKILL_ASSIST_DEFINITIONS,
+  actions: SkillAssistActions = {}
 ): SkillAssistStore {
   /** 曹冲掉血后 GsCTriggerSpellNew 问过称象，亮牌才弹出。 */
   let chengxiangTriggered = false;
@@ -147,10 +169,16 @@ export function createSkillAssistStore(
       resultText: null,
       resultOptions: [],
       highlightedOptions: [],
-      pinned: false
+      pinned: false,
+      yanjiaoSplits: [],
+      assignable: false
     }])
   );
   let inGame = false;
+  /** 没收到开局消息（中途装上、断线重连）时，按桌上有座位算在局里。 */
+  let seatedInGame = false;
+  /** 本局已结束。结算、回房间时座位还在，换了画面也不能因此又算回局里；开新局或离桌才解除。 */
+  let gameEndedAtTable = false;
   let currentSeatId: number | null = null;
   /** 本局全部卡号（MsgGamePlayCardNtf）；吉占据此推算牌堆里可能的牌。 */
   let gameCardIds: readonly number[] = [];
@@ -171,7 +199,7 @@ export function createSkillAssistStore(
 
   function buildSnapshot(): Readonly<SkillAssistSnapshot> {
     return Object.freeze({
-      inGame,
+      inGame: inGame || seatedInGame,
       currentSeatId,
       panels: Object.freeze(definitions.map((definition) => {
         const runtime = panels.get(definition.id)!;
@@ -192,7 +220,12 @@ export function createSkillAssistStore(
           showSuitSequence: Boolean(definition.showSuitSequence),
           showResult: Boolean(definition.showResult),
           shownCardZoneId: zoneId,
-          emptyCardLabel: EMPTY_LABELS[definition.id] ?? null
+          emptyCardLabel: EMPTY_LABELS[definition.id] ?? null,
+          splitOptions: Object.freeze(runtime.yanjiaoSplits.map((split) => Object.freeze({
+            left: formatRanks(split.left),
+            right: formatRanks(split.right)
+          }))),
+          assignable: runtime.assignable
         });
       }))
     });
@@ -209,6 +242,8 @@ export function createSkillAssistStore(
     runtime.resultText = null;
     runtime.resultOptions = [];
     runtime.highlightedOptions = [];
+    runtime.yanjiaoSplits = [];
+    runtime.assignable = false;
   }
 
   function pin(runtime: PanelRuntime): void {
@@ -283,7 +318,13 @@ export function createSkillAssistStore(
       lastScene = scene;
       let changed = false;
       const seated = Array.isArray(scene?.seatContainer?.seatUIs) && scene.seatContainer.seatUIs.length > 0;
-      const playing = inGame || seated;
+      if (!seated) gameEndedAtTable = false;
+      const nextSeatedInGame = !inGame && seated && !gameEndedAtTable;
+      if (seatedInGame !== nextSeatedInGame) {
+        seatedInGame = nextSeatedInGame;
+        changed = true;
+      }
+      const playing = inGame || seatedInGame;
       for (const definition of definitions) {
         const runtime = panels.get(definition.id)!;
         const visible = (playing && runtime.pinned)
@@ -306,12 +347,16 @@ export function createSkillAssistStore(
     handleGameEvent(event, scene) {
       if (event.type === 'game-started') {
         inGame = true;
+        seatedInGame = false;
+        gameEndedAtTable = false;
         resetAll();
         publish(buildSnapshot());
         return;
       }
       if (event.type === 'game-ended') {
         inGame = false;
+        seatedInGame = false;
+        gameEndedAtTable = true;
         currentSeatId = null;
         gameCardIds = [];
         resetAll();
@@ -383,12 +428,20 @@ export function createSkillAssistStore(
       listener(snapshot);
       return () => listeners.delete(listener);
     },
+    assignYanjiao(index, selfSide) {
+      const runtime = panels.get(YANJIAO_PANEL_ID);
+      const split = runtime?.assignable ? runtime.yanjiaoSplits[index] : undefined;
+      if (!split || !actions.assignYanjiao) return 'unavailable';
+      return actions.assignYanjiao(split, selfSide, (cardId) => cardRankNumber(cardId, gameCardCatalog));
+    },
     clear() {
       if (mingpaiRebuildTimer) clearTimeout(mingpaiRebuildTimer);
       mingpaiRebuildTimer = null;
       stopMingpai();
       listeners.clear();
       inGame = false;
+      seatedInGame = false;
+      gameEndedAtTable = false;
       currentSeatId = null;
       gameCardIds = [];
       resetAll();
@@ -515,6 +568,8 @@ export function createSkillAssistStore(
     const splits = solveYanjiao(cardIds.map((cardId) => cardRankNumber(cardId, gameCardCatalog)));
     pin(runtime);
     setOptions(runtime, splits.map((split) => `${formatRanks(split.left)}=${formatRanks(split.right)}`));
+    runtime.yanjiaoSplits = splits;
+    runtime.assignable = splits.length > 0 && isControlledSeat(event.seatId) && Boolean(actions.assignYanjiao);
     runtime.resultText = splits.length ? null : '【严教】无解！';
   }
 
@@ -775,7 +830,8 @@ function sameSnapshot(
       && sameList(panel.resultOptions, other.resultOptions)
       && sameList(panel.highlightedOptions, other.highlightedOptions)
       && sameList(panel.suitTokens, other.suitTokens)
-      && sameList(panel.cardIds, other.cardIds);
+      && sameList(panel.cardIds, other.cardIds)
+      && panel.assignable === other.assignable;
   });
 }
 

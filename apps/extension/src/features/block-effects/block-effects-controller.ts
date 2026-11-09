@@ -10,10 +10,8 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import {
-  createMethodPatcher,
-  type PatchableFunction
-} from '../../runtime/method-patch.ts';
+import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
 import { isBackgroundUiScene } from '../skin-background/skin-runtime.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
 import { applyBlockMessageFilters, shouldDropNoticeProtocol } from './block-message-filters.ts';
@@ -32,6 +30,11 @@ import {
   type EffectResourceFlags
 } from './effect-resource-filter.ts';
 import { classifyPlayback, kindFromCard, type PlaybackKind } from './effect-playback.ts';
+import { createProbWindowBlock } from './prob-window-block.ts';
+import {
+  PROB_WINDOW_INSTALL_INTERVAL_MS,
+  PROB_WINDOW_INSTALL_RETRIES
+} from '../../const/prob-window-block.ts';
 import {
   isLobbyAdPushWindowName,
   LOBBY_AD_PUSH_WINDOW_NAMES,
@@ -68,7 +71,6 @@ const SELF_GENERAL_KEYS = ['generalIds', 'GeneralIds', 'WuJiangs', 'generals'];
 
 /** 显示后需要处理的窗口及其对应开关；未开启时不轮询窗口。 */
 const SHOWN_WINDOW_SWITCHES: Record<string, BlockSettingKey> = {
-  GetPropSpecialWindow: 'block.probWindow',
   AdPushWindow: 'block.adWindow',
   RogueLike1v1ZhanJiWindow: 'block.mvpWindow',
   GameResultWindow: 'block.mvpWindow',
@@ -136,6 +138,12 @@ export function installBlockEffectsController(
   }
 
   const isOn = (key: BlockSettingKey) => configStore.get(key) === true;
+  const probWindowBlock = createProbWindowBlock({
+    locator,
+    patcher,
+    globalObject,
+    enabled: () => isOn('block.probWindow')
+  });
   const resourceFlags = (): EffectResourceFlags => ({
     sha: isOn('block.shaEffect'),
     shan: isOn('block.shanEffect'),
@@ -394,10 +402,6 @@ export function installBlockEffectsController(
       return;
     }
     switch (name) {
-      case 'GetPropSpecialWindow':
-        callMethod(win, 'Hide');
-        callMethod(win, 'Close');
-        break;
       case 'RogueLike1v1ZhanJiWindow':
         callMethod(win, 'onClickClose');
         break;
@@ -431,22 +435,31 @@ export function installBlockEffectsController(
       return original.apply(this, args);
     });
 
+    void poll(() => probWindowBlock.install() === 0, PROB_WINDOW_INSTALL_RETRIES, PROB_WINDOW_INSTALL_INTERVAL_MS);
+
     const dispatcher = await poll(() => locator.dispatcher());
-    if (dispatcher) {
-      const showWindowHook = (original: PatchableFunction) => function (this: unknown, windowName: unknown, ...rest: unknown[]) {
-        const result = original.call(this, windowName, ...rest);
-        if (typeof windowName === 'string' && isOn('block.adWindow') && isLobbyAdPushWindowName(windowName)) {
-          later(() => closeBySwitch('block.adWindow'));
-        }
-        if (typeof windowName === 'string' && SHOWN_WINDOW_SWITCHES[windowName]) {
-          later(() => void handleShownWindow(windowName));
-        }
-        return result;
-      };
-      for (const showWindowName of locator.listShowWindowMethodNames(dispatcher)) {
-        if (patcher.isWrapped(dispatcher, showWindowName)) continue;
-        patcher.wrap(dispatcher, showWindowName, showWindowHook);
+    if (disposed || typeof dispatcher?.on !== 'function') return;
+    // 打开窗口的方法会被多个功能各自包装，后包的会顶掉先包的，所以这里只监听开窗事件。
+    const onOpenWindow = (event: unknown) => {
+      const windowName = asRecord(event)?.WindowName;
+      if (typeof windowName !== 'string') return;
+      if (probWindowBlock.isProbWindow(windowName)) probWindowBlock.install();
+      if (isOn('block.adWindow') && isLobbyAdPushWindowName(windowName)) {
+        later(() => closeBySwitch('block.adWindow'));
       }
+      if (SHOWN_WINDOW_SWITCHES[windowName]) later(() => void handleShownWindow(windowName));
+    };
+    try {
+      (dispatcher.on as (...args: unknown[]) => void).call(dispatcher, OPEN_WINDOW_EVENT, null, onOpenWindow);
+      cleanups.push(() => {
+        try {
+          (dispatcher.off as (...args: unknown[]) => void).call(dispatcher, OPEN_WINDOW_EVENT, null, onOpenWindow);
+        } catch {
+          // 分发器已销毁时忽略。
+        }
+      });
+    } catch {
+      // 分发器不支持监听时不屏蔽开窗类弹窗。
     }
   }
 
@@ -1595,7 +1608,8 @@ export function installBlockEffectsController(
   }, Infinity, 1000).then((ready) => {
     if (!ready) return;
     installResourceRequestFilter();
-    void ensureMarqueeBlockInstalled().then(() => {
+    // 跑马灯装失败也要继续装其余屏蔽，否则开包、弹窗屏蔽全都不生效。
+    void ensureMarqueeBlockInstalled().catch(() => undefined).then(() => {
       if (isOn('block.noticeWindow')) applyNoticeBlockState();
       installLaoXianBlock();
       const installers = [

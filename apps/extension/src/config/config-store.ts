@@ -42,7 +42,7 @@ export interface XiaochaoConfigStore {
   ): () => void;
   snapshot(): XiaochaoConfig;
   resetAll(): void;
-  /** 登录态变化时切换账号配置桶；default→新账号且尚无文档时先落盘当前值。 */
+  /** 游戏账号变化时切换到该账号自己的配置。 */
   syncAccount(): void;
 }
 
@@ -76,10 +76,7 @@ export function createConfigStore(
     if (nextAccount === accountId) return;
     const previousAccount = accountId;
     accountId = nextAccount;
-    // 未登录阶段改过的开关，首次登录且该账号尚无文档时一并带过去
-    if (previousAccount === 'default' && !storage.hasAccount(nextAccount)) {
-      storage.write(values);
-    }
+    // 换账号只读新账号自己的配置，前一个账号或登录前的值都不带过去。
     const previousValues = values;
     values = storage.read();
     publish(previousValues, values);
