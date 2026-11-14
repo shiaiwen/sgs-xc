@@ -5,6 +5,7 @@
 import type { SeatStateStore } from './seat-state-store.ts';
 import { locateGameScene, type GameRuntimeWindow } from './game-scene-locator.ts';
 import { readSeatStateFromGameScene } from './seat-game-adapter.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 
 export interface SeatStateControllerOptions {
   pollIntervalMs?: number;
@@ -42,12 +43,12 @@ export function installSeatStateController(
     store.replace(next);
   };
   refresh();
-  const intervalId = globalObject.setInterval(refresh, pollIntervalMs);
+  const stopPolling = everyInterval('座位状态', pollIntervalMs, refresh, {}, globalObject);
 
   return () => {
     if (stopped) return;
     stopped = true;
-    globalObject.clearInterval(intervalId);
+    stopPolling();
     store.clear();
   };
 }

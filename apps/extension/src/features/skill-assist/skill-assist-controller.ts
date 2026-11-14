@@ -6,6 +6,8 @@ import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import type { GameSceneSeatSource } from '../seat-display/seat-game-adapter.ts';
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { SkillAssistStore } from './skill-assist-store.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { SKILL_ASSIST_REFRESH_MS } from '../../const/poll-intervals.ts';
 
 export interface SkillAssistControllerOptions {
   pollIntervalMs?: number;
@@ -40,11 +42,11 @@ export function installSkillAssistController(
     }
   });
   refresh();
-  const intervalId = globalObject.setInterval(refresh, 1000);
+  const stopRefreshing = everyInterval('技能辅助', SKILL_ASSIST_REFRESH_MS, refresh, {}, globalObject);
   return () => {
     if (stopped) return;
     stopped = true;
     unsubscribe();
-    globalObject.clearInterval(intervalId);
+    stopRefreshing();
   };
 }

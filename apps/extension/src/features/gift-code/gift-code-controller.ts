@@ -9,6 +9,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { createTaskScope } from '../skin-background/skin-runtime.ts';
 import { createAutoTaskWindows } from '../auto-task/auto-task-windows.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
@@ -140,12 +141,12 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
   const loginDelayMs = options.loginDelayMs ?? LOGIN_DELAY_MS;
   const exchangeIntervalMs = options.exchangeIntervalMs ?? EXCHANGE_INTERVAL_MS;
-  const tasks = createTaskScope();
+  const tasks = createTaskScope('礼包码');
   const windows = createAutoTaskWindows(globalObject, locator, tasks);
   const seenAt = new Map<string, number>();
   const finished = new Set<string>();
   const startedAt = Date.now();
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let stopPolling: (() => void) | null = null;
   let runningId = '';
   let missingAccountLogged = false;
   // 每次都重新读。换号登录后要立刻换成新账号的兑换记录。
@@ -251,11 +252,11 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   }
 
   scheduleCurrentAccount();
-  pollTimer = setInterval(scheduleCurrentAccount, ACCOUNT_POLL_MS * 2);
+  stopPolling = everyInterval(tasks.label, ACCOUNT_POLL_MS * 2, scheduleCurrentAccount);
 
   return () => {
-    if (pollTimer != null) clearInterval(pollTimer);
-    pollTimer = null;
+    stopPolling?.();
+    stopPolling = null;
     windows.dispose();
     tasks.dispose();
   };

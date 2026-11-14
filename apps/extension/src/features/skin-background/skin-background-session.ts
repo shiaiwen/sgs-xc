@@ -6,7 +6,7 @@
 import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import { readSeatStateFromGameScene } from '../seat-display/seat-game-adapter.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
-import { PAPER_HOME_SCENE_NAMES } from '../../const/paper-all-paper-scene.ts';
+import { PAPER_HOME_SCENE_NAMES, PAPER_MATCH_SCENE_CLASS_NAME } from '../../const/paper-all-paper-scene.ts';
 import { isBackgroundUiScene } from './skin-runtime.ts';
 
 /** 山河图等小地图：无座位 UI，不能按是否已开局来挡背景。 */
@@ -16,6 +16,14 @@ const MAP_SCENE_NAMES = ['RogueLikeBigMapScene', 'RogueSmallMapScene'];
 export function isPaperUiScene(locator: LayaObjectLocator, globalObject: LayaRuntimeWindow): boolean {
   if (isBackgroundUiScene(locator, globalObject)) return true;
   return PAPER_HOME_SCENE_NAMES.includes(String(locator.scene()?.SceneName ?? ''));
+}
+
+/** 游戏要切去的页面是不是牌局。游戏按类名建页面，类表里查不到时当作不是牌局。 */
+export function isMatchSceneName(locator: LayaObjectLocator, sceneName: string): boolean {
+  const matchScene = locator.classPrototype(PAPER_MATCH_SCENE_CLASS_NAME);
+  const target = locator.classPrototype(sceneName);
+  if (!matchScene || !target) return false;
+  return target === matchScene || Object.prototype.isPrototypeOf.call(matchScene, target);
 }
 
 /** 开关打开，并且当前已经在大厅或牌局里，才允许盖上自己的背景。 */

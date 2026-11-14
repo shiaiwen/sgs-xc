@@ -64,15 +64,6 @@ export function resolveHallCoverPlacement(input: {
   return HALL_COVER_PLACE_BEHIND_SCENE;
 }
 
-/** 全局背景关着时，已存的图只留在牌局里。首页、房间列表和别的页面不铺。 */
-export function shouldApplyCustomBackgroundOnPage(input: {
-  inMatch: boolean;
-  globalBackgroundOn: boolean;
-}): boolean {
-  if (input.inMatch) return true;
-  return input.globalBackgroundOn === true;
-}
-
 /** 顶栏返回按钮的构造器再往上两层，才是能后画的精灵。 */
 export const HALL_FLAT_SPRITE_PROTOTYPE_HOPS = 2;
 

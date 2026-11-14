@@ -7,6 +7,8 @@
  */
 
 import { createLayaObjectLocator } from './laya-object-locator.ts';
+import { everyInterval } from '../runtime/shared-ticker.ts';
+import { PROTOCOL_HOOK_SCAN_MS } from '../const/poll-intervals.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -29,7 +31,7 @@ export interface ProtocolEventHookDiagnostics {
 const hookedEventTargets = new WeakSet<UnknownRecord>();
 
 /**
- * 安装协议钩子。管理器可能晚于脚本出现，故每 300ms 扫一次；
+ * 安装协议钩子。管理器可能晚于脚本出现，故定时补扫；
  * restore() 只清定时器，不拆已挂的 getter（页面卸载后无意义）。
  */
 export function installProtocolEventHooks(
@@ -50,10 +52,10 @@ export function installProtocolEventHooks(
   }
 
   scan();
-  const timer = setInterval(scan, 300);
+  const stopScanning = everyInterval('协议钩子', PROTOCOL_HOOK_SCAN_MS, scan);
   return {
     restore() {
-      clearInterval(timer);
+      stopScanning();
     },
     diagnostics
   };

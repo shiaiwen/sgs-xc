@@ -16,7 +16,7 @@ export interface BackgroundDisplayReadyInput {
   effectDrawn: boolean;
 }
 
-/** 自定义背景已能遮住官方底图时才返回 true，避免仅填了地址就藏底图导致黑屏。 */
+/** 小抄背景已能遮住官方底图时才返回 true，避免仅填了地址就藏底图导致黑屏。 */
 export function isBackgroundDisplayReady(input: BackgroundDisplayReadyInput): boolean {
   const typeNum = Number(input.type) || BACKGROUND_RESOURCE_TYPE_IMAGE;
   if (typeNum === BACKGROUND_RESOURCE_TYPE_IMAGE) {

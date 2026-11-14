@@ -7,6 +7,9 @@
  */
 
 import { createLifecycle } from '../runtime/lifecycle.js';
+import { installStallMonitor } from '../runtime/perf-monitor';
+import { everyInterval } from '../runtime/shared-ticker';
+import { ACCOUNT_SESSION_SYNC_MS } from '../const/poll-intervals';
 import {
   getMissingGameRuntimeDependencies,
   installRuntimeBridge,
@@ -27,6 +30,7 @@ import {
 } from '../ui/mount-xiaochao-app';
 import { createConfigStore } from '../config/config-store';
 import { createPlatformConfigStorage, currentConfigAccount, NO_CONFIG_ACCOUNT } from '../config/config-storage';
+import { startAccountConfigSync } from '../config/account-config-sync';
 import { ACCOUNT_ID_WAIT_MS } from '../const/panel-startup';
 import { installSeatDisplayVisibility } from '../features/seat-display/seat-display-visibility';
 import { createSeatStateStore } from '../features/seat-display/seat-state-store';
@@ -105,6 +109,14 @@ function bindPanelStartupStatus(globalObject: Record<string, unknown>): Record<s
   return panelStartupStatus;
 }
 
+function pageStorage(): Storage | undefined {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 核心装好后对外暴露的面板挂载 / 会话同步句柄。 */
 interface XiaochaoCoreRuntime {
   mountPanelShell(layout?: XiaochaoPanelLayout): ReturnType<typeof mountXiaochaoApp> | undefined;
@@ -133,9 +145,12 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
   bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
+  lifecycle.register(installStallMonitor(window));
   // popup protector：只卸旧守卫；技能 tip 停驻等进大厅后再挂，避免登录初始化链被打断
   lifecycle.register(installGameNativePopupProtector(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
+  const accountConfigSync = startAccountConfigSync({ configStore, storage: pageStorage() });
+  lifecycle.register(() => accountConfigSync.dispose());
   const startupStatus = bindPanelStartupStatus(bootBag);
   installSkinTraceConsoleBridge(bootBag);
   startupStatus.state = 'starting';
@@ -158,11 +173,12 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   };
 
   /**
-   * 每秒轮询：同步登录账号配置。
+   * 每秒轮询：同步登录账号配置，读到新账号时从服务器取一次这个账号的开关和背景。
    * 官网和登录页没有游戏运行时，先不启动功能、也不挂面板。进了游戏再挂。
    */
   const syncAccountSession = () => {
     configStore.syncAccount();
+    accountConfigSync.checkAccount();
     const missing = probeRuntimeReady();
     startupStatus.missing = missing;
     if (missing.length > 0) {
@@ -216,8 +232,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     mountPanelShell: () => core?.mountPanelShell()
   });
 
-  const sessionTimer = window.setInterval(syncAccountSession, 1000);
-  lifecycle.register(() => window.clearInterval(sessionTimer));
+  lifecycle.register(everyInterval('账号同步', ACCOUNT_SESSION_SYNC_MS, syncAccountSession));
   syncAccountSession();
 
   void waitForGameRuntime({

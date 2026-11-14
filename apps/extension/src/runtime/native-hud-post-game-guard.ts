@@ -18,6 +18,11 @@ import {
 } from './laya-display-node.ts';
 import { isBackgroundUiScene } from '../features/skin-background/skin-runtime.ts';
 import { createMethodPatcher } from './method-patch.ts';
+import { measureXiaochao } from './perf-monitor.ts';
+import { everyInterval } from './shared-ticker.ts';
+import { POST_GAME_GUARD_POLL_MS } from '../const/poll-intervals.ts';
+
+const POST_GAME_GUARD_LABEL = '局后界面保护';
 
 const SETTLEMENT_WINDOW_NAMES = [
   'GameResultWindow',
@@ -205,7 +210,6 @@ export function installNativeHudPostGameGuard(
   gameEvents: GameEventBus,
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): () => void {
-  const pollMs = 1000;
   const patcher = createMethodPatcher();
   const locator = createLayaObjectLocator(globalObject);
   let sceneHookReady = false;
@@ -216,8 +220,10 @@ export function installNativeHudPostGameGuard(
     sceneHookReady = patcher.wrap(manager, 'executeSwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
       sceneLeaving = true;
       try {
-        scrubInvalidDisplayChildren(manager.CurrentScene);
-        scrubInvalidDisplayChildren(asRecord(globalObject.Laya)?.stage);
+        measureXiaochao(POST_GAME_GUARD_LABEL, () => {
+          scrubInvalidDisplayChildren(manager.CurrentScene);
+          scrubInvalidDisplayChildren(asRecord(globalObject.Laya)?.stage);
+        });
         return original.apply(this, args);
       } finally {
         sceneLeaving = false;
@@ -240,11 +246,11 @@ export function installNativeHudPostGameGuard(
     if (event.type === 'game-ended') noteSuspended(true, globalObject);
     if (event.type === 'game-started') suspended = false;
   });
-  const timer = globalObject.setInterval(onPoll, pollMs);
+  const stopPolling = everyInterval(POST_GAME_GUARD_LABEL, POST_GAME_GUARD_POLL_MS, onPoll, {}, globalObject);
   onPoll();
   return () => {
     stopEvents();
-    globalObject.clearInterval(timer);
+    stopPolling();
     patcher.restoreAll();
     suspended = false;
   };

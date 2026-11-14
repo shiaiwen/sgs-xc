@@ -4,6 +4,8 @@
 
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { CARD_LABEL_REFRESH_MS } from '../../const/poll-intervals.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -34,11 +36,11 @@ export function installCardLabelController(
     refresh();
   });
   refresh();
-  const intervalId = globalObject.setInterval(refresh, 2000);
+  const stopRefreshing = everyInterval('卡牌标签', CARD_LABEL_REFRESH_MS, refresh, {}, globalObject);
 
   return () => {
     unsubscribe();
-    globalObject.clearInterval(intervalId);
+    stopRefreshing();
     for (const patch of patches) {
       const current = Object.getOwnPropertyDescriptor(patch.prototype, 'AddCardTag');
       if (current?.value !== patch.patchedMethod) continue;

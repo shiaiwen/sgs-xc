@@ -27,7 +27,6 @@ import SkinBackgroundSettingsSection from './settings/SkinBackgroundSettingsSect
 import AutoTaskSettingsSection from './settings/AutoTaskSettingsSection.vue';
 import ShanhetuSettingsSection from './settings/ShanhetuSettingsSection.vue';
 import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue';
-import CustomBackgroundSection from './settings/CustomBackgroundSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import VersionNoticeSection from './settings/VersionNoticeSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -55,6 +54,14 @@ import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
 import type { XiaochaoPanelLayout } from './mount-xiaochao-app';
 import { showToast } from './toast/show-toast';
+import { resetXiaochaoUserData } from '../core/reset-xiaochao-user-data';
+import {
+  RESET_DONE_RELOAD_DELAY_MS,
+  RESET_DONE_TOAST_MS,
+  RESET_ERROR_TOAST_MS,
+  RESET_SERVER_FAILED_RELOAD_DELAY_MS,
+  RESET_SERVER_FAILED_TOAST_MS
+} from '../const/reset-xiaochao';
 import { createElectronPlatform } from '../adapters/electron-platform';
 import { createUserscriptPlatform } from '../adapters/userscript-platform';
 import { constrainPanelPosition, hasExceededDragThreshold, shouldDockToRight } from './panel/panel-drag';
@@ -227,13 +234,17 @@ function toggleCollapsed(): void {
 
 async function resetXiaochaoConfig(): Promise<void> {
   try {
-    const { resetXiaochaoUserData } = await import('../core/reset-xiaochao-user-data');
-    await resetXiaochaoUserData(props.configStore);
-    showToast('小抄本地数据已清除，正在刷新页面', 'success', 1800);
-    window.setTimeout(() => window.location.reload(), 600);
+    const { serverCleared } = await resetXiaochaoUserData(props.configStore);
+    if (serverCleared) {
+      showToast('小抄数据已清除，正在刷新页面', 'success', RESET_DONE_TOAST_MS);
+      window.setTimeout(() => window.location.reload(), RESET_DONE_RELOAD_DELAY_MS);
+    } else {
+      showToast('本机数据已清除，服务器上的配置没清掉，刷新后会读回来，联网后再重置一次', 'error', RESET_SERVER_FAILED_TOAST_MS);
+      window.setTimeout(() => window.location.reload(), RESET_SERVER_FAILED_RELOAD_DELAY_MS);
+    }
   } catch (error) {
     console.warn('[reset-xiaochao] 清除配置失败:', error);
-    showToast('清除配置失败，请查看控制台', 'error', 4000);
+    showToast('清除配置失败，请查看控制台', 'error', RESET_ERROR_TOAST_MS);
   } finally {
     isResetDialogOpen.value = false;
   }
@@ -689,7 +700,6 @@ function handleResizeStart(event: PointerEvent): void {
         <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">
           <VersionNoticeSection :update-notice-controller="updateNoticeController" />
           <GuanxingEntry :platform="platform" />
-          <CustomBackgroundSection />
           <button
             type="button"
             class="xiaochao-block-entry xiaochao-block-entry--center"
@@ -744,7 +754,7 @@ function handleResizeStart(event: PointerEvent): void {
     dialog-class="xiaochao-reset-dialog"
     @close="isResetDialogOpen = false"
   >
-    <p>将清除本页小抄全部本地数据：开关、皮肤与背景、自定义上传图、记住的登录账号等。微端与浏览器各自一份，在哪用就在哪重置。无法撤销。</p>
+    <p>将清除小抄的开关、皮肤与背景、上传的背景图片和视频、记住的登录账号等。当前游戏账号的开关、皮肤和背景选择存在服务器上，微端和浏览器共用，会一起清掉；上传的图片视频和记住的登录账号只清这台设备上的。无法撤销。</p>
     <template #footer>
       <button type="button" class="xiaochao-reset-dialog__cancel" @click="isResetDialogOpen = false">取消</button>
       <button type="button" class="xiaochao-reset-dialog__confirm" @click="resetXiaochaoConfig">清除并重载</button>

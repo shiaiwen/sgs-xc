@@ -10,8 +10,13 @@ import {
 } from '../../adapters/laya-object-locator.ts';
 import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import {
+  GENERAL_SKIN_QUERY_BY_PLAYER,
+  GENERAL_SKIN_QUERY_BY_SEAT
+} from '../../const/general-skin-protocol.ts';
 import {
   LEGACY_LOCAL_SKINS_STORAGE_KEY,
   LOCAL_SKINS_STORAGE_KEY
@@ -20,10 +25,14 @@ import {
   OTHER_SKIN_BUTTON_FALLBACK_WIDTH,
   OTHER_SKIN_BUTTON_X
 } from '../../const/other-skin-button.ts';
+import { SKIN_CHOICE_ACCOUNT_CHECK_MS } from '../../const/poll-intervals.ts';
 import {
   asRecord,
   callMethod,
   createTaskScope,
+  currentGameAccountId,
+  generalSkinMessage,
+  isOwnSkinMessage,
   prototypeOf,
   accountScopedStorageKey,
   readJson,
@@ -31,6 +40,7 @@ import {
   seatGeneral,
   seatHoldsGeneral,
   skinTrace,
+  storageKeyForAccount,
   supportsDynamicSkin,
   isBackgroundUiScene,
   watchSceneSwitch,
@@ -41,10 +51,12 @@ import {
 } from './skin-runtime.ts';
 import { isOtherLocalSkinActive } from './skin-other-local-guards.ts';
 import { hookMethodOntoEachInstance } from './skin-background-instance-method.ts';
+import { createSkinChoiceSync, type SavedSkinChoices } from './skin-choice-sync.ts';
 const SKIN_WINDOWS = ['ChangeSkinWindow', 'SelectSkinWindow'] as const;
 /** 未拥有皮肤项上表示限时、合成等状态的节点，本地解锁后隐藏。 */
 const LOCKED_ITEM_NODES = ['timeBg', 'composeBg', 'composeIcon', 'composeTxt1', 'composeTxt2', 'composeTxt', 'timeLimiteTxt'];
-const SELF_GENERAL_KEYS = ['generalIds', 'GeneralIds', 'WuJiangs', 'generals'];
+/** 游戏查询座位正在用的皮肤时的两种回包。官方窗口里换上已拥有皮肤的回包不在其中。 */
+const SKIN_QUERY_TYPES: readonly number[] = [GENERAL_SKIN_QUERY_BY_PLAYER, GENERAL_SKIN_QUERY_BY_SEAT];
 const OTHER_BIND_DELAYS = [0, 50, 200, 600, 1500];
 const SELF_SKIN_APPLY_DELAYS = [0, 80, 250, 600, 1200];
 const HP_REPAINT_DELAYS = [0, 80, 250, 600, 1200, 2000, 3500];
@@ -106,7 +118,7 @@ export interface SkinChangeOptions {
 /**
  * 皮肤解锁与他人换肤。
  * 两者共用换肤窗口：未拥有的皮肤显示为可选，确认时只在本地调用座位的
- * SetGeneralSkin；自己的选择按武将保存，开局时改写服务器下发的皮肤。
+ * SetGeneralSkin；自己的选择按武将保存并传到服务器，开局时改写服务器下发的皮肤。
  */
 export function installSkinChangeController(
   configStore: XiaochaoConfigStore,
@@ -119,7 +131,7 @@ export function installSkinChangeController(
   const storage = options.storage ?? globalObject.localStorage;
   const patcher = createMethodPatcher();
   const pickerMethodUnhooks: Array<() => void> = [];
-  const tasks = createTaskScope();
+  const tasks = createTaskScope('换肤');
   const unsubscribes: Array<() => void> = [];
 
   const itemStates = new WeakMap<object, ItemOriginalState>();
@@ -150,51 +162,54 @@ export function installSkinChangeController(
 
   // ---------- 自己的皮肤选择 ----------
 
-  function skinsKey(): string {
-    return accountScopedStorageKey(LOCAL_SKINS_STORAGE_KEY, storage);
+  function skinsKey(account?: string): string {
+    return account
+      ? storageKeyForAccount(LOCAL_SKINS_STORAGE_KEY, account)
+      : accountScopedStorageKey(LOCAL_SKINS_STORAGE_KEY, storage);
   }
 
-  function migrateLegacySavedSkins(key: string): Record<string, SavedSkin> | null {
+  function migrateLegacySavedSkins(key: string): SavedSkinChoices | null {
     for (const legacyKey of [LOCAL_SKINS_STORAGE_KEY, LEGACY_LOCAL_SKINS_STORAGE_KEY]) {
       const legacy = readJson<unknown>(storage, legacyKey, null);
       if (!legacy || typeof legacy !== 'object') continue;
       writeJson(storage, key, legacy);
       removeStored(storage, legacyKey);
-      return legacy as Record<string, SavedSkin>;
+      return legacy as SavedSkinChoices;
     }
     return null;
   }
 
-  function savedSkins(): Record<string, SavedSkin> {
-    const key = skinsKey();
+  function savedSkins(account?: string): SavedSkinChoices {
+    const key = skinsKey(account);
     const current = readJson<unknown>(storage, key, null);
-    if (current && typeof current === 'object') return current as Record<string, SavedSkin>;
+    if (current && typeof current === 'object') return current as SavedSkinChoices;
     return migrateLegacySavedSkins(key) ?? {};
   }
 
-  function savedSkin(generalID: unknown): SavedSkin | null {
-    const saved = savedSkins()[String(Number(generalID))];
+  function savedSkin(generalID: unknown, skins: SavedSkinChoices = savedSkins()): SavedSkin | null {
+    const saved = skins[String(Number(generalID))];
     return saved && Number(saved.skinID) >= 0 ? { skinID: Number(saved.skinID), isDynamic: saved.isDynamic !== false } : null;
   }
 
   function saveSkin(generalID: number, skinID: number, isDynamic: boolean): void {
     if (!(generalID > 0)) return;
-    writeJson(storage, skinsKey(), { ...savedSkins(), [generalID]: { skinID, isDynamic } });
+    writeJson(storage, skinsKey(), { ...savedSkins(), [generalID]: { skinID, isDynamic, savedAt: Date.now() } });
+    choiceSync.schedulePush(currentGameAccountId());
   }
+
+  const choiceSync = createSkinChoiceSync({
+    accountId: currentGameAccountId,
+    enabled: localOn,
+    read: (account) => savedSkins(account),
+    write: (account, choices) => writeJson(storage, skinsKey(account), choices),
+    onLocalUpdated: () => {
+      if (locator.gameScene()) scheduleApplySavedSkinsForSelf();
+    }
+  });
 
   function selfSeat(): UnknownRecord | null {
     const seat = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat);
     return typeof seat?.SetGeneralSkin === 'function' ? seat : null;
-  }
-
-  function isOwnGeneral(generalID: number): boolean {
-    if (!Number.isFinite(generalID)) return false;
-    const seat = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat);
-    for (const key of SELF_GENERAL_KEYS) {
-      const ids = seat?.[key];
-      if (Array.isArray(ids)) return ids.some((id) => Number(id) === generalID);
-    }
-    return false;
   }
 
   function seatIndexOf(seat: UnknownRecord): number | null {
@@ -386,28 +401,37 @@ export function installSkinChangeController(
     HP_SYNC_DELAYS.forEach((delay) => tasks.later(run, delay));
   }
 
+  /**
+   * 选将亮出武将和开局时，游戏都会查一次自己座位正在用的皮肤。
+   * 把回包改成本地保存的选择，武将一出来就是选好的皮肤，不用再开换肤窗。
+   */
   function filterMessage(payload: UnknownRecord, className: string): void {
-    if (className !== 'ClientGeneralSkinRep' || !localOn()) return;
-    const list = payload.GeneralSkinList;
-    if (!Array.isArray(list)) return;
-    for (const entry of list) {
+    if (className !== 'ClientGeneralSkinRep' || !localOn() || !locator.gameScene()) return;
+    const message = generalSkinMessage(payload);
+    if (!message || !SKIN_QUERY_TYPES.includes(Number(message.Type))) return;
+    if (!isOwnSkinMessage(locator, message)) return;
+    const skins = savedSkins();
+    for (const entry of message.GeneralSkinList as unknown[]) {
       const skin = asRecord(entry);
-      if (!skin || !isOwnGeneral(Number(skin.GeneralID))) continue;
+      if (!skin) continue;
       skin.state = 1;
-      const saved = savedSkin(skin.GeneralID);
+      const saved = savedSkin(skin.GeneralID, skins);
       if (!saved) continue;
+      // 形态是官方那款皮肤的，换成别的皮肤后从第一形态开始。
+      if (Number(skin.SkinID) !== saved.skinID) skin.skin_type = 0;
       skin.SkinID = saved.skinID;
       skin.state = saved.isDynamic ? 1 : 0;
     }
   }
 
-  /** 在自己座位上本地应用皮肤。 */
-  function applyToSelfSeat(generalID: number, skinID: number, isDynamic: boolean): boolean {
+  /** 在自己座位上本地应用皮肤。onlyIfDifferent 为 true 时，座位上已是这款就不重套，免得动态皮重新加载。 */
+  function applyToSelfSeat(generalID: number, skinID: number, isDynamic: boolean, onlyIfDifferent = false): boolean {
     const seat = selfSeat();
     if (!seat || !(generalID > 0)) return false;
     for (const isZhu of [true, false]) {
       const info = seatGeneral(seat, isZhu);
       if (!info || !seatHoldsGeneral(seat, info, generalID)) continue;
+      if (onlyIfDifferent && info.skinID === skinID && info.isDynamic === isDynamic) return true;
       applySkin(seat, generalID, skinID, isDynamic, info.skinType);
       return true;
     }
@@ -446,9 +470,9 @@ export function installSkinChangeController(
     return Number(view.defaultGeneralID ?? view.realGeneralID ?? view.generalID);
   }
 
+  /** 给别人换肤的窗口不套自己保存的选择。 */
   function activeSavedSkinForPicker(view: UnknownRecord): SavedSkin | null {
-    const generalID = pickerGeneralId(view);
-    return localOn() && isOwnGeneral(generalID) ? savedSkin(generalID) : null;
+    return localOn() && !sessionFor(view) ? savedSkin(pickerGeneralId(view)) : null;
   }
 
   /** 列表解锁后会把 isUsing 清掉，这里把当前应选中的皮肤项标回去。 */
@@ -1172,36 +1196,30 @@ export function installSkinChangeController(
       if (unhook) pickerMethodUnhooks.push(unhook);
     };
     hook('initUsingSKinID', (original) => function (this: UnknownRecord, generalID: unknown, ...rest: unknown[]) {
-      const session = sessionFor(this, Number(generalID));
-      const saved = localOn() && isOwnGeneral(Number(generalID)) ? savedSkin(generalID) : null;
+      const found = sessionFor(this, Number(generalID));
+      const session = found && Number(generalID) === found.generalID ? found : null;
+      const saved = localOn() && !session ? savedSkin(generalID) : null;
       const result = original.call(this, generalID, ...rest);
-      if (session && Number(generalID) === session.generalID && sessionValid(session)) {
+      if (sessionValid(session)) {
         bindSession(this, session);
         if (openingSession === session) openingSession = null;
         return result;
       }
-      if (session && Number(generalID) === session.generalID) {
-        sessionByView.set(this, session);
-      }
+      if (session) sessionByView.set(this, session);
       if (!(Number(this.usingSkinID) > 0)) {
         const manager = locator.manager('GeneralSkinManager');
         const using = callMethod(manager, 'GetSelfUsingSkinID', generalID);
         if (using !== undefined) this.usingSkinID = using;
       }
+      // 游戏接着会按这里的皮肤重建列表并重画，列表里的选中项由打开窗口后的解锁再标一遍。
       if (saved) {
         this.usingSkinID = saved.skinID;
         this.closeSelectSkinId = saved.skinID;
         if ('usingDynamicState' in this) this.usingDynamicState = saved.isDynamic ? 1 : 0;
         try {
-          applyToSelfSeat(Number(generalID), saved.skinID, saved.isDynamic);
+          applyToSelfSeat(Number(generalID), saved.skinID, saved.isDynamic, true);
         } catch (error) {
           console.warn('[皮肤解锁] 换肤窗初始化套用本地皮肤失败:', error);
-        }
-        syncPickerUsingState(this);
-        try {
-          callMethod(this, 'updateContent');
-        } catch {
-          // 列表尚未就绪时忽略。
         }
       }
       return result;
@@ -1266,11 +1284,14 @@ export function installSkinChangeController(
     configStore.subscribe('skin.localSkin', () => {
       syncOpenWindows();
       scheduleApplySavedSkinsForSelf();
+      choiceSync.checkAccount();
     }),
     configStore.subscribe('skin.otherLocalSkin', () => {
       syncGameScene();
       if (otherOn()) waitForSeats();
-    })
+    }),
+    everyInterval(tasks.label, SKIN_CHOICE_ACCOUNT_CHECK_MS, () => choiceSync.checkAccount()),
+    () => choiceSync.dispose()
   );
 
   watchWindowShow(locator, patcher, tasks, SKIN_WINDOWS, onSkinWindowShown, globalObject);

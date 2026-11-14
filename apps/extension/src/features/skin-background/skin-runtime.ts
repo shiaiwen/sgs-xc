@@ -18,8 +18,10 @@ import {
   WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY
 } from '../../const/wallpaper-menu.ts';
 import type { MethodPatcher } from '../../runtime/method-patch.ts';
+import { measureXiaochao } from '../../runtime/perf-monitor.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import { ACCOUNT_STORAGE_KEY_MAX_LENGTH } from '../../const/account-storage.ts';
+import { GENERAL_SKIN_QUERY_BY_SEAT } from '../../const/general-skin-protocol.ts';
 
 export type UnknownRecord = Record<string, unknown>;
 
@@ -233,8 +235,12 @@ export function safeAccountKeyPart(account: string): string {
 
 /** 配置项按当前游戏账号分开存。账号还没有时用 default。 */
 export function accountScopedStorageKey(base: string, _storage?: unknown): string {
-  const safe = safeAccountKeyPart(accountStorageKey()) || 'default';
-  return `${base}::${safe}`;
+  return storageKeyForAccount(base, accountStorageKey());
+}
+
+/** 指定账号的存储键。请求回来时账号可能已经换了，写回要用发请求时的那个账号。 */
+export function storageKeyForAccount(base: string, account: string): string {
+  return `${base}::${safeAccountKeyPart(account) || 'default'}`;
 }
 
 /** 游戏账号还没取到时返回空。身份锁定和明牌不能落到 default。 */
@@ -247,20 +253,28 @@ export function loggedInAccountStorageKey(base: string, _storage?: unknown): str
 /** 定时任务作用域：控制器销毁后所有回调自动失效。 */
 export interface TaskScope {
   readonly disposed: boolean;
+  /** 卡顿记录里这个功能的名字；为空时不计时。 */
+  readonly label: string;
   later(callback: () => void, delay: number): void;
   poll<T>(probe: () => T | null | undefined | false, retries: number, interval: number): Promise<T | null>;
   dispose(): void;
 }
 
-/** 创建可取消的延时任务范围。 */
-export function createTaskScope(): TaskScope {
+/** 名字不为空时计入卡顿记录。 */
+function runMeasured(label: string, run: () => void): void {
+  if (label) measureXiaochao(label, run);
+  else run();
+}
+
+/** 创建可取消的延时任务范围。传了名字时，回调计入卡顿记录。 */
+export function createTaskScope(label = ''): TaskScope {
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let disposed = false;
 
   function later(callback: () => void, delay: number): void {
     const timer = setTimeout(() => {
       timers.delete(timer);
-      if (!disposed) callback();
+      if (!disposed) runMeasured(label, callback);
     }, delay);
     timers.add(timer);
   }
@@ -269,6 +283,7 @@ export function createTaskScope(): TaskScope {
     get disposed() {
       return disposed;
     },
+    label,
     later,
     poll(probe, retries, interval) {
       return new Promise((resolve) => {
@@ -295,6 +310,11 @@ export function createTaskScope(): TaskScope {
   };
 }
 
+type WindowShowListener = (windowName: string, args: unknown[]) => void;
+
+/** 同一个 patcher 对打开窗口的方法只能包一次，后挂的监听都由先包上的那层转发。 */
+const windowShowListeners = new WeakMap<MethodPatcher, WindowShowListener[]>();
+
 /** 游戏打开指定窗口后回调（包装 GameEventDispatcher.ShowWindow）。 */
 export function watchWindowShow(
   locator: LayaObjectLocator,
@@ -305,6 +325,24 @@ export function watchWindowShow(
   globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): void {
   const followUpDelaysMs = [0, 200, 600];
+  let listeners = windowShowListeners.get(patcher);
+  if (!listeners) {
+    listeners = [];
+    windowShowListeners.set(patcher, listeners);
+  }
+  const forwardTo = listeners;
+  forwardTo.push((windowName, args) => {
+    if (!windowNames.includes(windowName) || !isBackgroundUiScene(locator, globalObject)) return;
+    for (const delay of followUpDelaysMs) {
+      tasks.later(() => {
+        try {
+          onShow(windowName, args);
+        } catch (error) {
+          console.warn('[皮肤与背景] 窗口处理失败:', windowName, error);
+        }
+      }, delay);
+    }
+  });
   void tasks.poll(() => {
     if (!isBackgroundUiScene(locator, globalObject)) return null;
     const dispatcher = locator.dispatcher();
@@ -312,25 +350,19 @@ export function watchWindowShow(
     return dispatcher && methodNames.length ? { dispatcher, methodNames } : null;
   }, Infinity, 1000).then((found) => {
     if (!found) return;
-    const scheduleShow = (windowName: string, args: unknown[]) => {
-      for (const delay of followUpDelaysMs) {
-        tasks.later(() => {
-          try {
-            onShow(windowName, args);
-          } catch (error) {
-            console.warn('[皮肤与背景] 窗口处理失败:', windowName, error);
-          }
-        }, delay);
-      }
-    };
     const hook = (original: (...hookArgs: unknown[]) => unknown) => function (
       this: unknown,
       windowName: unknown,
       ...rest: unknown[]
     ) {
       const result = original.call(this, windowName, ...rest);
-      if (typeof windowName === 'string' && windowNames.includes(windowName) && isBackgroundUiScene(locator, globalObject)) {
-        scheduleShow(windowName, rest);
+      if (typeof windowName !== 'string') return result;
+      for (const listener of forwardTo) {
+        try {
+          listener(windowName, rest);
+        } catch (error) {
+          console.warn('[皮肤与背景] 窗口打开处理失败:', windowName, error);
+        }
       }
       return result;
     };
@@ -834,6 +866,47 @@ export function isBackgroundUiScene(
   return /Game|Table|Mode|Rogue|Arena|Battle/i.test(name);
 }
 
+/** 游戏遇到这两种情况会直接返回、不切页面：正在切去这个页面，或者已经在这个页面上又没要求重建。 */
+function switchIgnoredByGame(sceneManager: UnknownRecord, sceneName: string, recreate: unknown): boolean {
+  if (sceneManager.currentCreateScene === sceneName) return true;
+  return !recreate && hallSceneName(asRecord(sceneManager.CurrentScene)) === sceneName;
+}
+
+/**
+ * 游戏刚开始切页面时回调，这时新页面还在加载、旧页面还在显示。
+ * 退出牌局是直接调场景管理器的切换方法，不发切场景通知，所以包在场景管理器这一个对象上。
+ * 切换完成的那个方法归 watchSceneSwitch 包；同一个 patcher 对同一个方法只能包一次，这里再包会让它装不上。
+ */
+export function watchSceneSwitchRequest(
+  locator: LayaObjectLocator,
+  patcher: MethodPatcher,
+  tasks: TaskScope,
+  onRequest: (sceneName: string) => void
+): void {
+  void tasks.poll(() => {
+    const listeners = asRecord(locator.dispatcher()?._events)?.SWITCH_SCENE;
+    for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
+      const caller = asRecord(asRecord(listener)?.caller);
+      if (caller && typeof caller.SwitchScene === 'function') return caller;
+    }
+    return null;
+  }, Infinity, 1000).then((sceneManager) => {
+    if (!sceneManager) return;
+    patcher.wrap(sceneManager, 'SwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
+      try {
+        const [target, , recreate] = args;
+        const sceneName = typeof target === 'string' ? target.trim() : '';
+        if (sceneName && !switchIgnoredByGame(sceneManager, sceneName, recreate)) {
+          runMeasured(tasks.label, () => onRequest(sceneName));
+        }
+      } catch (error) {
+        console.warn('[皮肤与背景] 场景切换开始处理失败:', error);
+      }
+      return original.apply(this, args);
+    });
+  });
+}
+
 /** 场景切换完成后回调。进大厅前不挂钩子，避免登录切场景时被脚本打断。 */
 export function watchSceneSwitch(
   locator: LayaObjectLocator,
@@ -856,7 +929,9 @@ export function watchSceneSwitch(
     if (!sceneManager) return;
     patcher.wrap(sceneManager, 'executeSwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
       try {
-        if (sceneReady()) onBeforeSwitch?.();
+        runMeasured(tasks.label, () => {
+          if (sceneReady()) onBeforeSwitch?.();
+        });
       } catch (error) {
         console.warn('[皮肤与背景] 场景切换前处理失败:', error);
       }
@@ -915,6 +990,40 @@ export function seatHoldsGeneral(seat: UnknownRecord, info: SeatGeneralInfo, gen
   } catch {
     return false;
   }
+}
+
+/** 皮肤下发协议的正文。经游戏分发时外面还包着一层，正文挂在 Protocol 上。 */
+export function generalSkinMessage(payload: UnknownRecord): UnknownRecord | null {
+  for (const candidate of [payload, asRecord(payload.Protocol)]) {
+    if (candidate && Array.isArray(candidate.GeneralSkinList)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * 皮肤回包是不是发给自己的。回包里的编号和查询时一样：牌局里按座位号查的是座位号，
+ * 其余是玩家编号，认自己座位上的玩家或当前账号。
+ * 观战和看回放时画面上的自己是别人的座位，牌局里的回包一律不算。
+ */
+export function isOwnSkinMessage(locator: LayaObjectLocator, message: UnknownRecord): boolean {
+  let seat: UnknownRecord | null = null;
+  const scene = locator.gameScene();
+  if (scene) {
+    const context = locator.gameContext();
+    try {
+      if (callMethod(context, 'IsViewerOrReplay') === true) return false;
+      seat = asRecord(context?.SelfSeat) ?? asRecord(asRecord(scene.SelfSeatUi)?.seat);
+    } catch {
+      return false;
+    }
+  }
+  const target = Number(message.ClientID);
+  if (Number(message.Type) === GENERAL_SKIN_QUERY_BY_SEAT) {
+    return seat !== null && Number(seat.Index ?? seat.index) === target;
+  }
+  if (Number(asRecord(seat?.PlayerInfo ?? seat?.playerInfo)?.ClientId) === target) return true;
+  const account = currentGameAccountId();
+  return account !== '' && String(message.ClientID) === account;
 }
 
 /** 皮肤详情或换肤项是否支持动态。 */

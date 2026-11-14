@@ -8,8 +8,6 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import { readSeatStateFromGameScene } from '../seat-display/seat-game-adapter.ts';
-import { locateGameScene, locateSceneManager } from '../seat-display/game-scene-locator.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
@@ -17,6 +15,7 @@ import { showToast } from '../../ui/toast/show-toast.ts';
 import { isFavoriteInUse } from './favorite-in-use.ts';
 import type { WallpaperMenuExtension } from './official-background-controller.ts';
 import { createFavoritesTab } from './skin-background-favorites-tab.ts';
+import { onSkinBackgroundSynced } from './skin-background-document.ts';
 import { createSkinBackgroundRenderer } from './skin-background-renderer.ts';
 import { createSkinBackgroundStore, type BackgroundFavorite, type BackgroundResource } from './skin-background-store.ts';
 import { SKIN_FRAME_HORIZONTAL, SKIN_FRAME_PORTRAIT, SKIN_FRAME_WIDE } from '../../const/skin-frame.ts';
@@ -48,20 +47,22 @@ import {
   type SkinDetailResolveProbe
 } from './skin-detail-buttons.ts';
 import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
+import { getUploadedBackgroundStore, type UploadedBackgroundFile } from './uploaded-background-store.ts';
+import { createBackgroundPreviewUrl } from './background-media-file.ts';
 import {
-  bindCustomBackgroundActions,
-  getCustomBackgroundStore,
-  isCustomBackgroundVideo,
-  type CustomBackgroundRecord
-} from './custom-background-store.ts';
-import { blobForBackgroundPlayback } from './custom-background-media.ts';
+  UPLOADED_BACKGROUND_FAVORITE_ID_PREFIX,
+  isUploadedBackgroundUrl,
+  uploadedBackgroundName,
+  uploadedBackgroundIdFromUrl,
+  uploadedBackgroundUrl
+} from '../../const/uploaded-background.ts';
 import {
   getLobbyPageBackground,
   hasLobbyPageBackgroundContainer
 } from './lobby-page-background.ts';
 import { getViewportPageBackground } from './viewport-page-background.ts';
-import { PAPER_HOME_SCENE_NAMES } from '../../const/paper-all-paper-scene.ts';
-import { isPaperUiScene, mayMutateSkinBackground } from './skin-background-session.ts';
+import { PAPER_HOME_SCENE_NAMES, PAPER_LOBBY_SCENE_NAMES } from '../../const/paper-all-paper-scene.ts';
+import { isMatchSceneName, isPaperUiScene, mayMutateSkinBackground } from './skin-background-session.ts';
 import {
   asRecord,
   callMethod,
@@ -71,11 +72,11 @@ import {
   isBackgroundUiScene,
   isXiaochaoGameplayUiReady,
   watchSceneSwitch,
+  watchSceneSwitchRequest,
   watchWindowShow,
   type UnknownRecord
 } from './skin-runtime.ts';
 
-const MAP_SCENES = ['RogueLikeBigMapScene', 'RogueSmallMapScene'];
 const DETAIL_BUTTON_GAP = 3;
 const DETAIL_BUTTON_HEIGHT = SKIN_DETAIL_BUTTON_HEIGHT;
 const ICON_SIZE = 28;
@@ -125,13 +126,20 @@ export function installSkinPaperController(
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const storage = options.storage ?? globalObject.localStorage;
   const patcher = createMethodPatcher();
-  const tasks = createTaskScope();
+  const tasks = createTaskScope('小抄背景');
   function paperAccountId(): string {
     return resolveGameAccountId(globalObject, locator);
   }
 
   const store = createSkinBackgroundStore(storage, { resolveAccountId: paperAccountId });
-  const renderer = createSkinBackgroundRenderer({ globalObject, locator, store, tasks, patcher });
+  const renderer = createSkinBackgroundRenderer({
+    globalObject,
+    locator,
+    store,
+    tasks,
+    patcher,
+    resolveUploaded: (resource) => resolvePlayableResource(resource)
+  });
   const lobbyPageBackground = getLobbyPageBackground();
   const viewportPageBackground = getViewportPageBackground();
   lobbyPageBackground.clear();
@@ -140,13 +148,17 @@ export function installSkinPaperController(
   const layaEvent = () => asRecord(laya()?.Event);
 
   const isOn = () => configStore.get('skin.skinPaper') === true;
-  const customStore = getCustomBackgroundStore();
-  let customResource: BackgroundResource | null = null;
-  let useCustom = false;
+  const uploads = getUploadedBackgroundStore();
+  /** 上传项的列表预览图，按上传编号存。 */
+  const uploadPreviews = new Map<string, Promise<string>>();
   let syncingVisibility = false;
+  /** 同步途中又来了同步请求，这一轮做完要按最新状态再跑一遍。 */
+  let visibilitySyncQueued = false;
   let runtimeBlobUrl = '';
   /** 当前临时地址是从哪个原图地址拉下来的。收藏项靠它判断是否正在使用。 */
   let runtimeBlobSourceUrl = '';
+  /** 游戏已发出切到牌局以外页面的通知、新页面还没换上。 */
+  let leavingMatch = false;
 
   function revokeRuntimeBlobUrl(): void {
     if (!runtimeBlobUrl.startsWith('blob:')) return;
@@ -159,9 +171,38 @@ export function installSkinPaperController(
     runtimeBlobSourceUrl = '';
   }
 
-  /** 跨域原画转 blob，避免 Laya loadImage 因 CORS 静默失败。 */
+  /** 正在读的上传文件。几处同时要同一个文件时共用一次读取，免得后读完的把先读完、正在画的地址撤掉。 */
+  const uploadLoads = new Map<string, Promise<string>>();
+
+  /** 上传项按编号读出本机文件。同一个文件只读一次，地址不变，正在放的视频不会被重新加载。 */
+  async function resolveUploadedResource(resource: Partial<BackgroundResource>, url: string): Promise<Partial<BackgroundResource>> {
+    if (runtimeBlobUrl && runtimeBlobSourceUrl === url) return { ...resource, url: runtimeBlobUrl };
+    let loading = uploadLoads.get(url);
+    if (!loading) {
+      loading = uploads.load(uploadedBackgroundIdFromUrl(url))
+        .then((blob) => {
+          if (!blob) return '';
+          if (runtimeBlobUrl && runtimeBlobSourceUrl === url) return runtimeBlobUrl;
+          revokeRuntimeBlobUrl();
+          runtimeBlobUrl = URL.createObjectURL(blob);
+          runtimeBlobSourceUrl = url;
+          return runtimeBlobUrl;
+        })
+        .catch((error) => {
+          console.warn('[小抄背景] 读取上传的背景失败:', error);
+          return '';
+        })
+        .finally(() => uploadLoads.delete(url));
+      uploadLoads.set(url, loading);
+    }
+    const playableUrl = await loading;
+    return playableUrl ? { ...resource, url: playableUrl } : resource;
+  }
+
+  /** 跨域原画转 blob，避免 Laya loadImage 因 CORS 静默失败。上传项转成本机文件地址。 */
   async function resolvePlayableResource(resource: Partial<BackgroundResource>): Promise<Partial<BackgroundResource>> {
     const url = String(resource.url || '').trim();
+    if (isUploadedBackgroundUrl(url)) return resolveUploadedResource(resource, url);
     if (!url.startsWith('http://') && !url.startsWith('https://')) return resource;
     try {
       const found = await fetchSkinImage(url).catch(() => null);
@@ -184,39 +225,55 @@ export function installSkinPaperController(
     patcher,
     enabled: isOn,
     applyFavorite: (resource) => applyBackground(resource),
-    isCurrent: (favorite) => isCurrentFavorite(favorite)
+    isCurrent: (favorite) => isCurrentFavorite(favorite),
+    isUploaded: (favorite) => isUploadedBackgroundUrl(favorite.resource.url),
+    uploadPreview: (favorite) => uploadPreview(favorite),
+    upload: (file) => uploadBackground(file),
+    removeFavorite: (favorite) => removeFavorite(favorite)
   });
 
-  /** 用户手动设过的皮肤/自定义背景，优先于山河图等地图场景自带底图。 */
+  /** 用户手动设过的皮肤或上传的背景，优先于山河图等地图场景自带底图。 */
   function hasStoredPicture(): boolean {
-    if (useCustom && customResource?.url) return true;
     const saved = store.loadResource();
     return Boolean(String(saved.url || renderer.resource.url || '').trim());
   }
 
-  /** 对局内才展示牌桌背景；局后结算、进房加载仍视为非对局。旁观也算在桌。 */
-  function seatInActiveMatch(): boolean {
-    if (!locator.gameScene()) return false;
-    const sceneName = String(locator.scene()?.SceneName ?? '');
-    if (MAP_SCENES.includes(sceneName)) return true;
-    return Boolean(readSeatStateFromGameScene(locateGameScene(globalObject)).inGame);
+  /**
+   * 正在牌局页面里，旁观也算。首页、房间列表、开局前和局后的房间、山河图地图页都不算。
+   * 游戏发出离开牌局的通知后就不算了，新页面可能还要加载好几秒。
+   */
+  function inMatch(): boolean {
+    return !leavingMatch && Boolean(locator.gameScene());
   }
 
-  function inTableOrSpectate(): boolean {
-    const sceneName = String(locator.scene()?.SceneName ?? '');
-    if (sceneName === 'HallScene') return false;
-    if (MAP_SCENES.includes(sceneName)) return true;
-    if (seatInActiveMatch()) return true;
-    const manager = locateSceneManager(globalObject as never);
-    return manager?.IsTableScene === true || manager?.IsGameScene === true;
-  }
-
+  /** 全局背景开着时哪一页都显示，关着时只在牌局里显示。 */
   function shouldShow(): boolean {
     if (!hasStoredPicture()) return false;
-    const sceneName = String(locator.scene()?.SceneName ?? '');
-    if (MAP_SCENES.includes(sceneName)) return true;
     if (configStore.get('skin.allPaper') === true) return true;
-    return inTableOrSpectate();
+    return inMatch();
+  }
+
+  function hideBackground(): void {
+    void renderer.syncSceneVisibility(false, false);
+    clearDomPageBackgrounds();
+  }
+
+  /** 牌局里才放视频时，在牌局以外的页面先把视频文件读进内存，进牌局只剩解码第一帧。 */
+  function warmMatchBackgroundFile(): void {
+    if (!isOn()) return;
+    const stored = store.loadResource();
+    if (Number(stored.type) !== BACKGROUND_RESOURCE_TYPE_VIDEO) return;
+    void resolvePlayableResource(stored);
+  }
+
+  /**
+   * 全局背景关着时，游戏一发出切到牌局以外页面的通知就收起背景，不等新页面加载完。
+   * 只有切去别的牌局不算离开。
+   * 牌局页面要等好几秒才会被认定为没了，等到那时再收，背景会在房间或房间列表上多放好几秒。
+   */
+  function onSceneSwitchRequest(sceneName: string): void {
+    leavingMatch = !isMatchSceneName(locator, sceneName);
+    if (leavingMatch && !shouldShow()) hideBackground();
   }
 
   function reloadAccountBackground(): void {
@@ -230,9 +287,6 @@ export function installSkinPaperController(
     const saved = store.loadResource();
     const url = String(saved.url || '').trim();
     if (!url || !isOn()) return false;
-    if (useCustom && customResource?.url) {
-      return renderer.setBackground(await resolvePlayableResource(customResource), false);
-    }
     return renderer.setBackground(await resolvePlayableResource(saved), false, url);
   }
 
@@ -374,12 +428,107 @@ export function installSkinPaperController(
       await syncVisibility();
       favoritesTab.refreshSelection();
       refreshChangeSkinWindow();
-      showToast('背景设置成功', 'success', 4000);
+      showToast(shouldShow() ? '背景设置成功' : '背景已设好，进牌局后显示', 'success', 4000);
       return true;
     } catch (error) {
       console.warn('[皮肤做背景] 设置失败:', error);
       showToast('背景设置失败，请重试', 'error', 4000);
       return false;
+    }
+  }
+
+  // ---------- 上传的背景 ----------
+
+  function uploadedFavorite(file: UploadedBackgroundFile): BackgroundFavorite {
+    return {
+      id: `${UPLOADED_BACKGROUND_FAVORITE_ID_PREFIX}${file.id}`,
+      skinId: '',
+      generalId: 0,
+      state: 0,
+      name: uploadedBackgroundName(file.fileName, file.isVideo),
+      generalName: '',
+      previewUrl: '',
+      resource: {
+        url: uploadedBackgroundUrl(file.id),
+        type: file.isVideo ? BACKGROUND_RESOURCE_TYPE_VIDEO : BACKGROUND_RESOURCE_TYPE_IMAGE,
+        width: file.width || DEFAULT_STAGE_WIDTH,
+        height: file.height || DEFAULT_STAGE_HEIGHT
+      },
+      savedAt: Date.now()
+    };
+  }
+
+  function uploadPreview(favorite: BackgroundFavorite): Promise<string> {
+    const id = uploadedBackgroundIdFromUrl(favorite.resource.url);
+    if (!id) return Promise.resolve('');
+    let preview = uploadPreviews.get(id);
+    if (!preview) {
+      preview = uploads.load(id)
+        .then((blob) => blob ? createBackgroundPreviewUrl(blob, isBackgroundResourceVideo(favorite.resource.type)) : '')
+        .catch(() => '');
+      uploadPreviews.set(id, preview);
+    }
+    return preview;
+  }
+
+  function releaseUploadPreview(id: string): void {
+    const preview = uploadPreviews.get(id);
+    uploadPreviews.delete(id);
+    void preview?.then((url) => {
+      if (url) URL.revokeObjectURL(url);
+    });
+  }
+
+  /** 存下文件，加进小抄背景列表，再像点列表里的任何一项一样设为背景。 */
+  async function uploadBackground(file: File): Promise<boolean> {
+    let saved: UploadedBackgroundFile;
+    try {
+      saved = await uploads.save(file);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '上传失败', 'error', 4000);
+      return false;
+    }
+    const favorite = uploadedFavorite(saved);
+    store.addFavorite(favorite);
+    const applied = await applyBackground(favorite.resource);
+    if (!applied && saved.isVideo) showToast('视频背景加载失败，换 H.264 编码的 MP4 或先用图片', 'error', 5000);
+    return applied;
+  }
+
+  /** 从列表删掉一项，上传项连本机文件一起删。正在用的那项不让删。 */
+  async function removeFavorite(favorite: BackgroundFavorite): Promise<void> {
+    if (isCurrentFavorite(favorite) || store.loadResource().url === favorite.resource.url) {
+      showToast('正在用的背景不能删，先换一个', 'warning');
+      return;
+    }
+    store.removeFavorite(favorite.id);
+    refreshChangeSkinWindow();
+    const id = uploadedBackgroundIdFromUrl(favorite.resource.url);
+    if (!id) return;
+    releaseUploadPreview(id);
+    try {
+      await uploads.remove(id);
+    } catch (error) {
+      console.warn('[小抄背景] 删除上传的文件失败:', error);
+    }
+  }
+
+  /** 已经把早先单独存的那份上传背景转进列表的账号。 */
+  let legacyUploadCheckedAccount = '';
+
+  /** 早先每个账号单独存的一份上传背景，转成小抄背景列表里的一项；当时正在用就记成当前背景。 */
+  async function migrateLegacyUpload(): Promise<void> {
+    const account = paperAccountId();
+    if (!account || account === legacyUploadCheckedAccount) return;
+    legacyUploadCheckedAccount = account;
+    try {
+      const legacy = await uploads.takeLegacy();
+      if (!legacy) return;
+      const favorite = uploadedFavorite(legacy.file);
+      store.addFavorite(favorite);
+      if (legacy.active) store.saveResource(favorite.resource);
+    } catch (error) {
+      console.warn('[小抄背景] 转移早先的上传背景失败:', error);
     }
   }
 
@@ -992,7 +1141,6 @@ export function installSkinPaperController(
   // ---------- 开关与场景 ----------
 
   function currentBackgroundResource(): BackgroundResource | null {
-    if (useCustom && customResource?.url) return customResource;
     const saved = store.loadResource();
     if (String(saved.url || '').trim()) return saved as BackgroundResource;
     const live = renderer.resource;
@@ -1041,169 +1189,70 @@ export function installSkinPaperController(
     if (!shouldShow()) return false;
     const url = String(currentBackgroundResource()?.url || '').trim();
     if (!url) return false;
-    if (useCustom && customResource?.url) return !renderer.isMounted();
     return !renderer.isMounted();
   }
 
   /** 按开关和场景同步皮肤背景是否显示。 */
   async function syncVisibility(): Promise<boolean> {
-    if (syncingVisibility) return true;
+    if (syncingVisibility) {
+      visibilitySyncQueued = true;
+      return true;
+    }
     syncingVisibility = true;
     try {
-      if (!isPaperUiScene(locator, globalObject) || !mayMutateSkinBackground(locator, globalObject, () => true)) {
-        return true;
+      let applied = await syncVisibilityOnce();
+      while (visibilitySyncQueued) {
+        visibilitySyncQueued = false;
+        applied = await syncVisibilityOnce();
       }
-      reloadAccountBackground();
-      const show = shouldShow();
-      skinTrace('paper-visibility', {
-        show,
-        sceneName: locator.scene()?.SceneName,
-        inGame: Boolean(locator.gameScene()),
-        allPaper: configStore.get('skin.allPaper'),
-        resource: renderer.resource,
-        customResource,
-        useCustom,
-        layerFound: Boolean(locator.layer('BackgroundLayer')),
-        sceneLayerFound: Boolean(locator.layer('SceneLayer'))
-      });
-      const allPaper = configStore.get('skin.allPaper') === true;
-      if (!show) {
-        await renderer.syncSceneVisibility(false, allPaper);
-        clearDomPageBackgrounds();
-        return true;
-      }
-      if (useCustom && customResource) {
-        const playable = await resolvePlayableResource(customResource);
-        const ok = await renderer.setBackground(playable, false);
-        if (ok) {
-          await renderer.syncSceneVisibility(true, allPaper);
-          syncDomPageBackgrounds(true);
-        } else clearDomPageBackgrounds();
-        return ok;
-      }
-      let applied = await renderer.setEnabled(true);
-      if (!applied) {
-        applied = await reapplyStoredBackground();
-      }
-      if (!applied && show) {
-        const stored = store.loadResource();
-        const saved = await resolvePlayableResource(stored);
-        applied = await renderer.setBackground(saved, false, String(stored.url ?? ''));
-      }
-      if (!applied) {
-        await renderer.syncSceneVisibility(false, allPaper);
-        clearDomPageBackgrounds();
-        return false;
-      }
-      await renderer.syncSceneVisibility(true, allPaper);
-      syncDomPageBackgrounds(true);
-      return true;
+      return applied;
     } finally {
       syncingVisibility = false;
     }
   }
 
-  async function measureUpload(
-    file: Blob,
-    options: {
-      preferVideo?: boolean;
-      isVideo?: boolean;
-      width?: number;
-      height?: number;
-      fileName?: string;
-    } = {}
-  ): Promise<BackgroundResource> {
-    const video = options.preferVideo === true || isCustomBackgroundVideo(file, options);
-    const playback = blobForBackgroundPlayback(
-      file,
-      video,
-      video ? 'video/mp4' : 'image/png'
-    );
-    const url = URL.createObjectURL(playback);
-    if (video) {
-      return {
-        url,
-        type: BACKGROUND_RESOURCE_TYPE_VIDEO,
-        width: Number(options.width) || DEFAULT_STAGE_WIDTH,
-        height: Number(options.height) || DEFAULT_STAGE_HEIGHT
-      };
+  /** 加载要等一会儿，每等完一步都重新判断：这时可能已经开始退回大厅，不能再把背景亮出来。 */
+  async function syncVisibilityOnce(): Promise<boolean> {
+    if (!isPaperUiScene(locator, globalObject) || !mayMutateSkinBackground(locator, globalObject, () => true)) {
+      return true;
     }
-    if (Number(options.width) > 0 && Number(options.height) > 0) {
-      return { url, type: BACKGROUND_RESOURCE_TYPE_IMAGE, width: Number(options.width), height: Number(options.height) };
-    }
-    if (typeof createImageBitmap !== 'function') return { url, type: BACKGROUND_RESOURCE_TYPE_IMAGE, width: DEFAULT_STAGE_WIDTH, height: DEFAULT_STAGE_HEIGHT };
-    try {
-      const bitmap = await createImageBitmap(file);
-      const size = { width: bitmap.width, height: bitmap.height };
-      bitmap.close?.();
-      return { url, type: BACKGROUND_RESOURCE_TYPE_IMAGE, ...size };
-    } catch {
-      return { url, type: BACKGROUND_RESOURCE_TYPE_IMAGE, width: DEFAULT_STAGE_WIDTH, height: DEFAULT_STAGE_HEIGHT };
-    }
-  }
-
-  async function applyCustom(record: CustomBackgroundRecord): Promise<void> {
-    if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
-    customResource = await measureUpload(record.blob, {
-      preferVideo: record.isVideo === true,
-      width: record.width,
-      height: record.height,
-      fileName: record.fileName,
-      isVideo: record.isVideo
+    reloadAccountBackground();
+    const show = shouldShow();
+    skinTrace('paper-visibility', {
+      show,
+      sceneName: locator.scene()?.SceneName,
+      inGame: Boolean(locator.gameScene()),
+      allPaper: configStore.get('skin.allPaper'),
+      resource: renderer.resource,
+      layerFound: Boolean(locator.layer('BackgroundLayer')),
+      sceneLayerFound: Boolean(locator.layer('SceneLayer'))
     });
-    useCustom = true;
-    let applied = false;
-    try {
-      applied = await syncVisibility();
-    } catch (error) {
-      console.warn('[自定义背景] 应用失败:', error);
-      applied = false;
+    if (!show) {
+      hideBackground();
+      return true;
+    }
+    let applied = await renderer.setEnabled(true);
+    if (!applied && shouldShow()) applied = await reapplyStoredBackground();
+    if (!applied && shouldShow()) {
+      const stored = store.loadResource();
+      const saved = await resolvePlayableResource(stored);
+      applied = await renderer.setBackground(saved, false, String(stored.url ?? ''));
     }
     if (!applied) {
-      showToast(
-        customResource && isBackgroundResourceVideo(Number(customResource.type))
-          ? '视频背景加载失败，换 H.264 编码的 MP4 或先用图片'
-          : '背景加载失败，换一张图或稍后再试',
-        'error',
-        5000
-      );
-      return;
+      hideBackground();
+      return false;
     }
-    if (!shouldShow()) showToast('已保存，进局后会换成这张背景', 'success');
-    else showToast(
-      isCustomBackgroundVideo(record.blob, record) ? '背景已换成上传的视频' : '背景已换成上传的图片',
-      'success'
-    );
-  }
-
-  async function clearCustom(): Promise<void> {
-    useCustom = false;
-    if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
-    customResource = null;
-    await customStore.clear();
-    // 上传图只画在上层。不先撤掉的话，开关仍开着时会按内存里的地址再画一遍。
-    if (String(renderer.resource.url || '').startsWith('blob:')) renderer.clearBackground(false);
-    await syncVisibility();
-  }
-
-  async function restoreCustom(): Promise<void> {
-    const saved = await customStore.load();
-    if (customResource?.url.startsWith('blob:')) URL.revokeObjectURL(customResource.url);
-    if (saved?.active) {
-      customResource = await measureUpload(saved.blob, {
-        preferVideo: saved.isVideo === true,
-        width: saved.width,
-        height: saved.height,
-        fileName: saved.fileName,
-        isVideo: saved.isVideo
-      });
-      useCustom = true;
-    } else {
-      customResource = null;
-      useCustom = false;
-      if (String(renderer.resource.url || '').startsWith('blob:')) renderer.clearBackground(false);
+    if (!shouldShow()) {
+      hideBackground();
+      return true;
     }
-    await syncVisibility();
+    await renderer.syncSceneVisibility(true, configStore.get('skin.allPaper') === true);
+    if (!shouldShow()) {
+      hideBackground();
+      return true;
+    }
+    syncDomPageBackgrounds(true);
+    return true;
   }
 
   function onSkinPaperSwitchChanged(): void {
@@ -1216,9 +1265,8 @@ export function installSkinPaperController(
       void syncVisibility();
       return;
     }
-    if (inTableOrSpectate()) return;
-    void renderer.syncSceneVisibility(false, false);
-    clearDomPageBackgrounds();
+    if (inMatch()) return;
+    hideBackground();
   }
 
   function onOfficialSwitchChanged(): void {
@@ -1254,9 +1302,7 @@ export function installSkinPaperController(
   const menuExtension: WallpaperMenuExtension = {
     enabled: isOn,
     onOfficialWallpaperUsed() {
-      // 改用官方背景时清掉皮肤背景，上传的图先让开，文件还留着。
-      useCustom = false;
-      void customStore.setActive(false);
+      // 改用官方背景时清掉小抄背景，上传的文件还留在列表里。
       if (renderer.hasBackground()) renderer.clearBackground(true);
       clearDomPageBackgrounds();
       favoritesTab.refreshSelection();
@@ -1266,16 +1312,6 @@ export function installSkinPaperController(
     detachMenu: (menu) => favoritesTab.detach(menu)
   };
 
-  async function releaseMatchBackground(): Promise<void> {
-    const allPaper = configStore.get('skin.allPaper') === true;
-    if (allPaper) {
-      await syncVisibility();
-      return;
-    }
-    await renderer.syncSceneVisibility(false, false);
-    clearDomPageBackgrounds();
-  }
-
   const unsubscribes = [
     configStore.subscribe('skin.skinPaper', onSkinPaperSwitchChanged),
     configStore.subscribe('skin.allPaper', onAllPaperSwitchChanged),
@@ -1283,41 +1319,45 @@ export function installSkinPaperController(
   ];
   if (options.gameEvents) {
     unsubscribes.push(options.gameEvents.subscribe((event) => {
-      if (event.type === 'game-ended') void releaseMatchBackground();
-      else if (event.type === 'game-started') void syncVisibility();
+      // 结束通知要等牌局页面没了好几秒才来，这时可能已经进了下一局，得按当前页面判断。
+      if (event.type === 'game-ended') {
+        if (shouldShow()) void syncVisibility();
+        else hideBackground();
+      } else if (event.type === 'game-started') void migrateLegacyUpload().then(() => syncVisibility());
     }));
   }
-  const unbindCustom = bindCustomBackgroundActions({
-    apply: applyCustom,
-    clear: clearCustom
-  });
   async function applyHallBackgroundOnce(): Promise<void> {
     reloadAccountBackground();
-    await restoreCustom();
     await syncVisibility();
   }
 
   const wantsHallAutoBackground = () => configStore.get('skin.allPaper') === true;
 
   function onBackgroundSceneReady(): void {
-    const allPaper = configStore.get('skin.allPaper') === true;
-    const sceneName = String(locator.scene()?.SceneName ?? '');
-    if (sceneName === 'HallScene') {
-      if (!isBackgroundUiScene(locator, globalObject)) return;
-      if (wantsHallAutoBackground() && hasStoredPicture()) void applyHallBackgroundOnce();
-      else {
-        void renderer.syncSceneVisibility(false, false);
-        clearDomPageBackgrounds();
-      }
+    leavingMatch = false;
+    if (paperAccountId() && paperAccountId() !== legacyUploadCheckedAccount) {
+      void migrateLegacyUpload().then(() => onBackgroundSceneReady());
       return;
+    }
+    const sceneName = String(locator.scene()?.SceneName ?? '');
+    if (PAPER_LOBBY_SCENE_NAMES.includes(sceneName)) {
+      if (!wantsHallAutoBackground() || !hasStoredPicture()) {
+        hideBackground();
+        warmMatchBackgroundFile();
+        return;
+      }
+      if (sceneName === 'HallScene') {
+        if (isBackgroundUiScene(locator, globalObject)) void applyHallBackgroundOnce();
+        return;
+      }
     }
     if (!mayMutateSkinBackground(locator, globalObject, () => true)) return;
-    if (PAPER_HOME_SCENE_NAMES.includes(sceneName) && !shouldShow()) {
-      void renderer.syncSceneVisibility(false, allPaper);
-      clearDomPageBackgrounds();
+    // 这个页面不该显示时直接收起，不能先挂出来再等下一轮判断，否则会闪一下。
+    if (!shouldShow()) {
+      hideBackground();
+      warmMatchBackgroundFile();
       return;
     }
-    renderer.onSceneChange(allPaper);
     void syncVisibility();
   }
 
@@ -1327,6 +1367,8 @@ export function installSkinPaperController(
     if (backgroundHooksStarted) return;
     backgroundHooksStarted = true;
     watchWindowShow(locator, patcher, tasks, ['ChangeSkinWindow'], () => onChangeSkinWindow(), globalObject);
+    watchSceneSwitchRequest(locator, patcher, tasks, onSceneSwitchRequest);
+    warmMatchBackgroundFile();
     watchSceneSwitch(
       locator, patcher, tasks, onBackgroundSceneReady, globalObject, undefined,
       () => isPaperUiScene(locator, globalObject)
@@ -1357,11 +1399,20 @@ export function installSkinPaperController(
   waitForSafeBackgroundHooks();
   const onAccountBucketChange = () => {
     if (!mayMutateSkinBackground(locator, globalObject, isOn)) return;
-    void syncVisibility();
+    void migrateLegacyUpload().then(() => syncVisibility());
   };
   if (typeof window !== 'undefined') {
     window.addEventListener(CONFIG_ACCOUNT_SYNC_EVENT, onAccountBucketChange);
   }
+  // 服务器上较新的背景写进本机后，背景、收藏列表和勾都按新存的内容来。背景被别处清掉时换回游戏自己的。
+  unsubscribes.push(onSkinBackgroundSynced((accountId) => {
+    if (accountId !== paperAccountId()) return;
+    if (!String(store.loadResource().url || '').trim() && renderer.hasBackground()) renderer.clearBackground(false);
+    favoritesTab.refreshList();
+    refreshChangeSkinWindow();
+    options.syncWallpaperMenu();
+    void syncVisibility().then(() => favoritesTab.refreshSelection());
+  }));
 
   return {
     menuExtension,
@@ -1371,8 +1422,8 @@ export function installSkinPaperController(
         window.removeEventListener(CONFIG_ACCOUNT_SYNC_EVENT, onAccountBucketChange);
       }
       revokeRuntimeBlobUrl();
+      [...uploadPreviews.keys()].forEach(releaseUploadPreview);
       clearDomPageBackgrounds();
-      unbindCustom();
       unsubscribes.splice(0).forEach((unsubscribe) => unsubscribe());
       tasks.dispose();
       favoritesTab.dispose();

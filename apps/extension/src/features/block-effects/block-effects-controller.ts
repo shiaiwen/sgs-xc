@@ -11,8 +11,10 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { MARQUEE_SWEEP_MS, NOTICE_BLOCK_CHECK_MS } from '../../const/poll-intervals.ts';
 import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
-import { isBackgroundUiScene } from '../skin-background/skin-runtime.ts';
+import { isBackgroundUiScene, isOwnSkinMessage } from '../skin-background/skin-runtime.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
 import { applyBlockMessageFilters, shouldDropNoticeProtocol } from './block-message-filters.ts';
 import { installPersistentMarqueeEventBlock } from './marquee-event-hook.ts';
@@ -67,7 +69,6 @@ const MARQUEE_MANAGER_CLASS_NAMES = [
   'Marquee2023Manager',
   'ChatSysMarquee2023Manager'
 ];
-const SELF_GENERAL_KEYS = ['generalIds', 'GeneralIds', 'WuJiangs', 'generals'];
 
 /** 显示后需要处理的窗口及其对应开关；未开启时不轮询窗口。 */
 const SHOWN_WINDOW_SWITCHES: Record<string, BlockSettingKey> = {
@@ -636,12 +637,12 @@ export function installBlockEffectsController(
   function ensureMarqueeFrameSweep(): void {
     if (marqueeFrameLoopBound || !isOn('block.noticeWindow')) return;
     marqueeFrameLoopBound = true;
-    const sweepTimer = setInterval(() => {
+    const stopSweeping = everyInterval('屏蔽跑马灯', MARQUEE_SWEEP_MS, () => {
       if (disposed || !isOn('block.noticeWindow')) return;
       syncMarquee();
-    }, 500);
+    });
     cleanups.push(() => {
-      clearInterval(sweepTimer);
+      stopSweeping();
       marqueeFrameLoopBound = false;
     });
   }
@@ -908,7 +909,7 @@ export function installBlockEffectsController(
     tickMarqueeBlock();
     applyNoticeBlockState();
     ensureNoticeManagerAttached();
-    const timer = setInterval(() => {
+    cleanups.push(everyInterval('屏蔽公告', NOTICE_BLOCK_CHECK_MS, () => {
       if (disposed) return;
       const guardMissing = !dispatcherMarqueeGuardInstalled || !gedPersistentMarqueeHooked;
       if (guardMissing) tryInstallDispatcherMarqueeGuard();
@@ -918,8 +919,7 @@ export function installBlockEffectsController(
         syncMarquee();
         ensureMarqueeFrameSweep();
       }
-    }, 500);
-    cleanups.push(() => clearInterval(timer));
+    }));
   }
 
   let laoXianBlockInstalled = false;
@@ -1551,16 +1551,6 @@ export function installBlockEffectsController(
 
   // ---------- 协议 ----------
 
-  function isOwnGeneral(generalId: number): boolean {
-    if (!Number.isFinite(generalId)) return false;
-    const seat = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat);
-    for (const key of SELF_GENERAL_KEYS) {
-      const ids = seat?.[key];
-      if (Array.isArray(ids)) return ids.some((id) => Number(id) === generalId);
-    }
-    return false;
-  }
-
   function filterMessage(payload: UnknownRecord, className: string): void {
     applyBlockMessageFilters(payload, className, {
       killEffect: isOn('block.killEffect'),
@@ -1568,7 +1558,7 @@ export function installBlockEffectsController(
       factionSlogan: isOn('block.factionSlogan'),
       noticeWindow: isOn('block.noticeWindow'),
       inTableGame: Boolean(locator.gameScene()),
-      isOwnGeneral
+      isOwnSkinMessage: (message) => isOwnSkinMessage(locator, message)
     });
   }
 

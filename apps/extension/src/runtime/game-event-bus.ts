@@ -4,6 +4,8 @@
  * 协议适配层把原始消息翻译成这里的命名事件；功能模块只订阅本总线，
  * 不直接解析混淆的协议类名。publish 前会做字段规范化与冻结。
  */
+import { GAME_EVENT_LABEL_PREFIX } from '../const/perf-monitor.ts';
+import { measureXiaochao } from './perf-monitor.ts';
 
 export type GameEvent =
   | {
@@ -188,7 +190,9 @@ export function createGameEventBus(): GameEventBus {
     publish(event) {
       const normalizedEvent = normalizeGameEvent(event);
       if (!normalizedEvent) return;
-      listeners.forEach((listener) => listener(normalizedEvent));
+      measureXiaochao(eventLabel(normalizedEvent.type), () => {
+        listeners.forEach((listener) => listener(normalizedEvent));
+      });
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -198,6 +202,17 @@ export function createGameEventBus(): GameEventBus {
       listeners.clear();
     }
   };
+}
+
+const eventLabels = new Map<string, string>();
+
+function eventLabel(type: string): string {
+  let label = eventLabels.get(type);
+  if (!label) {
+    label = `${GAME_EVENT_LABEL_PREFIX}${type}`;
+    eventLabels.set(type, label);
+  }
+  return label;
 }
 
 function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {

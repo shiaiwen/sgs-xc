@@ -4,6 +4,8 @@
  */
 
 import type { XiaochaoConfigStore } from '../../config/config-store';
+import { everyInterval } from '../../runtime/shared-ticker';
+import { COUNTDOWN_SYNC_MS } from '../../const/poll-intervals';
 
 interface CountdownTextNode {
   visible?: boolean;
@@ -116,12 +118,11 @@ export function installCountdownSecondsController(
     enabled = Boolean(value);
     synchronize();
   });
-  // 倒计时以秒为单位变化，800ms 轮询足够跟上；同时降低遍历整棵 Laya 显示树的频率。
-  const timer = globalObject.setInterval(synchronize, 800);
+  const stopSynchronizing = everyInterval('倒计时秒数', COUNTDOWN_SYNC_MS, synchronize, { visualOnly: true }, globalObject);
   synchronize();
 
   return () => {
-    window.clearInterval(timer);
+    stopSynchronizing();
     unsubscribe();
     secondsByCountdown.forEach(destroyTextNode);
     secondsByCountdown.clear();

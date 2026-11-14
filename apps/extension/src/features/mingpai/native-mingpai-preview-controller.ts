@@ -55,6 +55,8 @@ import {
   registerNativeHudPostGameTeardown
 } from '../../runtime/native-hud-post-game-guard.ts';
 import { mingpaiPerf, now, recordNativeSync } from './mingpai-perf.ts';
+import { measureXiaochao } from '../../runtime/perf-monitor.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { isGameSeatUiFlowActive } from '../../runtime/game-native-dialog.ts';
 import {
   clampExtensionZOrder,
@@ -90,6 +92,7 @@ const HIDE_DELAY_MS = 120;
 const STRIP_TILE_POINTER_BOUND = '__xcMingpaiStripTilePointerBound';
 const POLL_INTERVAL_MS = 500;
 const POLL_INTERVAL_OUT_OF_GAME_MS = 2000;
+const PREVIEW_PERF_LABEL = '明牌小牌条';
 /** 同一次事件链可能同时触发座位状态、明牌引擎和游戏事件订阅；
  *  短延迟合并多次 scheduleSync，避免连续重绘。 */
 const SYNC_DEBOUNCE_MS = 16;
@@ -135,7 +138,7 @@ export function installNativeMingpaiPreviewController(
   let cardTagCache = new WeakMap<UnknownRecord, { cardId: number; tags: string; keepOnCard: boolean }>();
   let syncing = false;
   let lastEquipmentTagRefreshAt = 0;
-  let pollTimer = 0;
+  let stopPolling: (() => void) | null = null;
   let syncTimer = 0;
   let popup: UnknownRecord | null = null;
   let popupCards: OfficialCardView[] = [];
@@ -846,7 +849,7 @@ export function installNativeMingpaiPreviewController(
     syncing = true;
     const t0 = now();
     try {
-      syncNow();
+      measureXiaochao(PREVIEW_PERF_LABEL, syncNow);
     } finally {
       recordNativeSync(now() - t0);
       syncing = false;
@@ -1169,10 +1172,10 @@ export function installNativeMingpaiPreviewController(
   function adjustPollInterval() {
     const inGame = seatStateStore.getSnapshot().inGame && !previewSuspended && !isNativeHudSuspended();
     const nextMs = inGame ? POLL_INTERVAL_MS : POLL_INTERVAL_OUT_OF_GAME_MS;
-    if (pollTimer && pollIntervalMs === nextMs) return;
-    if (pollTimer) window.clearInterval(pollTimer);
+    if (stopPolling && pollIntervalMs === nextMs) return;
+    stopPolling?.();
     pollIntervalMs = nextMs;
-    pollTimer = window.setInterval(scheduleSync, pollIntervalMs);
+    stopPolling = everyInterval(PREVIEW_PERF_LABEL, pollIntervalMs, scheduleSync, { visualOnly: true });
   }
   let pollIntervalMs = POLL_INTERVAL_OUT_OF_GAME_MS;
 
@@ -1180,10 +1183,10 @@ export function installNativeMingpaiPreviewController(
   const stopMingpai = mingpaiEngine?.subscribe(scheduleSync);
   const stopGameEvents = gameEvents?.subscribe(onGameEvent);
   const stopConfig = configStore.subscribe('display.seatUiEnabled', scheduleSync);
-  pollTimer = window.setInterval(() => {
+  stopPolling = everyInterval(PREVIEW_PERF_LABEL, pollIntervalMs, () => {
     adjustPollInterval();
     scheduleSync();
-  }, pollIntervalMs);
+  }, { visualOnly: true });
   sync();
 
   return () => {
@@ -1192,8 +1195,8 @@ export function installNativeMingpaiPreviewController(
     cancelMingpaiPostGameCleanup();
     unregisterPostGameCleanup();
     unregisterHudTeardown();
-    if (pollTimer) window.clearInterval(pollTimer);
-    pollTimer = 0;
+    stopPolling?.();
+    stopPolling = null;
     if (syncTimer) window.clearTimeout(syncTimer);
     syncTimer = 0;
     stopSession();

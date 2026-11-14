@@ -8,6 +8,8 @@
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { HAND_SORT_SYNC_MS } from '../../const/poll-intervals.ts';
 import {
   isNativeHudSuspended,
   registerNativeHudPostGameTeardown
@@ -666,14 +668,14 @@ export function installHandSortController(
     if (active) syncAutoSort(active);
   };
 
-  const timer = runtime.setInterval(sync, 500);
+  const stopPolling = everyInterval('手牌整理', HAND_SORT_SYNC_MS, sync, {}, runtime);
   const stopEnabled = store.subscribe('cards.handSortEnabled', sync);
   const stopLock = store.subscribe('cards.handSortLockedMode', sync);
   const unregisterPostGame = registerNativeHudPostGameTeardown(releaseHandSort);
   sync();
   return () => {
     unregisterPostGame();
-    runtime.clearInterval(timer);
+    stopPolling();
     stopEnabled();
     stopLock();
     patcher.restoreAll();

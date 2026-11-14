@@ -5,6 +5,8 @@
 import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { CHOOSE_FIGURE_APPLY_MS } from '../../const/poll-intervals.ts';
 import {
   CHOOSE_FIGURE_LOCK_KEY_BASE,
   CHOOSE_FIGURE_LOCK_VERSION
@@ -117,7 +119,7 @@ export function installChooseFigureController(
   let lastDebugSignature = '';
   let lastDebugAt = 0;
   const debug = createDebugState(globalObject);
-  const timer = globalObject.setInterval(applyChooseFigures, 1000);
+  const stopApplying = everyInterval('身份锁定', CHOOSE_FIGURE_APPLY_MS, applyChooseFigures, {}, globalObject);
   const unsubscribe = gameEvents?.subscribe((event) => {
     if (event.type === 'game-reconnected') {
       // 手里真有锁定才需要冻结。没有锁定可保的时候也冻结，会把之后每一局都锁死，
@@ -133,7 +135,7 @@ export function installChooseFigureController(
   });
   applyChooseFigures();
   return () => {
-    globalObject.clearInterval(timer);
+    stopApplying();
     unsubscribe?.();
   };
 

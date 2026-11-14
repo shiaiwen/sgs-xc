@@ -7,6 +7,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { patchUserscriptDevInstallMount } from './patch-userscript-dev-install.js';
+import { USERSCRIPT_DEV_LOADER_PATH } from '../src/const/userscript-meta.ts';
 
 const INSTALL_PATH = '/xiaochao-dev.user.js';
 const BUILD_ID_PATH = '/xiaochao-dev-build-id';
@@ -93,6 +94,10 @@ export function startUserscriptInstallHttpServer(options) {
         });
         res.end(String(body).trim());
       });
+      return;
+    }
+    if (options.loaderSource && reqPath === USERSCRIPT_DEV_LOADER_PATH) {
+      respondUserscript(res, options.loaderSource, 'invalid loader script');
       return;
     }
     if (reqPath !== INSTALL_PATH) {

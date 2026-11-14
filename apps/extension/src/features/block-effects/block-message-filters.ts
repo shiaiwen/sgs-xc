@@ -3,6 +3,7 @@
  */
 
 import { FACTION_SLOGANS } from './faction-slogans.ts';
+import { generalSkinMessage } from '../skin-background/skin-runtime.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -18,12 +19,13 @@ export interface BlockMessageFilterOptions {
   factionSlogan: boolean;
   noticeWindow: boolean;
   inTableGame: boolean;
-  isOwnGeneral(generalId: number): boolean;
+  /** 皮肤回包是不是自己的。 */
+  isOwnSkinMessage(message: UnknownRecord): boolean;
 }
 
 /**
- * 在协议分发前改写消息：击杀特效把 Type 置 0；他人动态皮肤把非本家
- * 武将的皮肤 state 置 0；势力口号删除游戏读取的 data.protoObj 使其不显示。
+ * 在协议分发前改写消息：击杀特效把 Type 置 0；他人动态皮肤把别人的皮肤回包
+ * state 置 0；势力口号删除游戏读取的 data.protoObj 使其不显示。
  * 必须在游戏处理该协议前调用。
  */
 export function applyBlockMessageFilters(
@@ -44,12 +46,10 @@ export function applyBlockMessageFilters(
     if (isChatMessage(className)) return;
   }
   if (className === 'ClientGeneralSkinRep' && options.otherSkinState) {
-    const list = payload.GeneralSkinList;
-    if (!Array.isArray(list)) return;
-    for (const item of list) {
-      if (!item || typeof item !== 'object') continue;
-      const skin = item as UnknownRecord;
-      if (!options.isOwnGeneral(Number(skin.GeneralID))) skin.state = 0;
+    const message = generalSkinMessage(payload);
+    if (!message || options.isOwnSkinMessage(message)) return;
+    for (const item of message.GeneralSkinList as unknown[]) {
+      if (item && typeof item === 'object') (item as UnknownRecord).state = 0;
     }
   }
 }

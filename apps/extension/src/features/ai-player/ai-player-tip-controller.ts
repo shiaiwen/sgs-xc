@@ -11,6 +11,12 @@ import {
 } from '../../runtime/game-native-dialog.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import { RANK_NAME_DEEP_SYNC_MS } from '../../const/play-name-sync.ts';
+import {
+  AI_PLAYER_SCAN_IN_GAME_MS,
+  AI_PLAYER_SCAN_OUT_OF_GAME_MS,
+  AI_PLAYER_SCAN_START_MS
+} from '../../const/poll-intervals.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
 import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
@@ -26,6 +32,7 @@ import {
 } from './play-name-sync.ts';
 
 type UnknownRecord = Record<string, unknown>;
+const AI_PLAYER_PERF_LABEL = '人机提示';
 
 export interface PlayNameDebugState {
   pauseSync: boolean;
@@ -173,24 +180,24 @@ export function installAiPlayerTipController(
       gameEnded = true;
     }
   });
-  let pollIntervalMs = 1000;
-  let timer = globalObject.setInterval(scan, pollIntervalMs);
+  let pollIntervalMs = AI_PLAYER_SCAN_START_MS;
+  let stopScanning = everyInterval(AI_PLAYER_PERF_LABEL, pollIntervalMs, scan, {}, globalObject);
   scan();
 
   return () => {
     stopEvents();
-    globalObject.clearInterval(timer);
+    stopScanning();
   };
 
   function setPollInterval(nextMs: number): void {
     if (nextMs === pollIntervalMs) return;
     pollIntervalMs = nextMs;
-    globalObject.clearInterval(timer);
-    timer = globalObject.setInterval(scan, pollIntervalMs);
+    stopScanning();
+    stopScanning = everyInterval(AI_PLAYER_PERF_LABEL, pollIntervalMs, scan, {}, globalObject);
   }
 
   function scan(): void {
-    setPollInterval(locateGameScene(globalObject) ? 500 : 2000);
+    setPollInterval(locateGameScene(globalObject) ? AI_PLAYER_SCAN_IN_GAME_MS : AI_PLAYER_SCAN_OUT_OF_GAME_MS);
     if (shouldDeferSeatTopManagerSync(globalObject)) return;
     // 彼此独立扫描：座位 UI 尚未就绪或某一步访问异常时，也要继续挂资料页钩子。
     try { scanSeats(); } catch { /* 下一轮重试 */ }

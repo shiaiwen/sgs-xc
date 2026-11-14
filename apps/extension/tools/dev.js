@@ -5,6 +5,7 @@ import { existsSync, readdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { planLocalAccountServer } from './local-account-server.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -144,14 +145,14 @@ console.log('[dev] 快速 watch：不压缩、不每次清空 dist/electron，�
 /**
  * @param {string} command
  * @param {string[]} args
- * @param {{ pipeConsole?: boolean }} [options]
+ * @param {{ pipeConsole?: boolean, cwd?: string, env?: NodeJS.ProcessEnv }} [options]
  * pipeConsole：Windows 下避免 stdio inherit 经 GBK 控制台转码把 UTF-8 中文弄乱。
  */
 function run(command, args, options = {}) {
   const pipeConsole = options.pipeConsole === true && process.platform === 'win32';
   const child = spawn(command, args, {
     cwd: options.cwd || root,
-    env,
+    env: options.env || env,
     stdio: pipeConsole ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     windowsHide: false
   });
@@ -181,6 +182,10 @@ const viteCli = resolveViteCli();
 if (!existsSync(viteCli)) {
   console.error(`[dev] 找不到 vite：${viteCli}\n在仓库根目录执行 npm install 后再启动。`);
   process.exit(1);
+}
+const accountServer = await planLocalAccountServer(root);
+if (accountServer) {
+  run(process.execPath, [accountServer.entry], { cwd: accountServer.cwd, env: accountServer.env, pipeConsole: true });
 }
 run(process.execPath, [
   viteCli,

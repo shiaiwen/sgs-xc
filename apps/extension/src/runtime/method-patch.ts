@@ -109,10 +109,17 @@ export function createMethodPatcher(): MethodPatcher {
       if (SEAT_EQUIP_INSTANCE_METHOD_SET.has(name) && isConstructorPrototype(target)) return false;
       const current = target[name];
       if (typeof current !== 'function') return false;
-      const original = unwrapToOriginal(current);
-      if (!original) return false;
       if (!claim(target, name)) return false;
       const ownDescriptor = Object.getOwnPropertyDescriptor(target, name);
+      // 别的模块已经包过这个对象的同一个方法时，套在它外面，剥掉的话它的回调就再也不会执行。
+      const ownWrapper = ownDescriptor?.value as TaggedFn | undefined;
+      const original = typeof ownWrapper === 'function' && ownWrapper[XC_METHOD_WRAP]
+        ? ownWrapper
+        : unwrapToOriginal(current);
+      if (!original) {
+        release(target, name);
+        return false;
+      }
       const active = createWrapper(original);
       let restored = false;
       const wrapper: TaggedFn = function (this: unknown, ...args: unknown[]) {

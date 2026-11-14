@@ -196,7 +196,7 @@ export function installDiscountRechargeController(
   const globalObject = options.globalObject ?? (window as LayaRuntimeWindow);
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const patcher = createMethodPatcher();
-  const tasks = createTaskScope();
+  const tasks = createTaskScope('折扣充值');
   let disposed = false;
 
   const installPatches = () => {

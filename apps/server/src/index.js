@@ -4,6 +4,8 @@ import { cors } from 'hono/cors';
 import { startGiftCodeRefresh } from './gift-codes/refresh.js';
 import { createGiftCodeRoutes } from './gift-codes/routes.js';
 import { createBackgroundConfigRoutes } from './background-config/routes.js';
+import { createAccountSkinRoutes } from './account-skins/routes.js';
+import { createAccountResetRoutes } from './account-reset/routes.js';
 import { createLogRoutes } from './logs-page.js';
 import { captureRequestLog } from './request-log.js';
 import { createVersionRoutes } from './version/routes.js';
@@ -26,6 +28,8 @@ app.use('*', async (context, next) => {
 app.route('/', createLogRoutes());
 app.route('/', createGiftCodeRoutes());
 app.route('/', createBackgroundConfigRoutes());
+app.route('/', createAccountSkinRoutes());
+app.route('/', createAccountResetRoutes());
 app.route('/', createVersionRoutes());
 
 // 礼包码跟着上游每小时刷一次，接口只读缓存，不受上游抖动影响。

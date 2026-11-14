@@ -60,26 +60,19 @@ export function createUserscriptDevBuildIdPlugin(): Plugin {
     configResolved(config) {
       outDir = config.build.outDir ?? outDir;
     },
-    buildStart() {
-      bump();
-      writeBuildIdFile();
-    },
-    writeBundle() {
-      bump();
-      writeBuildIdFile();
-    },
+    // 游戏页看到构建号变了就会刷新，所以整份脚本写完之后才换构建号，免得刷新时读到写了一半的文件。
     closeBundle() {
-      const id = readBuildIdForPoll();
-      writeBuildIdFile();
+      bump();
       try {
         const scriptPath = path.join(outDir, 'xiaochao.user.js');
-        let source = fs.readFileSync(scriptPath, 'utf8');
-        if (!source.includes('==UserScript==')) return;
-        source = source.replace(/\/\/ @version\s+\S+/g, `// @version      ${id}`);
-        fs.writeFileSync(scriptPath, source, 'utf8');
+        const source = fs.readFileSync(scriptPath, 'utf8');
+        if (source.includes('==UserScript==')) {
+          fs.writeFileSync(scriptPath, source.replace(/\/\/ @version\s+\S+/g, `// @version      ${buildId}`), 'utf8');
+        }
       } catch {
         // 首次构建或路径未就绪时跳过。
       }
+      writeBuildIdFile();
     },
     handleHotUpdate() {
       bump();

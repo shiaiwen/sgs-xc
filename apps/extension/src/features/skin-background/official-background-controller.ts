@@ -10,6 +10,7 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   WALLPAPER_MENU_ATTACH_STAGE_DEPTH,
@@ -33,11 +34,14 @@ import {
   resolveHallScene,
   resolveWallPaperTabGroup,
   skinTrace,
+  watchSceneSwitch,
+  watchSceneSwitchRequest,
   wallPaperTabButtons,
   writeJson,
   type UnknownRecord
 } from './skin-runtime.ts';
 import { readOfficialBackgroundChoice, saveOfficialBackgroundChoice } from './skin-background-document.ts';
+import { PAPER_LOBBY_SCENE_NAMES } from '../../const/paper-all-paper-scene.ts';
 import {
   paintWallpaperSelectionMarks,
   showWallpaperSelectedMark,
@@ -45,12 +49,18 @@ import {
   wallpaperItemId
 } from './wallpaper-selection-marks.ts';
 const CHOICE_STORAGE_SUFFIX = '::XC_OFFICIAL_BACKGROUND_CHOICE';
+/** 游戏背景层放静态图的方法，第二个参数表示是不是皮肤图。 */
+const BACKGROUND_LAYER_IMAGE_METHOD = 'O';
+const BACKGROUND_LAYER_LIVE_SKIN_METHOD = 'SetBgLiveEffect';
+/** 背景层放静态图、主题骨骼动画、动态皮肤的三个方法。 */
+const BACKGROUND_LAYER_SHOW_METHODS = [BACKGROUND_LAYER_IMAGE_METHOD, 'wt', BACKGROUND_LAYER_LIVE_SKIN_METHOD];
 const BACKGROUND_REQUEST_URL = /\/sgs_ccon(?:[?#]|$)/;
 const BACKGROUND_REQUEST_BODY = /GAME_BG_(?:STRUCT|USEID)/;
 const LOCK_NODE_NAMES = ['maskLock', 'tagLock', 'lbPowerVal', 'vipImg'];
 const ITEM_METHOD_OVERRIDE = Symbol.for('sgsxc.officialBackground.itemMethodOverride');
 const USED_DATA_GETTERS = ['IsCanShow', 'IsCanUse', 'IsInPlatform', 'IsSamePower'];
 const SKIN_TAB_VALUE = 1;
+const LIVE_TAB_VALUE = 2;
 const REQUEST_URL_KEY = '__xcOfficialBackgroundRequestUrl';
 const LIVE_PANEL_NAME = 'WallLivePanel';
 const LIVE_PANEL_CLICK_SEARCH_DEPTH = 6;
@@ -95,10 +105,21 @@ export function installOfficialBackgroundController(
   const storage = options.storage ?? globalObject.localStorage;
   const extension = options.menuExtension;
   const patcher = createMethodPatcher();
-  const tasks = createTaskScope();
+  const tasks = createTaskScope('官方背景');
   const originalSelectHandlers = new WeakMap<UnknownRecord, PatchableFunction>();
   const itemMethodRestores: Array<() => void> = [];
   const preparedMenus = new Set<UnknownRecord>();
+  const guardedLayers = new WeakSet<UnknownRecord>();
+  /** 首页、房间列表各自的底图，按页面名记。 */
+  const lobbyImages = new Map<string, string>();
+  /** 进牌局前背景层上的图，要去的页面没记过底图时用它。 */
+  let imageBeforeMatch: unknown;
+  /** 背景层上是牌局放的图或动画，离开牌局时要撤掉。 */
+  let layerShowsMatchWallpaper = false;
+  /** 游戏已发出切到首页或大厅的通知、新页面还没换上。 */
+  let leavingToLobby = false;
+  /** 按官方背景开着整理过的列表。 */
+  const unlockedMenus = new WeakSet<UnknownRecord>();
   const cleanups: Array<() => void> = [];
   let localWriteDepth = 0;
   let suppressChoiceSave = false;
@@ -154,11 +175,82 @@ export function installOfficialBackgroundController(
 
   function saveChoice(value: unknown): boolean {
     const id = Number(value);
-    if (suppressChoiceSave || !isOn() || !Number.isFinite(id) || id <= 0 || !choiceAccountId()) return false;
+    if (suppressChoiceSave || !Number.isFinite(id) || id <= 0 || !choiceAccountId()) return false;
     writeJson(storage, choiceStorageKey(), { id, savedAt: Date.now() });
     // 同时写进账号文档，文档一变才会触发上传。
     saveOfficialBackgroundChoice(documentStorage(), choiceAccountId(), id);
     return true;
+  }
+
+  // ---------- 官方皮肤背景只在牌局里显示 ----------
+
+  /**
+   * 官方的皮肤背景、动态皮肤只在牌局和旁观里显示，首页和房间列表不放，全局背景开关管不到它们。
+   * 正在退出牌局时牌局页面还在，也算牌局外。
+   */
+  function outsideMatch(): boolean {
+    return leavingToLobby || !locator.gameScene();
+  }
+
+  /** 游戏放静态图时第二个参数表示是不是皮肤图；动态皮肤走单独的方法。 */
+  function isSkinLayerCall(name: string, args: unknown[]): boolean {
+    return name === BACKGROUND_LAYER_LIVE_SKIN_METHOD || (name === BACKGROUND_LAYER_IMAGE_METHOD && Boolean(args[1]));
+  }
+
+  /** 只包这一个背景层实例：游戏往上放图时分清主题和皮肤，牌局外不让皮肤图盖上去。 */
+  function guardBackgroundLayer(): void {
+    const layer = locator.layer('BackgroundLayer');
+    if (!layer || guardedLayers.has(layer)) return;
+    guardedLayers.add(layer);
+    skinTrace('wallpaper-layer-guarded', { skin: asRecord(layer.bg)?.skin, scene: locator.scene()?.SceneName });
+    for (const name of BACKGROUND_LAYER_SHOW_METHODS) {
+      overrideItemInstanceMethod(layer, name, (original) => function (this: UnknownRecord, ...args: unknown[]) {
+        const skinCall = isSkinLayerCall(name, args);
+        skinTrace('wallpaper-layer-call', {
+          name,
+          url: args[0],
+          skin: skinCall,
+          outsideMatch: outsideMatch(),
+          scene: locator.scene()?.SceneName
+        });
+        if (outsideMatch()) {
+          // 只有牌局会放皮肤图和动态皮肤；主题动画别的页面也用来放自己的底图，不能挡。
+          if (skinCall) return undefined;
+          layerShowsMatchWallpaper = false;
+          return original.apply(this, args);
+        }
+        if (!layerShowsMatchWallpaper) imageBeforeMatch = asRecord(this.bg)?.skin;
+        layerShowsMatchWallpaper = true;
+        return original.apply(this, args);
+      });
+    }
+  }
+
+  /** 首页、房间列表建好后记下它们自己的底图。 */
+  function rememberLobbyImage(sceneName: string): void {
+    if (!PAPER_LOBBY_SCENE_NAMES.includes(sceneName) || layerShowsMatchWallpaper) return;
+    const skin = asRecord(locator.layer('BackgroundLayer')?.bg)?.skin;
+    if (typeof skin === 'string' && skin) lobbyImages.set(sceneName, skin);
+  }
+
+  /**
+   * 离开牌局时马上撤掉牌局放的皮肤图、动态皮肤和主题动画，换上要去的那一页的底图。
+   * 游戏要等新页面加载完才换底图，这之前动态背景一直在放。
+   */
+  function dropMatchWallpaper(targetScene: string): void {
+    guardBackgroundLayer();
+    const layer = locator.layer('BackgroundLayer');
+    if (!layer || !layerShowsMatchWallpaper || !outsideMatch()) return;
+    layerShowsMatchWallpaper = false;
+    callMethod(layer, 'RemovebgEffect');
+    const image = lobbyImages.get(targetScene) ?? imageBeforeMatch;
+    if (image) callMethod(layer, BACKGROUND_LAYER_IMAGE_METHOD, image);
+  }
+
+  function settleWallpaper(): void {
+    const sceneName = String(locator.scene()?.SceneName ?? '');
+    rememberLobbyImage(sceneName);
+    dropMatchWallpaper(sceneName);
   }
 
   /** 游戏内部写背景时屏蔽其上报。 */
@@ -209,7 +301,13 @@ export function installOfficialBackgroundController(
       const listenerOwner = {};
       const onSelect = (id: unknown) => {
         const saved = saveChoice(id);
-        if (saved) tasks.later(() => preparedMenus.forEach(paintMenuMarks), 0);
+        if (saved) {
+          tasks.later(() => {
+            preparedMenus.forEach(paintMenuMarks);
+            // 牌桌要等服务器回当前背景才换图，那条请求被挡掉了，这里直接告诉牌桌换成刚点的这张。
+            if (isOn() && locator.gameScene()) callMethod(dispatcher, 'event', 'BACKGROUND_USEDID_GOT', [Number(id)]);
+          }, 0);
+        }
         return saved;
       };
       (dispatcher.on as PatchableFunction).call(dispatcher, 'SELECT_WALLPAPER', listenerOwner, onSelect);
@@ -217,12 +315,14 @@ export function installOfficialBackgroundController(
       cleanups.push(() => callMethod(dispatcher, 'off', 'SELECT_WALLPAPER', listenerOwner, onSelect));
     }
     patcher.wrap(dispatcher, 'event', (original) => function (this: unknown, type: unknown, data: unknown, ...rest: unknown[]) {
-      return original.call(this, type, restoreChosenBackground(type, data), ...rest);
+      if (type !== 'BACKGROUND_USEDID_GOT') return original.call(this, type, data, ...rest);
+      guardBackgroundLayer();
+      return original.call(this, type, restoreChosenBackground(data), ...rest);
     });
   }
 
-  function restoreChosenBackground(type: unknown, data: unknown): unknown {
-    if (type !== 'BACKGROUND_USEDID_GOT' || !isOn()) return data;
+  /** 背景只跟手动点选走：不管官方背景开没开，游戏下发当前背景时都换成最后一次点选的那张。 */
+  function restoreChosenBackground(data: unknown): unknown {
     const chosen = savedChoice();
     if (!chosen) return data;
     if (Array.isArray(data) && data.length > 1 && data[1] === '') {
@@ -461,13 +561,22 @@ export function installOfficialBackgroundController(
     paintMenuMarks(menu);
   }
 
+  /** 游戏清格子时静态、动态皮肤一起清，两页的空壳都得拆掉，下次切过去才会重新建格子。 */
   function destroySkinPanel(menu: UnknownRecord): void {
-    const panel = asRecord(menu.panel);
-    if (!panel) return;
+    const panels = ['panel', 'livePanel'].filter((key) => asRecord(menu[key]));
+    if (!panels.length) return;
     callMethod(menu, 'clearItems');
-    callMethod(panel, 'removeSelf');
-    callMethod(panel, 'destroy', true);
-    menu.panel = null;
+    for (const key of panels) {
+      const panel = asRecord(menu[key]);
+      callMethod(panel, 'removeSelf');
+      callMethod(panel, 'destroy', true);
+      menu[key] = null;
+    }
+  }
+
+  /** 正停在动态皮肤页时，拆掉后要马上建回来，不然这一页是空的。 */
+  function reshowLiveTab(menu: UnknownRecord): void {
+    if (asRecord(menu.tabGroup)?.SelectedValue === LIVE_TAB_VALUE) callMethod(menu, 'onShowLiveitems');
   }
 
   /** 主题、静态皮肤、动态皮肤共用勾选图，点中的那一项才显示。 */
@@ -530,6 +639,7 @@ export function installOfficialBackgroundController(
     prepareAllItems(menu);
     const panel = asRecord(menu.panel);
     if (panel) panel.visible = asRecord(menu.tabGroup)?.SelectedValue === SKIN_TAB_VALUE;
+    reshowLiveTab(menu);
     const chosenId = savedChoice();
     const target = findItem(menu, chosenId || currentId);
     if (target) {
@@ -540,6 +650,7 @@ export function installOfficialBackgroundController(
       }
     }
     preparedMenus.add(menu);
+    unlockedMenus.add(menu);
     return true;
   }
 
@@ -554,15 +665,17 @@ export function installOfficialBackgroundController(
     const record = asRecord(menu);
     if (!record) return;
     callMethod(record, 'RefreList');
-    if (record.panel) {
+    if (record.panel || record.livePanel) {
       destroySkinPanel(record);
       record.wallPaperSkinItems = [];
       if (asRecord(record.tabGroup)?.SelectedValue === SKIN_TAB_VALUE) callMethod(record, 'onShowSkinitems');
+      reshowLiveTab(record);
     }
     itemsOf(record, 'wallPaperItems').forEach((item) => callMethod(item, 'initUI'));
     itemsOf(record, 'wallPaperSkinItems').forEach((item) => callMethod(item, 'updateUI'));
     itemsOf(record, 'wallPaperLiveItems').forEach((item) => callMethod(item, 'updateUI'));
     preparedMenus.delete(record);
+    unlockedMenus.delete(record);
   }
 
   function menuReady(topMenu: UnknownRecord): UnknownRecord | null {
@@ -579,6 +692,8 @@ export function installOfficialBackgroundController(
   }
 
   function applyMenuExtension(menu: UnknownRecord, topMenu: UnknownRecord | null): void {
+    // 列表是按整理时的官方背景开关建的，开关变了就按游戏原样重建一次再整理。
+    if (preparedMenus.has(menu) && unlockedMenus.has(menu) !== isOn()) restoreMenu(menu);
     if (isOn() && !preparedMenus.has(menu)) unlockMenu(menu);
     else if (extensionOn() && !preparedMenus.has(menu)) {
       prepareMenuForExtension(menu);
@@ -763,6 +878,7 @@ export function installOfficialBackgroundController(
 
   /** 场景就绪后安装拦截；小抄页签只在用户打开背景面板时挂上。 */
   function sync(): void {
+    installGlobalGuards();
     if (!extensionOn()) {
       const openMenu = asRecord(findTopMenu()?.wallPaperUI);
       if (openMenu) extension?.detachMenu(openMenu);
@@ -804,7 +920,9 @@ export function installOfficialBackgroundController(
   ];
   traceWallPaperAttach('installed');
   void tasks.poll(() => (isBackgroundUiScene(locator, globalObject) ? 'ready' : null), Infinity, 1000).then((token) => {
-    if (token) queueEnableWallPaperHooks();
+    if (!token) return;
+    installGlobalGuards();
+    queueEnableWallPaperHooks();
   });
   void tasks.poll(() => {
     if (wallPaperHooksEnabled) return 'done';
@@ -814,19 +932,28 @@ export function installOfficialBackgroundController(
     if (token === 'enable') enableWallPaperHooks();
   });
   tasks.later(() => scheduleSync(), 0);
+  watchSceneSwitchRequest(locator, patcher, tasks, (sceneName) => {
+    leavingToLobby = PAPER_LOBBY_SCENE_NAMES.includes(sceneName);
+    if (leavingToLobby) dropMatchWallpaper(sceneName);
+  });
+  watchSceneSwitch(locator, patcher, tasks, () => {
+    leavingToLobby = false;
+    settleWallpaper();
+  }, globalObject, undefined, () => true);
   const watchOpenMenu = () => {
+    if (isBackgroundUiScene(locator, globalObject) || locator.gameScene()) settleWallpaper();
     if (shouldSyncBackgroundUi() && isBackgroundUiScene(locator, globalObject)) {
       const menu = findWallPaperMenuOnStage(globalObject, WALLPAPER_MENU_STAGE_SEARCH_DEPTH);
       const buttons = wallPaperTabButtons(resolveWallPaperTabGroup(menu) ?? {});
       if (menu && menu.visible !== false && buttons.length) applyMenuExtension(menu, findTopMenu());
     }
-    tasks.later(watchOpenMenu, WALLPAPER_VISIBLE_MENU_POLL_MS);
   };
-  tasks.later(watchOpenMenu, WALLPAPER_VISIBLE_MENU_POLL_MS);
+  const stopWatchingMenu = everyInterval(tasks.label, WALLPAPER_VISIBLE_MENU_POLL_MS, watchOpenMenu);
 
   return {
     sync,
     dispose() {
+      stopWatchingMenu();
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       tasks.dispose();
       cleanups.splice(0).forEach((cleanup) => cleanup());

@@ -4,6 +4,7 @@
 
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { locateSceneManager, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 
 type Node = Record<string, any>;
@@ -30,9 +31,9 @@ export function installClassicRoomFilterController(
   let changeHandler: (() => void) | null = null;
   let replaying = false;
 
-  const timer = global.setInterval(() => {
+  const stopPolling = everyInterval('房间过滤', intervalMs * 2, () => {
     try { sync(); } catch (error) { console.warn('[room-filter] sync failed', error); }
-  }, intervalMs * 2);
+  }, {}, global);
   const unsubscribe = config.subscribe(CONFIG_KEY, () => replay());
   sync();
 
@@ -127,7 +128,7 @@ export function installClassicRoomFilterController(
   return {
     dispose() {
       disposed = true;
-      global.clearInterval(timer);
+      stopPolling();
       unsubscribe();
       detachCheckbox();
       patcher.restoreAll();

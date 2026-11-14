@@ -3,6 +3,7 @@
  */
 import {
   USERSCRIPT_DEV_RELOAD_AFTER_BUILD_MS,
+  USERSCRIPT_DEV_RELOAD_AFTER_LOCAL_BUILD_MS,
   USERSCRIPT_DEV_RELOAD_COOLDOWN_MS,
   USERSCRIPT_DEV_RELOAD_POLL_MS,
   USERSCRIPT_DEV_RELOAD_WARMUP_MS,
@@ -80,7 +81,7 @@ export function installUserscriptDevAutoReload(pollUrl: string, installUrl = '')
     reloadTimer = window.setTimeout(() => {
       reloadTimer = 0;
       reloadForDevBuild();
-    }, USERSCRIPT_DEV_RELOAD_AFTER_BUILD_MS);
+    }, tampermonkeyInstallUrl ? USERSCRIPT_DEV_RELOAD_AFTER_BUILD_MS : USERSCRIPT_DEV_RELOAD_AFTER_LOCAL_BUILD_MS);
   };
 
   const startupAllowsReload = (): boolean => {

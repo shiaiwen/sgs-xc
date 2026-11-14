@@ -12,6 +12,13 @@ import {
 } from './src/runtime/userscript-dev-build-id-plugin.ts';
 import { patchUserscriptDevInstallMount } from './tools/patch-userscript-dev-install.js';
 import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
+import {
+  USERSCRIPT_DEV_LOADER_NAME,
+  USERSCRIPT_DEV_LOADER_PATH,
+  USERSCRIPT_EXCLUDES,
+  USERSCRIPT_MATCHES,
+  USERSCRIPT_NAMESPACE
+} from './src/const/userscript-meta.ts';
 import { isUserscriptDevBuild } from './tools/vite-dev-fast.ts';
 
 const USERSCRIPT_FILE = resolve(import.meta.dirname, 'dist/userscript/xiaochao.user.js');
@@ -301,7 +308,23 @@ function devUserscriptSimplePage(port: number): Plugin {
     ? `http://127.0.0.1:${installHttpPort}${USERSCRIPT_INSTALL_PATH}`
     : '';
   const scriptUrlHttps = `https://127.0.0.1:${port}${USERSCRIPT_INSTALL_PATH}`;
-  const installUrlForTampermonkey = scriptUrlHttp || scriptUrlHttps;
+  const loaderMode = process.env.XC_USERSCRIPT_LOCAL_LOADER === '1' && installHttpPort > 0;
+  const installUrlForTampermonkey = loaderMode
+    ? `http://127.0.0.1:${installHttpPort}${USERSCRIPT_DEV_LOADER_PATH}`
+    : scriptUrlHttp || scriptUrlHttps;
+  const steps = loaderMode
+    ? `<li>浏览器打开 <code>chrome://extensions</code>，点开油猴的「详细信息」，打开<strong>允许访问文件网址</strong></li>
+    <li>油猴里删掉或关掉其它小抄脚本，包括线上「三国杀小抄」和旧的「dev:三国杀小抄」</li>
+    <li>油猴图标 → 管理面板 → 实用工具 → <strong>从 URL 安装</strong>，粘贴：<code id="install-url">${installUrlForTampermonkey}</code> <button type="button" id="copy-url">复制</button></li>
+    <li>确认安装 <code>${USERSCRIPT_DEV_LOADER_NAME}</code>，只需装这一次</li>`
+    : `<li>油猴图标 → 管理面板 → 实用工具 → <strong>从 URL 安装</strong></li>
+    <li>粘贴：<code id="install-url">${installUrlForTampermonkey}</code> <button type="button" id="copy-url">复制</button></li>
+    <li>确认安装 <code>dev:三国杀小抄</code>，关掉线上「三国杀小抄」</li>`;
+  const afterInstall = loaderMode
+    ? '<p>终端跑 <code>npm run dev:userscript</code> 别关。改代码保存，终端 build 完成后游戏页会自己刷新，刷新后就是最新代码。这个页面信任过证书后，游戏页才读得到构建号。</p>'
+    : `${scriptUrlHttp ? '<p>油猴拉取 https 自签证书常会失败，请用上面的 <strong>http</strong> 地址安装。</p>' : ''}
+  <p>终端跑 <code>npm run dev:userscript:simple</code> 别关。改代码保存，等终端新一轮 build 完成，再<strong>刷新游戏页</strong>。</p>
+  <p>仍失败：油猴管理面板 → 实用工具 → <strong>从文件安装</strong>，选 <code>apps/extension/dist/userscript/xiaochao.user.js</code>。</p>`;
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -323,13 +346,9 @@ function devUserscriptSimplePage(port: number): Plugin {
   <p>点页面上的安装按钮常常没反应，请按下面用油猴<strong>从 URL 安装</strong>。</p>
   <p><strong>安装步骤</strong></p>
   <ol>
-    <li>油猴图标 → 管理面板 → 实用工具 → <strong>从 URL 安装</strong></li>
-    <li>粘贴：<code id="install-url">${installUrlForTampermonkey}</code> <button type="button" id="copy-url">复制</button></li>
-    <li>确认安装 <code>dev:三国杀小抄</code>，关掉线上「三国杀小抄」</li>
+    ${steps}
   </ol>
-  ${scriptUrlHttp ? '<p>油猴拉取 https 自签证书常会失败，请用上面的 <strong>http</strong> 地址安装。</p>' : ''}
-  <p>终端跑 <code>npm run dev:userscript:simple</code> 别关。改代码保存，等终端新一轮 build 完成，再<strong>刷新游戏页</strong>。</p>
-  <p>仍失败：油猴管理面板 → 实用工具 → <strong>从文件安装</strong>，选 <code>apps/extension/dist/userscript/xiaochao.user.js</code>。</p>
+  ${afterInstall}
   <script>
     document.getElementById('copy-url')?.addEventListener('click', () => {
       navigator.clipboard.writeText('${installUrlForTampermonkey}');
@@ -388,6 +407,8 @@ const isLocalUserscriptServe = process.env.XC_USERSCRIPT_DEV_PORT !== undefined
 const isBundleDevServe = process.env.XC_USERSCRIPT_BUNDLE_DEV === '1';
 const useLocalHttps = isLocalUserscriptServe || isBundleDevServe;
 const devAutoReloadEnabled = userscriptDevReloadEnabled(isLocalUserscriptServe, isBundleDevServe);
+/** 油猴里装的是本地加载器，刷新页面就会读到最新打包，不用再弹油猴更新页。 */
+const usesLocalLoader = process.env.XC_USERSCRIPT_LOCAL_LOADER === '1';
 const installHttpPort = Number(process.env.XC_USERSCRIPT_INSTALL_HTTP_PORT || 0);
 const localUserscriptUrl = installHttpPort
   ? `http://127.0.0.1:${installHttpPort}${USERSCRIPT_INSTALL_PATH}`
@@ -405,7 +426,7 @@ export default defineConfig({
       userscriptDevBuildPollUrl(devAutoReloadEnabled, useLocalHttps, devPort, installHttpPort)
     ),
     __XIAOCHAO_DEV_INSTALL_URL__: JSON.stringify(
-      userscriptDevInstallUrl(devAutoReloadEnabled, installHttpPort, devPort)
+      usesLocalLoader ? '' : userscriptDevInstallUrl(devAutoReloadEnabled, installHttpPort, devPort)
     )
   },
   server: {
@@ -444,30 +465,13 @@ export default defineConfig({
       },
       userscript: {
         name: isDevUserscriptBundle ? 'dev:三国杀小抄' : '三国杀小抄',
-        namespace: 'https://95chong.cn/',
+        namespace: USERSCRIPT_NAMESPACE,
         version: xiaochaoVersion,
         description: '三国杀OL辅助插件',
         author: 'many people',
         icon: 'https://www.sanguosha.com/favicon.ico',
-        match: [
-          '*://game.4399iw2.com/yxsgs/*',
-          '*://my.4399.com/yxsgs/*',
-          '*://*.sanguosha.com/*',
-          '*://web.kuaiwan.com/kwsgsn/*',
-          '*://wan.baidu.com/microend?gameId=19793595*',
-          '*://www.7k7k.com/special/sgs/?*',
-          '*://playgame.iqiyi.com/login/iframe_page_web/top?game_id=146'
-        ],
-        exclude: [
-          'https://game.4399iw2.com/yxxsgs/*',
-          '*://*.sanguosha.com/10/*',
-          '*://*.sanguosha.com/10th/*',
-          '*://*.sanguosha.com/220/miniGame/*',
-          'https://wan.baidu.com/*gameId=19793616*',
-          '*://h5.7k7k.com/web/H5GAMES.html?gid=960982bec2f555de44ea43ca8a7ef418/*',
-          '*://qqgame.qq.com/webappframe/?appid=10951',
-          '*://s118.app1107877410.qqopenapp.com/pc/qqLobby_index.php*'
-        ],
+        match: USERSCRIPT_MATCHES,
+        exclude: USERSCRIPT_EXCLUDES,
         grant: 'none',
         connect: isDevUserscriptBundle ? ['127.0.0.1', 'localhost'] : undefined,
         'run-at': 'document-start',
@@ -477,7 +481,10 @@ export default defineConfig({
       },
       build: {
         fileName: 'xiaochao.user.js',
-        cssSideEffects: mountUserscriptStyle
+        cssSideEffects: mountUserscriptStyle,
+        // 代码里出现按需加载时，插件会改用 SystemJS，默认从 jsdelivr 下载加载器；
+        // 移动网络等屏蔽 jsdelivr 时脚本整个起不来，所以加载器直接打进脚本。
+        systemjs: 'inline'
       }
     }),
     ...(userscriptDevFast ? [] : [collapseUserscriptPlugin()])

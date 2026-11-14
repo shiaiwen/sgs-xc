@@ -3,13 +3,37 @@
  */
 
 import type { LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
-import { skinFavoritesGridPosition } from '../../const/skin-favorites-grid.ts';
+import {
+  FAVORITE_DELETE_FILL,
+  FAVORITE_DELETE_FONT_SIZE,
+  FAVORITE_DELETE_MARGIN,
+  FAVORITE_DELETE_TEXT_COLOR,
+  FAVORITE_DELETE_Z_ORDER,
+  SKIN_FAVORITES_DELETE_SIZE,
+  SKIN_FAVORITES_GRID_COLUMNS,
+  SKIN_FAVORITES_ITEM_BOX_HEIGHT,
+  SKIN_FAVORITES_ITEM_HEIGHT,
+  SKIN_FAVORITES_ITEM_NAME_HEIGHT,
+  SKIN_FAVORITES_ITEM_NAME_TOP,
+  SKIN_FAVORITES_ITEM_WIDTH,
+  fitSkinFavoriteName,
+  skinFavoritesGridPosition
+} from '../../const/skin-favorites-grid.ts';
+import {
+  UPLOADED_BACKGROUND_FILE_ACCEPT,
+  UPLOAD_TILE_BORDER,
+  UPLOAD_TILE_FILL,
+  UPLOAD_TILE_LABEL,
+  UPLOAD_TILE_LABEL_FONT_SIZE,
+  UPLOAD_TILE_PLUS_FONT_SIZE,
+  UPLOAD_TILE_TEXT_COLOR
+} from '../../const/uploaded-background.ts';
 import {
   WALLPAPER_BACKGROUND_TAB_LAYOUT_KEY,
   WALLPAPER_FAVORITES_TAB_DEFAULT_HEIGHT,
   WALLPAPER_TAB_TEXTURE_SHADOW_WIDTH
 } from '../../const/wallpaper-favorites-tab-layout.ts';
-import { WALLPAPER_LIVE_PANEL_KEY, isWallpaperMenuLiveTabValue } from '../../const/wallpaper-menu.ts';
+import { WALLPAPER_LIVE_PANEL_KEY, WALLPAPER_MENU_TAB_SKIN, isWallpaperMenuLiveTabValue } from '../../const/wallpaper-menu.ts';
 import type { MethodPatcher, PatchableFunction } from '../../runtime/method-patch.ts';
 import type { BackgroundFavorite, BackgroundResource, SkinBackgroundStore } from './skin-background-store.ts';
 import { raiseWallpaperSelectedMark } from './wallpaper-selection-marks.ts';
@@ -28,6 +52,7 @@ const TAB_FLEX_LOOP_KEY = '__xcTabFlexLoop';
 const TAB_KEEP_KEY = '__xcFavoritesTabButton';
 const TAB_DETACHED_KEY = '__xcFavoritesTabDetached';
 const TAB_NATIVE_WIDTH_KEY = '__xcTabNativeWidth';
+const DELETE_BUTTON_KEY = '__xcFavoriteDeleteButton';
 const PREVIEW_WIDTH = 95;
 const PREVIEW_HEIGHT = 40;
 
@@ -40,6 +65,14 @@ export interface FavoritesTabOptions {
   applyFavorite(resource: BackgroundResource): Promise<boolean>;
   /** 收藏项是否为当前背景。 */
   isCurrent(favorite: BackgroundFavorite): boolean;
+  /** 是不是上传的图片或视频。上传项可以删除。 */
+  isUploaded(favorite: BackgroundFavorite): boolean;
+  /** 上传项的预览图地址，读不出来时为空。 */
+  uploadPreview(favorite: BackgroundFavorite): Promise<string>;
+  /** 存下上传的文件，加进列表并设为背景。 */
+  upload(file: File): Promise<boolean>;
+  /** 从列表删掉一项，上传项连本机文件一起删。 */
+  removeFavorite(favorite: BackgroundFavorite): Promise<void>;
 }
 
 export interface FavoritesTab {
@@ -47,6 +80,8 @@ export interface FavoritesTab {
   detach(menu: UnknownRecord): void;
   /** 当前背景变化后刷新选中态。 */
   refreshSelection(): void;
+  /** 收藏列表在别处改过时，按存的列表重画再刷新选中态。 */
+  refreshList(): void;
   dispose(): void;
 }
 
@@ -54,6 +89,7 @@ interface MenuState {
   panel?: UnknownRecord;
   items: UnknownRecord[];
   empty?: UnknownRecord;
+  uploadTile?: UnknownRecord;
   loadMoreVisibility?: { text: unknown; background: unknown };
   /** 显示小抄列表时被藏起来的动态皮肤列表，回到动态皮肤页时还回去。 */
   hiddenLivePanel?: UnknownRecord;
@@ -139,6 +175,8 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     state.items.splice(0).forEach((item) => callMethod(item, 'destroy', true));
     callMethod(state.empty, 'destroy', true);
     state.empty = undefined;
+    callMethod(state.uploadTile, 'destroy', true);
+    state.uploadTile = undefined;
   }
 
   function ensurePanel(menu: UnknownRecord): UnknownRecord | null {
@@ -169,6 +207,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
   }
 
   function previewUrl(favorite: BackgroundFavorite): string {
+    if (options.isUploaded(favorite)) return '';
     return favorite.resource.type === 0 && favorite.resource.url ? favorite.resource.url : favorite.previewUrl;
   }
 
@@ -280,6 +319,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     item.UpdateSelectedUI = function (this: UnknownRecord) {
       const selected = asRecord(this.selectedImg);
       if (selected) selected.visible = options.isCurrent(favorite);
+      syncDeleteButton(this, favorite);
       const background = asRecord(this.bg);
       if (background) background.visible = true;
       const texture = background?.texture;
@@ -296,6 +336,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
         }
         const result = (nativeUpdate as PatchableFunction).apply(this, args);
         if (background) background.visible = true;
+        raiseDeleteButton(this);
         return result;
       };
     }
@@ -312,7 +353,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     callMethod(item, 'UpdateData', {
       ID: -(index + 1),
       SkinID: Number(favorite.skinId) || 0,
-      Name: favorite.name,
+      Name: options.isUploaded(favorite) ? fitSkinFavoriteName(favorite.name) : favorite.name,
       IconURL: previewUrl(favorite),
       IsUsual: options.isCurrent(favorite),
       canUsed: true
@@ -324,6 +365,10 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       mark.zOrder = 999;
       raiseWallpaperSelectedMark(item, mark);
     }
+    addDeleteButton(item, favorite);
+    if (options.isUploaded(favorite)) {
+      void options.uploadPreview(favorite).then((url) => showUploadPreview(item, url));
+    }
     const { offsetX, offsetY } = skinFavoritesGridPosition(index);
     callMethod(item, 'pos', offsetX, offsetY);
     item.visible = true;
@@ -331,16 +376,151 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     return item;
   }
 
+  // ---------- 上传 ----------
+
+  let filePicker: HTMLInputElement | null = null;
+  let uploading = false;
+
+  function pickFile(): void {
+    if (uploading || typeof document === 'undefined') return;
+    if (!filePicker) {
+      filePicker = document.createElement('input');
+      filePicker.type = 'file';
+      filePicker.accept = UPLOADED_BACKGROUND_FILE_ACCEPT;
+      filePicker.style.display = 'none';
+      filePicker.addEventListener('change', () => {
+        const file = filePicker?.files?.[0];
+        if (filePicker) filePicker.value = '';
+        if (!file) return;
+        uploading = true;
+        void options.upload(file).finally(() => {
+          uploading = false;
+        });
+      });
+      document.body.appendChild(filePicker);
+    }
+    filePicker.click();
+  }
+
+  function stopEvent(event: unknown): void {
+    callMethod(event, 'stopPropagation');
+  }
+
+  /** 列表画到哪才建格子内容，没画到的格子先空着，所以给面板用的东西都要有 Draw 和 ClearDraw。 */
+  function makeDrawable(sprite: UnknownRecord): void {
+    sprite.Drawed = false;
+    sprite.Draw = function (this: UnknownRecord) {
+      this.Drawed = true;
+      this.visible = true;
+    };
+    sprite.ClearDraw = function (this: UnknownRecord) {
+      this.Drawed = false;
+      this.visible = false;
+    };
+  }
+
+  function createLabel(text: string, fontSize: number, color: string, width: number, height: number): UnknownRecord | null {
+    const TextClass = laya()?.Text as (new () => UnknownRecord) | undefined;
+    if (!TextClass) return null;
+    const label = new TextClass();
+    Object.assign(label, { text, font: 'SimSun', fontSize, color, align: 'center', valign: 'middle', mouseEnabled: false });
+    callMethod(label, 'size', width, height);
+    return label;
+  }
+
+  /** 列表最后一格：点一下选文件上传。 */
+  function createUploadTile(panel: UnknownRecord, index: number): UnknownRecord | null {
+    const SpriteClass = laya()?.Sprite as (new () => UnknownRecord) | undefined;
+    if (!SpriteClass) return null;
+    const tile = new SpriteClass();
+    const width = SKIN_FAVORITES_ITEM_WIDTH;
+    const boxHeight = SKIN_FAVORITES_ITEM_BOX_HEIGHT;
+    callMethod(tile, 'size', width, SKIN_FAVORITES_ITEM_HEIGHT);
+    callMethod(asRecord(tile.graphics), 'drawRect', 1, 1, width - 2, boxHeight - 2, UPLOAD_TILE_FILL, UPLOAD_TILE_BORDER, 1);
+    const plus = createLabel('+', UPLOAD_TILE_PLUS_FONT_SIZE, UPLOAD_TILE_TEXT_COLOR, width, boxHeight);
+    if (plus) callMethod(tile, 'addChild', plus);
+    const label = createLabel(UPLOAD_TILE_LABEL, UPLOAD_TILE_LABEL_FONT_SIZE, UPLOAD_TILE_TEXT_COLOR, width, SKIN_FAVORITES_ITEM_NAME_HEIGHT);
+    if (label) {
+      label.y = SKIN_FAVORITES_ITEM_NAME_TOP;
+      callMethod(tile, 'addChild', label);
+    }
+    makeDrawable(tile);
+    tile.mouseEnabled = true;
+    tile.buttonMode = true;
+    callMethod(tile, 'on', layaEvent()?.CLICK, null, (event: unknown) => {
+      stopEvent(event);
+      if (options.enabled()) pickFile();
+    });
+    const { offsetX, offsetY } = skinFavoritesGridPosition(index);
+    callMethod(tile, 'pos', offsetX, offsetY);
+    callMethod(panel, 'addChild', tile);
+    return tile;
+  }
+
+  /** 每一项右上角的删除按钮。正在用的那项不显示，要删先换别的背景。 */
+  function addDeleteButton(item: UnknownRecord, favorite: BackgroundFavorite): void {
+    const SpriteClass = laya()?.Sprite as (new () => UnknownRecord) | undefined;
+    if (!SpriteClass) return;
+    const button = new SpriteClass();
+    const size = SKIN_FAVORITES_DELETE_SIZE;
+    const radius = size / 2;
+    callMethod(button, 'size', size, size);
+    callMethod(asRecord(button.graphics), 'drawCircle', radius, radius, radius, FAVORITE_DELETE_FILL);
+    const mark = createLabel('×', FAVORITE_DELETE_FONT_SIZE, FAVORITE_DELETE_TEXT_COLOR, size, size);
+    if (mark) callMethod(button, 'addChild', mark);
+    const itemWidth = Number(item.width) || SKIN_FAVORITES_ITEM_WIDTH;
+    callMethod(button, 'pos', itemWidth - size - FAVORITE_DELETE_MARGIN, FAVORITE_DELETE_MARGIN);
+    button.zOrder = FAVORITE_DELETE_Z_ORDER;
+    button.mouseEnabled = true;
+    button.buttonMode = true;
+    let removing = false;
+    callMethod(button, 'on', layaEvent()?.CLICK, null, (event: unknown) => {
+      stopEvent(event);
+      if (removing || options.isCurrent(favorite)) return;
+      removing = true;
+      void options.removeFavorite(favorite).finally(() => {
+        removing = false;
+      });
+    });
+    button.visible = !options.isCurrent(favorite);
+    item[DELETE_BUTTON_KEY] = button;
+    callMethod(item, 'addChild', button);
+  }
+
+  function syncDeleteButton(item: UnknownRecord, favorite: BackgroundFavorite): void {
+    const button = asRecord(item[DELETE_BUTTON_KEY]);
+    if (button && button.destroyed !== true) button.visible = !options.isCurrent(favorite);
+  }
+
+  /** 格子里的内容是画到时才补上的，补完要把删除按钮放回最上面，不然点不到。 */
+  function raiseDeleteButton(item: UnknownRecord): void {
+    const button = asRecord(item[DELETE_BUTTON_KEY]);
+    if (button && button.destroyed !== true) raiseWallpaperSelectedMark(item, button);
+  }
+
+  function showUploadPreview(item: UnknownRecord, url: string): void {
+    if (!url || item.destroyed === true) return;
+    const data = asRecord(item.data);
+    if (!data) return;
+    data.IconURL = url;
+    if (asRecord(item.bg)) callMethod(item, 'updateUI');
+  }
+
+  /** 提示文字放在上传格子下面那一行开始的空白里。 */
   function createEmptyHint(panel: UnknownRecord, hasFavorites: boolean): UnknownRecord | null {
     const SpriteClass = laya()?.Sprite as (new () => UnknownRecord) | undefined;
     const TextClass = laya()?.Text as (new () => UnknownRecord) | undefined;
     if (!SpriteClass || !TextClass) return null;
     const hint = new SpriteClass();
     const text = new TextClass();
+    const top = skinFavoritesGridPosition(SKIN_FAVORITES_GRID_COLUMNS).offsetY;
     const width = Number(panel.width) || 311;
-    const height = Math.max(100, Number(panel.height) || 400);
+    const height = Math.max(100, (Number(panel.height) || 400) - top);
+    hint.y = top;
     Object.assign(text, {
-      text: hasFavorites ? '皮肤背景列表尚未就绪' : '还没有收藏背景\n请在皮肤详情中点击“收藏背景”',
+      text: hasFavorites
+        ? '皮肤背景列表尚未就绪'
+        : '还没有收藏背景\n在皮肤详情中点击“收藏背景”\n或点上面的格子上传图片、视频',
       font: 'SimSun',
       fontSize: 12,
       color: '#DDCF98',
@@ -352,15 +532,7 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     callMethod(text, 'size', width, height);
     callMethod(hint, 'size', width, height);
     hint.mouseEnabled = false;
-    hint.Drawed = false;
-    hint.Draw = function (this: UnknownRecord) {
-      this.Drawed = true;
-      this.visible = true;
-    };
-    hint.ClearDraw = function (this: UnknownRecord) {
-      this.Drawed = false;
-      this.visible = false;
-    };
+    makeDrawable(hint);
     callMethod(hint, 'addChild', text);
     callMethod(panel, 'addChild', hint);
     return hint;
@@ -374,14 +546,16 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     clearItems(menu);
     const state = stateOf(menu);
     const favorites = store.favorites();
-    if (!favorites.length || !itemConstructor) {
-      state.empty = createEmptyHint(panel, favorites.length > 0) ?? undefined;
-    } else {
+    const listReady = favorites.length > 0 && Boolean(itemConstructor);
+    if (listReady) {
       favorites.forEach((favorite, index) => {
         const item = createItem(menu, favorite, index, panel);
         if (item) state.items.push(item);
       });
+    } else {
+      state.empty = createEmptyHint(panel, favorites.length > 0) ?? undefined;
     }
+    state.uploadTile = createUploadTile(panel, listReady ? favorites.length : 0) ?? undefined;
     callMethod(panel, 'UpdateDrawContent');
     const scrollBar = asRecord(panel.vScrollBar);
     callMethod(scrollBar, 'stopScroll');
@@ -431,6 +605,21 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     return button && 'value' in button ? button.value : first;
   }
 
+  /**
+   * 让游戏按静态皮肤页排一次版：建出皮肤列表面板，面板高度、勾选框和页签位置都跟静态皮肤页一样。
+   * 游戏只认自己的三个页签值，选中小抄背景时会按主题页排版，所以排版这一下临时把选中值当成静态皮肤。
+   */
+  function layoutAsSkinTab(menu: UnknownRecord): void {
+    const group = resolveWallPaperTabGroup(menu);
+    if (!group || typeof menu.loadMore !== 'function') return;
+    Object.defineProperty(group, 'SelectedValue', { configurable: true, value: WALLPAPER_MENU_TAB_SKIN });
+    try {
+      callMethod(menu, 'loadMore');
+    } finally {
+      delete group.SelectedValue;
+    }
+  }
+
   /** 显示或隐藏收藏面板。 */
   function showPanel(menu: UnknownRecord, show: boolean, restoreLoadMore = true): boolean {
     const state = stateOf(menu);
@@ -439,29 +628,18 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
       if (state.panel && state.panel !== menu.panel) state.panel.visible = false;
       return true;
     }
-    const favorites = store.favorites();
+    hideLiveList(menu);
+    toggleLoadMore(menu, true);
+    layoutAsSkinTab(menu);
     (Array.isArray(menu.wallPaperItems) ? menu.wallPaperItems as unknown[] : []).forEach((item) => {
       const record = asRecord(item);
       if (record) record.visible = false;
     });
-    const noSkin = asRecord(menu.noSkinWallSpr);
-    if (noSkin) noSkin.visible = false;
     rememberConstructors(menu);
-    if (!menu.panel || (favorites.length && !itemConstructor)) {
-      // 原生面板与列表项在首次“加载更多”时才创建，借它拿到构造器。
-      const visible = menu.visible !== false;
-      if (visible) menu.visible = false;
-      try {
-        callMethod(menu, 'loadMore');
-      } finally {
-        if (visible) menu.visible = true;
-      }
-      rememberConstructors(menu);
-    }
     const nativePanel = asRecord(menu.panel);
     if (nativePanel) nativePanel.visible = false;
-    hideLiveList(menu);
-    toggleLoadMore(menu, true);
+    const noSkin = asRecord(menu.noSkinWallSpr);
+    if (noSkin && nativePanel) noSkin.visible = false;
     const panel = ensurePanel(menu);
     if (!panel) return false;
     renderList(menu);
@@ -899,19 +1077,27 @@ export function createFavoritesTab(options: FavoritesTabOptions): FavoritesTab {
     });
   }
 
-  const unsubscribe = store.onFavoritesChange(() => {
+  function rerenderOpenLists(): void {
     liveMenus().forEach((menu) => {
       if (isSelected(menu)) renderList(menu);
     });
-  });
+  }
+
+  const unsubscribe = store.onFavoritesChange(rerenderOpenLists);
 
   return {
     attach,
     detach,
     refreshSelection,
+    refreshList() {
+      rerenderOpenLists();
+      refreshSelection();
+    },
     dispose() {
       unsubscribe();
       liveMenus().forEach(detach);
+      filePicker?.remove();
+      filePicker = null;
     }
   };
 }

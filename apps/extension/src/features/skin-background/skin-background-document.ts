@@ -1,6 +1,6 @@
 /**
  * 皮肤/背景相关本地元数据：一个账号一个 JSON 文档，与微端 shared.json 里多 key 的用法对齐为单对象。
- * 上传的大文件仍在 custom-background-store，IndexedDB 或磁盘，不在此文档。
+ * 上传的大文件仍在 uploaded-background-store，IndexedDB 或磁盘，不在此文档。
  */
 
 import { readBrowserSetting } from '../../adapters/browser-settings.ts';
@@ -52,6 +52,26 @@ function notifySkinBackgroundDocumentPatched(accountId: string, document: SkinBa
       listener(accountId, document);
     } catch {
       // 同步失败不打断本地保存。
+    }
+  }
+}
+
+const syncedListeners = new Set<(accountId: string) => void>();
+
+/** 服务器上较新的背景写进本机之后通知，背景、收藏列表和选中的勾按新存的内容重画。 */
+export function onSkinBackgroundSynced(listener: (accountId: string) => void): () => void {
+  syncedListeners.add(listener);
+  return () => {
+    syncedListeners.delete(listener);
+  };
+}
+
+export function notifySkinBackgroundSynced(accountId: string): void {
+  for (const listener of syncedListeners) {
+    try {
+      listener(accountId);
+    } catch (error) {
+      console.warn('[小抄背景] 按服务器上的背景重画失败:', error);
     }
   }
 }

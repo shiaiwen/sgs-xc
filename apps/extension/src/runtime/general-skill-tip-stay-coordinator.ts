@@ -18,6 +18,8 @@ import {
 } from './game-native-dialog.ts';
 import { GAME_TIP_LAYER_Z } from './game-tip-layer.ts';
 import { createMethodPatcher } from './method-patch.ts';
+import { everyInterval } from './shared-ticker.ts';
+import { SKILL_TIP_STAY_TICK_MS } from '../const/poll-intervals.ts';
 
 /** 武将技能相关 tip；道具等其它 tip 不碰 */
 /** 武将详情 + 技能面板（二者都有 timeAni/关钮/stay） */
@@ -1051,11 +1053,11 @@ export function installGeneralSkillTipStayCoordinator(
     }
   }
 
-  const timer = globalObject.setInterval(tick, 50);
+  const stopTicking = everyInterval('技能提示常驻', SKILL_TIP_STAY_TICK_MS, tick, {}, globalObject);
   tick();
 
   const dispose = () => {
-    globalObject.clearInterval(timer);
+    stopTicking();
     patcher.restoreAll();
     managerProtoReady = false;
     promptLayerReady = false;

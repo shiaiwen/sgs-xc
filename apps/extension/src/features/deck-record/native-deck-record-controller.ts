@@ -20,6 +20,8 @@ import type {
   DeckRecordListKind
 } from './deck-record-interaction.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { DECK_RECORD_SYNC_MS } from '../../const/poll-intervals.ts';
 import {
   isNativeHudSuspended,
   registerNativeHudPostGameTeardown
@@ -304,9 +306,9 @@ export function installNativeDeckRecordController(
     if (snapshot.activeList) clearHideTimer();
     syncPopup();
   });
-  const timer = window.setInterval(() => {
+  const stopPolling = everyInterval('牌局记录', DECK_RECORD_SYNC_MS, () => {
     if (configStore.get('display.deckHudEnabled')) sync();
-  }, 500);
+  }, { visualOnly: true });
   const unregisterPostGameTeardown = registerNativeHudPostGameTeardown(destroyOverlay);
   const stopGameEvents = gameEvents?.subscribe((event) => {
     if (event.type === 'game-ended') destroyOverlay();
@@ -317,7 +319,7 @@ export function installNativeDeckRecordController(
     stopped = true;
     unregisterPostGameTeardown();
     stopGameEvents?.();
-    window.clearInterval(timer);
+    stopPolling();
     clearHideTimer();
     stopStore();
     stopConfigEnabled();

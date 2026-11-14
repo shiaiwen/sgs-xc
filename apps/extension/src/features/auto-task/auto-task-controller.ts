@@ -11,6 +11,7 @@ import {
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   accountScopedStorageKey,
@@ -89,7 +90,7 @@ export function installAutoTaskController(
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const storage = options.storage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
   const now = options.now ?? Date.now;
-  const tasks = createTaskScope();
+  const tasks = createTaskScope('自动领取');
   const patcher = createMethodPatcher();
   const windows = createAutoTaskWindows(globalObject, locator, tasks);
   const claims = createAutoTaskClaims(storage, () => accountStorageKey(storage), now);
@@ -333,7 +334,6 @@ export function installAutoTaskController(
 
   function watchAccount(): void {
     if (isBackgroundUiScene(locator, globalObject)) noteAccountArrival();
-    tasks.later(watchAccount, ACCOUNT_POLL_MS);
   }
 
   function onGameEnded(): void {
@@ -355,6 +355,7 @@ export function installAutoTaskController(
   unsubscribes.push(() => globalObject.removeEventListener?.('xiaochao-autotask-config', onAutoTaskConfigReady));
 
   watchAccount();
+  unsubscribes.push(everyInterval(tasks.label, ACCOUNT_POLL_MS, watchAccount));
   armPeriodicAutoTask();
 
   if (configStore.get(AUTO_TASK_ENABLED_KEY) && resolveGameAccountId(globalObject, locator)) {

@@ -1,9 +1,11 @@
 /**
- * 清除本页小抄全部本地数据：配置、皮肤元数据、自定义背景、凭证与会话缓存。
+ * 清除本页小抄全部本地数据：配置、皮肤元数据、上传的背景文件、凭证与会话缓存。
+ * 当前账号存在服务器上的开关、背景和皮肤选择也清掉，不然刷新后会从服务器读回来。
  * 微端与油猴共用；微端会同步删除 shared.json 里已登记的配置键。
  */
 
 import { removeBrowserSetting } from '../adapters/browser-settings.ts';
+import { resetAccountDataOnServer } from '../config/account-config-sync.ts';
 import { CHOOSE_FIGURE_LOCK_KEY_BASE } from '../const/choose-figure-lock.ts';
 import { KNOWN_HAND_STORAGE_KEY_BASE } from '../const/known-hands.ts';
 import { CONFIG_SCHEMA, type XiaochaoConfigKey } from '../config/config-schema.ts';
@@ -13,7 +15,7 @@ import {
   LEGACY_OFFICIAL_CHOICE_SUFFIX,
   LEGACY_PAPER_RESOURCE_SUFFIX
 } from '../features/skin-background/skin-background-document.ts';
-import { clearAllCustomBackgroundPersistence } from '../features/skin-background/custom-background-store.ts';
+import { clearAllUploadedBackgrounds } from '../features/skin-background/uploaded-background-store.ts';
 
 const CREDENTIAL_KEYS = [
   'sgsol.rememberedCredentials.v2',
@@ -107,8 +109,14 @@ function clearCredentials(): void {
   }
 }
 
-/** 清除小抄本地数据并重置配置为默认值。 */
-export async function resetXiaochaoUserData(configStore: XiaochaoConfigStore): Promise<void> {
+export interface ResetXiaochaoResult {
+  /** 当前账号存在服务器上的开关、背景和皮肤选择清掉了没有。没登录时不用清，也算清掉了。 */
+  serverCleared: boolean;
+}
+
+/** 清除小抄本地数据并重置配置为默认值，当前账号存在服务器上的那份一起清掉。 */
+export async function resetXiaochaoUserData(configStore: XiaochaoConfigStore): Promise<ResetXiaochaoResult> {
+  const serverCleared = await resetAccountDataOnServer(configStore.account());
   const keys = collectXiaochaoLocalStorageKeys();
   const shared = (globalThis as { xiaochaoStorage?: { registerKeys?: (keys: string[]) => unknown } }).xiaochaoStorage;
   try {
@@ -119,6 +127,7 @@ export async function resetXiaochaoUserData(configStore: XiaochaoConfigStore): P
   for (const key of keys) removePersistedKey(key);
   clearCredentials();
   clearSessionXiaochaoKeys();
-  await clearAllCustomBackgroundPersistence();
+  await clearAllUploadedBackgrounds();
   configStore.resetAll();
+  return { serverCleared };
 }

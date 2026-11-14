@@ -14,6 +14,8 @@ import {
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import type { RecentCardStore } from './recent-card-store.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { RECENT_CARD_SYNC_MS } from '../../const/poll-intervals.ts';
 import {
   isNativeHudSuspended,
   registerNativeHudPostGameTeardown
@@ -154,9 +156,9 @@ export function installNativeRecentCardController(
 
   const stopStore = recentCardStore.subscribe(sync);
   const stopConfig = configStore.subscribe('display.deckHudEnabled', sync);
-  const timer = window.setInterval(() => {
+  const stopPolling = everyInterval('最近用牌', RECENT_CARD_SYNC_MS, () => {
     if (configStore.get('display.deckHudEnabled')) sync();
-  }, 500);
+  }, { visualOnly: true });
   const unregisterPostGameTeardown = registerNativeHudPostGameTeardown(destroyOverlay);
   const stopGameEvents = gameEvents?.subscribe((event) => {
     if (event.type === 'game-ended') destroyOverlay();
@@ -166,7 +168,7 @@ export function installNativeRecentCardController(
     stopped = true;
     unregisterPostGameTeardown();
     stopGameEvents?.();
-    window.clearInterval(timer);
+    stopPolling();
     stopStore();
     stopConfig();
     destroyOverlay();

@@ -34,6 +34,10 @@ type ConfigSubscriber<Key extends XiaochaoConfigKey> = (
 export interface XiaochaoConfigStore {
   get<Key extends XiaochaoConfigKey>(key: Key): XiaochaoConfig[Key];
   set<Key extends XiaochaoConfigKey>(key: Key, value: XiaochaoConfig[Key]): void;
+  /** 一次改多项，只写一次盘；校验不过的项跳过，变了的项照常通知。 */
+  setMany(changes: Partial<XiaochaoConfig>): void;
+  /** 现在读的是哪个账号的配置，还没读到账号时是 default。 */
+  account(): string;
   reset<Key extends XiaochaoConfigKey>(key: Key): void;
   /** 按键订阅；返回取消函数。 */
   subscribe<Key extends XiaochaoConfigKey>(
@@ -105,6 +109,23 @@ export function createConfigStore(
     }
   }
 
+  function setMany(changes: Partial<XiaochaoConfig>): void {
+    const previousValues = values;
+    const nextValues: Record<string, unknown> = { ...values };
+    let changed = false;
+    for (const key of Object.keys(changes) as XiaochaoConfigKey[]) {
+      if (!(key in CONFIG_SCHEMA)) continue;
+      const parsedValue = CONFIG_SCHEMA[key].parse(changes[key]);
+      if (parsedValue === undefined || isSameValue(nextValues[key], parsedValue)) continue;
+      nextValues[key] = parsedValue;
+      changed = true;
+    }
+    if (!changed) return;
+    values = nextValues as unknown as XiaochaoConfig;
+    storage.write(values);
+    publish(previousValues, values);
+  }
+
   function reset<Key extends XiaochaoConfigKey>(key: Key): void {
     set(key, CONFIG_SCHEMA[key].defaultValue as XiaochaoConfig[Key]);
   }
@@ -133,6 +154,8 @@ export function createConfigStore(
   return {
     get,
     set,
+    setMany,
+    account: () => accountId,
     reset,
     subscribe,
     snapshot: () => cloneConfigValues(values),

@@ -11,11 +11,13 @@ import {
   BACKGROUND_RESOURCE_TYPE_SPINE,
   BACKGROUND_RESOURCE_TYPE_VIDEO
 } from '../../const/background-resource-type.ts';
+import { BACKGROUND_VIDEO_MIN_FRAME_INTERVAL_MS } from '../../const/background-video.ts';
 import { HALL_BACKDROP_REAPPLY_MS } from '../../const/paper-hall-cover.ts';
-import { CUSTOM_BACKGROUND_Z_ORDER, DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
+import { isUploadedBackgroundUrl } from '../../const/uploaded-background.ts';
+import { XIAOCHAO_BACKGROUND_Z_ORDER, DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 import { isBackgroundDisplayReady } from './background-display-ready.ts';
 import { isSkinFrameSize, resolveBackgroundSourceSize, uniformCoverScale } from './background-fit.ts';
-import { CUSTOM_BACKGROUND_MEDIA_PROBE_TIMEOUT_MS } from './custom-background-media.ts';
+import { BACKGROUND_MEDIA_PROBE_TIMEOUT_MS } from './background-media-file.ts';
 import type { BackgroundResource, SkinBackgroundStore } from './skin-background-store.ts';
 import { asRecord, callMethod, type TaskScope, type UnknownRecord } from './skin-runtime.ts';
 
@@ -29,7 +31,7 @@ export interface SkinBackgroundRenderer {
   readonly resource: Partial<BackgroundResource>;
   hasBackground(): boolean;
   /**
-   * persistedUrl 只对静态图有用：画的是临时地址，存和对外报的是原图地址，
+   * persistedUrl 对静态图和上传项有用：画的是临时地址，存和对外报的是原图地址或上传编号，
    * 这样重启后还能重新加载，收藏项也能认出当前背景。
    */
   setBackground(resource?: Partial<BackgroundResource>, persist?: boolean, persistedUrl?: string): Promise<boolean>;
@@ -43,9 +45,7 @@ export interface SkinBackgroundRenderer {
   syncSceneVisibility(shouldShow: boolean, allPaper: boolean): Promise<void>;
   /** 从当前账号的本地存储重新加载背景资源。 */
   reloadStoredResource(): Partial<BackgroundResource>;
-  /** 场景切换后重扫官方壁纸层。 */
-  onSceneChange(allPaper: boolean): void;
-  /** 自定义背景是否已挂到 Laya 层上。 */
+  /** 小抄背景是否已挂到 Laya 层上。 */
   isMounted(): boolean;
   /** 背景精灵是否挂在当前 BackgroundLayer 上。 */
   isLayerAttached(): boolean;
@@ -58,6 +58,8 @@ export interface SkinBackgroundRendererOptions {
   store: SkinBackgroundStore;
   tasks: TaskScope;
   patcher?: MethodPatcher;
+  /** 上传项存的是本机文件编号，画之前换成能加载的地址。 */
+  resolveUploaded?: (resource: Partial<BackgroundResource>) => Promise<Partial<BackgroundResource>>;
 }
 
 /** 在 BackgroundLayer 上绘制静态图或骨骼动画背景。 */
@@ -85,6 +87,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   let videoFrameLoop = false;
   let videoFrameRaf = 0;
   let lastVideoFrameTime = -1;
+  let lastVideoUploadAt = Number.NEGATIVE_INFINITY;
   let videoUsesCanvas = false;
   let videoCanvas: HTMLCanvasElement | null = null;
   let videoCanvasCtx: CanvasRenderingContext2D | null = null;
@@ -92,7 +95,6 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     blocked: boolean;
     layer: UnknownRecord;
     image: UnknownRecord | null;
-    url?: unknown;
     visible?: unknown;
     layerBgVisible?: unknown;
   };
@@ -110,12 +112,18 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   let stageBgSnapshot: unknown;
   let onLayoutResize: (() => void) | null = null;
   let videoFirstFrameDrawn = false;
+  /**
+   * 当前页面能不能显示小抄背景，收起时置否。
+   * 加载要等一会儿，等完时可能已经切到不该显示的页面，这时只画好藏着，不亮出来，也不去藏游戏的底图。
+   */
+  let displayAllowed = false;
   let globalLayerActive = false;
   let globalLayerSnapshot:
     | {
         layer: UnknownRecord;
         image: UnknownRecord;
         skin: unknown;
+        texture: unknown;
         visible: unknown;
         x: unknown;
         y: unknown;
@@ -139,7 +147,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     return { width, height };
   }
 
-  function customPictureReady(): boolean {
+  function ownPictureReady(): boolean {
     const flat = asRecord(sprite?.bg);
     const bitmap = bitmapSize(flat);
     const typeNum = spriteType;
@@ -162,8 +170,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   }
 
   /** 自己的图还没画出来时，留下游戏原来的底图，避免整屏变黑。 */
-  function revealCustomBackground(): void {
-    if (!customPictureReady()) {
+  function revealOwnBackground(): void {
+    // 精灵不在背景层上时是收起了，或改成直接换游戏底图，迟到的加载回调不能再动画面。
+    if (!ownSpriteAttached()) return;
+    if (!displayAllowed || !ownPictureReady()) {
       if (sprite) sprite.visible = false;
       restoreNativeGameBackground();
       return;
@@ -230,7 +240,13 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     const snap = globalLayerSnapshot;
     globalLayerSnapshot = null;
     if (!snap?.image || snap.image.destroyed === true) return;
-    snap.image.skin = snap.skin;
+    // 换图时用的是 loadImage，只改了贴图没改 skin；skin 值没变时游戏不会重新加载，得先清空再写回。
+    if (snap.skin) {
+      snap.image.skin = null;
+      snap.image.skin = snap.skin;
+    } else {
+      snap.image.texture = snap.texture;
+    }
     snap.image.visible = snap.visible;
     snap.image.x = snap.x;
     snap.image.y = snap.y;
@@ -254,6 +270,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       layer,
       image: layerBg,
       skin: layerBg.skin,
+      texture: layerBg.texture,
       visible: layerBg.visible,
       x: layerBg.x,
       y: layerBg.y,
@@ -459,9 +476,9 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     return locator.layer('BackgroundLayer');
   }
 
-  /** 自定义底图 zOrder：紧贴官方壁纸 sibling 之上，不压过背景层其它玩法节点。 */
+  /** 小抄背景的 zOrder：紧贴官方壁纸 sibling 之上，不压过背景层其它玩法节点。 */
   function wallpaperStackZOrder(layer: UnknownRecord | null): number {
-    if (!layer) return CUSTOM_BACKGROUND_Z_ORDER;
+    if (!layer) return XIAOCHAO_BACKGROUND_Z_ORDER;
     const layerBg = asRecord(layer.bg);
     const bgSprite = asRecord(layer.bgSprite);
     const base = Math.max(Number(layerBg?.zOrder) || 0, Number(bgSprite?.zOrder) || 0);
@@ -532,6 +549,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     bindSpriteStageResize();
 
     if (!sprite._parent) {
+      if (!displayAllowed) sprite.visible = false;
       callMethod(layer, 'addChild', sprite);
       sprite.zOrder = wallpaperStackZOrder(layer);
       if (typeof layer.updateZOrder === 'function') callMethod(layer, 'updateZOrder');
@@ -571,8 +589,8 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (bgSprite && state.visible !== undefined) bgSprite.visible = state.visible;
     const image = state.image;
     if (!image || image.destroyed === true) return;
+    // 只藏过底图，没换过它；藏着时游戏可能已换了图，不能写回旧图。
     if (state.layerBgVisible !== undefined) image.visible = state.layerBgVisible;
-    if (state.url && image.skin !== state.url) image.skin = state.url;
   }
 
   function restoreNativeGameBackground(): void {
@@ -607,7 +625,6 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
         blocked: true,
         layer,
         image: layerBg,
-        url: layerBg.skin,
         visible: undefined,
         layerBgVisible: layerBg.visible
       };
@@ -647,12 +664,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       blocked: true,
       layer,
       image: layerBg,
-      url: layerBg.skin,
       visible: bgSpriteVisible,
       layerBgVisible: layerBg.visible
     };
     nativeBackground = nextState;
-    nextState.url = layerBg.skin;
     nextState.blocked = true;
     layerBg.visible = false;
     bgSprite.visible = false;
@@ -704,7 +719,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     return resource;
   }
 
-  function customBackgroundMounted(): boolean {
+  function ownBackgroundMounted(): boolean {
     if (!isLayerAttached() || !sprite || sprite.destroyed === true) return false;
     if (sprite.visible === false) return false;
     return true;
@@ -717,13 +732,18 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
 
   async function syncSceneVisibility(shouldShow: boolean, allPaper: boolean): Promise<void> {
     if (!shouldShow) {
+      displayAllowed = false;
+      sceneBackdropWatching = false;
       globalObject.removeEventListener?.('resize', relayoutGlobalNativeLayer);
+      // 视频只暂停不销毁：精灵摘下后画面已经看不到，再进牌局接着放，不用重新解码。
       pauseVideoPlayback();
+      if (sprite) sprite.visible = false;
       detachOwnSprite();
       restoreGlobalLayerBackground();
       restoreNativeGameBackground();
       return;
     }
+    displayAllowed = true;
     if (!resource.url) reloadStoredResource();
     const url = String(resource.url || '').trim();
     if (!url) return;
@@ -733,9 +753,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
 
     if (!ownSpriteAttached() && url) {
       await setBackground(resource, false);
+      if (!displayAllowed) return;
     }
     // 图还在加载时精灵是藏着的，加载好会自己显示，这时不能改走官方壁纸层，否则精灵被摘掉就再也出不来。
-    if (!ownSpriteAttached() && allPaper && !inTable) {
+    if (!ownSpriteAttached() && allPaper && !inTable && !isUploadedBackgroundUrl(url)) {
       if (applyGlobalBackgroundToLayer(resource)) {
         globalObject.addEventListener?.('resize', relayoutGlobalNativeLayer);
         if (globalNativeLayerReady()) applyStageBackdrop(true);
@@ -746,8 +767,8 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       restoreNativeGameBackground();
       return;
     }
-    revealCustomBackground();
-    if (customPictureReady()) syncSceneBackground();
+    revealOwnBackground();
+    if (ownPictureReady()) syncSceneBackground();
     if (Number(resource.type) === BACKGROUND_RESOURCE_TYPE_VIDEO) await resumeVideoPlayback();
   }
 
@@ -761,19 +782,10 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     sceneBackdropWatching = true;
     const step = (): void => {
       if (!sceneBackdropWatching) return;
-      if (customBackgroundMounted() && customPictureReady()) suppressNativeGameBackground();
+      if (ownBackgroundMounted() && ownPictureReady()) suppressNativeGameBackground();
       tasks.later(step, HALL_BACKDROP_REAPPLY_MS);
     };
     tasks.later(step, HALL_BACKDROP_REAPPLY_MS);
-  }
-
-  function onSceneChange(allPaper: boolean): void {
-    const url = String(resource.url || '').trim();
-    if (!url) {
-      restoreNativeGameBackground();
-      return;
-    }
-    void syncSceneVisibility(true, allPaper).then(keepSceneBackdropHidden);
   }
 
   function applyPresentationFilter(typeNum: number): void {
@@ -863,7 +875,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     }
     const timer = layaTimer();
     const clear = timer?.clear;
-    if (typeof clear === 'function') clear.call(timer, resizeOwner, drawVideoFrame);
+    if (typeof clear === 'function') clear.call(timer, resizeOwner, drawVideoFrameOnTick);
   }
 
   function startVideoFrameLoop(): void {
@@ -873,11 +885,11 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     const frameLoop = timer?.frameLoop;
     const loop = timer?.loop;
     if (typeof frameLoop === 'function') {
-      frameLoop.call(timer, 1, resizeOwner, drawVideoFrame);
+      frameLoop.call(timer, 1, resizeOwner, drawVideoFrameOnTick);
       return;
     }
     if (typeof loop === 'function') {
-      loop.call(timer, 1, resizeOwner, drawVideoFrame);
+      loop.call(timer, 1, resizeOwner, drawVideoFrameOnTick);
       return;
     }
     const raf = globalObject.requestAnimationFrame?.bind(globalObject) ?? globalThis.requestAnimationFrame;
@@ -887,7 +899,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
         videoFrameRaf = 0;
         return;
       }
-      drawVideoFrame();
+      drawVideoFrameOnTick();
       videoFrameRaf = raf(tick);
     };
     videoFrameRaf = raf(tick);
@@ -905,6 +917,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   function stopVideoPlayback(): void {
     clearVideoFrameLoop();
     lastVideoFrameTime = -1;
+    lastVideoUploadAt = Number.NEGATIVE_INFINITY;
     videoFirstFrameDrawn = false;
     videoUsesCanvas = false;
     videoCanvas = null;
@@ -991,6 +1004,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     if (!video || video.readyState < 2) return;
     if (video.currentTime === lastVideoFrameTime) return;
     lastVideoFrameTime = video.currentTime;
+    lastVideoUploadAt = performance.now();
     videoFirstFrameDrawn = true;
     if (videoUsesCanvas) refreshCanvasVideoTexture();
     else {
@@ -1000,15 +1014,26 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     }
     redrawVideoTexture();
     callMethod(sprite, 'repaint');
-    if (customPictureReady()) revealCustomBackground();
+    if (ownPictureReady()) revealOwnBackground();
+  }
+
+  /** 播放中视频的当前时间每帧都在变，帧循环不限次数的话，屏幕刷新多快就要往显卡传多少次。 */
+  function drawVideoFrameOnTick(): void {
+    if (performance.now() - lastVideoUploadAt < BACKGROUND_VIDEO_MIN_FRAME_INTERVAL_MS) return;
+    drawVideoFrame();
   }
 
   async function resumeVideoPlayback(): Promise<void> {
     if (Number(resource.type) !== BACKGROUND_RESOURCE_TYPE_VIDEO || !videoElement) return;
     if (!videoUsesCanvas && !videoBitmap) return;
-    if (!sprite?._parent && !(await tasks.poll(() => init(), 20, 500))) return;
+    // 挂回背景层只由显示流程做；这里自己挂的话，收起之后迟到的一次续播会把背景挂回大厅。
+    if (!displayAllowed || !ownSpriteAttached()) return;
     layout();
     await startVideoElementPlayback(videoElement);
+    if (!displayAllowed || !ownSpriteAttached()) {
+      pauseVideoPlayback();
+      return;
+    }
     if (videoBitmap) enableVideoBitmapUpload(videoBitmap);
     lastVideoFrameTime = -1;
     if (videoUsesCanvas) refreshCanvasVideoTexture();
@@ -1050,7 +1075,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     const textureHeight = Number(texture?.height ?? flat.height);
     if (!(textureWidth > 0 && textureHeight > 0)) return;
     spriteSize = { width: textureWidth, height: textureHeight };
-    revealCustomBackground();
+    revealOwnBackground();
   }
 
   function armStaticLayout(flat: UnknownRecord): void {
@@ -1110,7 +1135,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       const timeout = window.setTimeout(() => {
         cleanup();
         reject(new Error('视频加载超时，已恢复官方底图'));
-      }, CUSTOM_BACKGROUND_MEDIA_PROBE_TIMEOUT_MS);
+      }, BACKGROUND_MEDIA_PROBE_TIMEOUT_MS);
       const onReady = () => {
         cleanup();
         resolve();
@@ -1203,13 +1228,16 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
 
   async function finalizeBackgroundVideo(video: HTMLVideoElement): Promise<boolean> {
     await startVideoElementPlayback(video);
-    if (videoElement !== video || video.error || video.paused) {
+    // 等播放期间被收起时视频会被暂停，这不算放不了。
+    if (videoElement !== video || video.error || (video.paused && displayAllowed)) {
       stopVideoPlayback();
       return false;
     }
     lastVideoFrameTime = -1;
     drawVideoFrame();
-    startVideoFrameLoop();
+    // 这一页不显示时画上第一帧就停住，等能显示时再接着放。
+    if (displayAllowed) startVideoFrameLoop();
+    else pauseVideoPlayback();
     return true;
   }
 
@@ -1341,11 +1369,13 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   }
 
   function commitNativeSuppressionOrRestore(): boolean {
-    if (!customBackgroundMounted()) {
+    // 画好了，只是这一页不显示：算设置成功，等能显示时再盖住游戏底图。
+    if (!displayAllowed) return true;
+    if (!ownBackgroundMounted()) {
       restoreNativeGameBackground();
       return false;
     }
-    if (!customPictureReady()) {
+    if (!ownPictureReady()) {
       if (sprite) sprite.visible = false;
       restoreNativeGameBackground();
       return false;
@@ -1363,6 +1393,11 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   ): Promise<boolean> {
     const { url, type = 0, width = 0, height = 0 } = next;
     if (!url) return false;
+    if (isUploadedBackgroundUrl(url)) {
+      const playable = await options.resolveUploaded?.(next);
+      if (!playable?.url || isUploadedBackgroundUrl(playable.url)) return false;
+      return setBackground(playable, persist, url);
+    }
     const initPromise = tasks.poll(() => backgroundLayer() && init(), 160, 500);
     if (!(await initPromise)) return false;
     const typeNum = Number(type);
@@ -1386,22 +1421,24 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
         return false;
       }
       applyPresentationFilter(typeNum);
-      revealCustomBackground();
-      if (customPictureReady() && !commitNativeSuppressionOrRestore()) return false;
-      const keptUrl = typeNum === BACKGROUND_RESOURCE_TYPE_IMAGE && persistedUrl ? persistedUrl : url;
+      revealOwnBackground();
+      if (ownPictureReady() && !commitNativeSuppressionOrRestore()) return false;
+      const keptUrl = persistedUrl && (typeNum === BACKGROUND_RESOURCE_TYPE_IMAGE || isUploadedBackgroundUrl(persistedUrl))
+        ? persistedUrl
+        : url;
       spriteUrl = url;
       spriteSourceUrl = keptUrl === url ? '' : keptUrl;
       resource = { url: keptUrl, type: typeNum, width: Number(width), height: Number(height) };
       if (persist) store.saveResource(resource as BackgroundResource);
     } else if (typeNum === BACKGROUND_RESOURCE_TYPE_VIDEO) {
       applyPresentationFilter(typeNum);
-      revealCustomBackground();
-      if (customPictureReady() && !commitNativeSuppressionOrRestore()) return false;
+      revealOwnBackground();
+      if (ownPictureReady() && !commitNativeSuppressionOrRestore()) return false;
       await resumeVideoPlayback();
     } else {
       applyPresentationFilter(typeNum);
-      revealCustomBackground();
-      if (customPictureReady() && !commitNativeSuppressionOrRestore()) return false;
+      revealOwnBackground();
+      if (ownPictureReady() && !commitNativeSuppressionOrRestore()) return false;
     }
     return true;
   }
@@ -1472,11 +1509,13 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       return isLayerAttached();
     },
     async setEnabled(enabled) {
+      displayAllowed = enabled;
       if (enabled) {
         reloadStoredResource();
         if (!resource.url) return false;
         return setBackground();
       }
+      if (sprite) sprite.visible = false;
       pauseVideoPlayback();
       clearAction();
       detachOwnSprite();
@@ -1485,7 +1524,6 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
     },
     syncSceneVisibility,
     reloadStoredResource,
-    onSceneChange,
     clearBackground,
     playAction,
     rememberEffectClass,

@@ -29,4 +29,4 @@ export {
   SKIN_FAVORITES_GRID_ROW_STEP,
   skinFavoritesGridPosition
 } from './skin-favorites-grid.ts';
-export { CUSTOM_BACKGROUND_Z_ORDER, DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from './stage.ts';
+export { XIAOCHAO_BACKGROUND_Z_ORDER, DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from './stage.ts';

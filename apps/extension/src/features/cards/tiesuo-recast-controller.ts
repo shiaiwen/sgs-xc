@@ -4,9 +4,12 @@
 
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
+import { TIESUO_POLL_ACTIVE_MS, TIESUO_POLL_IDLE_MS } from '../../const/poll-intervals.ts';
 
 type Node = Record<string, any>;
+const TIESUO_PERF_LABEL = '铁索重铸';
 
 /**
  * 铁索重铸：
@@ -136,24 +139,24 @@ export function installTiesuoRecastController(
     if (wrapped) patchedBarTarget = target;
   }
 
-  let pollIntervalMs = 500;
-  let timer = runtime.setInterval(sync, pollIntervalMs);
+  let pollIntervalMs = TIESUO_POLL_IDLE_MS;
+  let stopPolling = everyInterval(TIESUO_PERF_LABEL, pollIntervalMs, sync, {}, runtime);
 
   function setPollInterval(nextMs: number): void {
     if (stopped || nextMs === pollIntervalMs) return;
     pollIntervalMs = nextMs;
-    runtime.clearInterval(timer);
-    timer = runtime.setInterval(sync, pollIntervalMs);
+    stopPolling();
+    stopPolling = everyInterval(TIESUO_PERF_LABEL, pollIntervalMs, sync, {}, runtime);
   }
 
   function sync(): void {
     if (stopped) return;
     const self = sceneSelf();
     if (!self) {
-      setPollInterval(500);
+      setPollInterval(TIESUO_POLL_IDLE_MS);
       return;
     }
-    setPollInterval(100);
+    setPollInterval(TIESUO_POLL_ACTIVE_MS);
     ensureCallbackPatch();
     ensureBarUpdatePatch(self);
     lightOkIfRecastReady(self);
@@ -162,7 +165,7 @@ export function installTiesuoRecastController(
   sync();
   return () => {
     stopped = true;
-    runtime.clearInterval(timer);
+    stopPolling();
     patcher.restoreAll();
     patchedTarget = null;
     patchedBarTarget = null;

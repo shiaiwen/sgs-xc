@@ -10,6 +10,10 @@
 import { installProtocolEventHooks } from './server-proxy-protocol-hook.ts';
 import { findGameMessage, translateGameMessages } from './game-message-adapter.ts';
 import type { GameEvent, GameEventBus } from '../runtime/game-event-bus.ts';
+import { measureXiaochao } from '../runtime/perf-monitor.ts';
+import { everyInterval } from '../runtime/shared-ticker.ts';
+import { PROTOCOL_PARSE_LABEL } from '../const/perf-monitor.ts';
+import { CONSOLE_LOG_HOOK_HEAL_MS } from '../const/poll-intervals.ts';
 
 type MessageListener = (...rawArguments: unknown[]) => void;
 type UnknownRecord = Record<string, unknown>;
@@ -100,6 +104,10 @@ export function installMicroClientMessageSource(
     fallbackClassName = '',
     source: MessageSourceName = 'console'
   ): void {
+    measureXiaochao(PROTOCOL_PARSE_LABEL, () => deliverMeasured(rawArguments, fallbackClassName, source));
+  }
+
+  function deliverMeasured(rawArguments: unknown[], fallbackClassName: string, source: MessageSourceName): void {
     diagnostics.deliveries[source] += 1;
     const message = findGameMessage(rawArguments);
     const payload = message?.payload ?? payloadFor(rawArguments, fallbackClassName);
@@ -229,9 +237,6 @@ export function installMicroClientMessageSource(
   };
 }
 
-/** console.log 钩子被拆掉后的自愈间隔（毫秒）。 */
-const CONSOLE_LOG_HOOK_HEAL_MS = 2000;
-
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
 }
@@ -301,10 +306,10 @@ function installConsoleLogSource(
   if (!hookInstalled) {
     return { restore: () => undefined };
   }
-  const healTimer = globalObject.setInterval(assertHook, CONSOLE_LOG_HOOK_HEAL_MS);
+  const stopHealing = everyInterval('协议日志接管', CONSOLE_LOG_HOOK_HEAL_MS, assertHook, {}, globalObject);
   return {
     restore() {
-      globalObject.clearInterval(healTimer);
+      stopHealing();
       if (console.log !== wrappedLog) return;
       try {
         if (descriptor) Object.defineProperty(console, 'log', descriptor);

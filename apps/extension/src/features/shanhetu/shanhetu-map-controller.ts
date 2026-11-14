@@ -8,6 +8,7 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { SHANHETU_MAP_KEY } from './shanhetu-settings.ts';
 import {
   createShanhetuMapConfigSourceFromCardConfig,
@@ -342,9 +343,9 @@ export function installShanhetuMapController(
     }
   }
 
-  const pollTimer = globalObject.setInterval(() => {
+  const stopPolling = everyInterval('山河图地图', intervalMs * 2, () => {
     if (!disposed) redraw();
-  }, intervalMs * 2);
+  }, {}, globalObject);
 
   const unsubscribe = configStore.subscribe(SHANHETU_MAP_KEY, ({ value }) => {
     if (!value) clear();
@@ -367,7 +368,7 @@ export function installShanhetuMapController(
     dispose() {
       disposed = true;
       unsubscribe();
-      globalObject.clearInterval(pollTimer);
+      stopPolling();
       clear();
       configSource.dispose();
     }

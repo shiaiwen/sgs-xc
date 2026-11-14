@@ -10,6 +10,9 @@ export const USERSCRIPT_DEV_RELOAD_COOLDOWN_MS = 2_000;
 /** 检测到新构建后稍等再刷新，给本机油猴更新页确认留时间。 */
 export const USERSCRIPT_DEV_RELOAD_AFTER_BUILD_MS = 8_000;
 
+/** 油猴直接读本地打包时不用等确认，构建号一变稍等片刻就刷新。 */
+export const USERSCRIPT_DEV_RELOAD_AFTER_LOCAL_BUILD_MS = 300;
+
 /** 轮询本机 build 号的间隔。 */
 export const USERSCRIPT_DEV_RELOAD_POLL_MS = 800;
 

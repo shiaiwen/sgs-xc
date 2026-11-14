@@ -4,6 +4,8 @@
 
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { CAMP_CHAT_PANEL_SYNC_MS } from '../../const/poll-intervals.ts';
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 type UnknownRecord = Record<string, unknown>;
 
@@ -104,13 +106,13 @@ export function installCampChatRightPanelController(
     syncCampChatPanel(gameScene as UnknownRecord);
   }
 
-  const timer = globalObject.setInterval(tryInstall, 500);
+  const stopPolling = everyInterval('阵营聊天', CAMP_CHAT_PANEL_SYNC_MS, tryInstall, {}, globalObject);
   tryInstall();
 
   return {
     dispose() {
       disposed = true;
-      globalObject.clearInterval(timer);
+      stopPolling();
       patcher.restoreAll();
     }
   };

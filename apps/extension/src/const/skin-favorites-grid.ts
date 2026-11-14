@@ -5,6 +5,35 @@ export const SKIN_FAVORITES_GRID_COLUMN_STEP = 101;
 export const SKIN_FAVORITES_GRID_ROW_STEP = 65;
 export const SKIN_FAVORITES_GRID_COLUMNS = 3;
 
+/** 游戏背景列表格子的宽高。 */
+export const SKIN_FAVORITES_ITEM_WIDTH = 97;
+export const SKIN_FAVORITES_ITEM_HEIGHT = 68;
+/** 格子里带边框的预览框高度，名字写在框下面。 */
+export const SKIN_FAVORITES_ITEM_BOX_HEIGHT = 42;
+/** 名字那一行的上边和行高。 */
+export const SKIN_FAVORITES_ITEM_NAME_TOP = 45;
+export const SKIN_FAVORITES_ITEM_NAME_HEIGHT = 12;
+/** 名字最多占几个半角字宽，汉字算两个，超出截断加省略号。 */
+export const SKIN_FAVORITES_ITEM_NAME_MAX_UNITS = 14;
+
+/** 名字放不下时截断，末尾加省略号。 */
+export function fitSkinFavoriteName(name: string): string {
+  const chars = [...name];
+  const unitsOf = (char: string) => (char.charCodeAt(0) > 0xff ? 2 : 1);
+  const total = chars.reduce((sum, char) => sum + unitsOf(char), 0);
+  if (total <= SKIN_FAVORITES_ITEM_NAME_MAX_UNITS) return name;
+  const ellipsis = '…';
+  const budget = SKIN_FAVORITES_ITEM_NAME_MAX_UNITS - unitsOf(ellipsis);
+  let used = 0;
+  let kept = '';
+  for (const char of chars) {
+    used += unitsOf(char);
+    if (used > budget) break;
+    kept += char;
+  }
+  return `${kept}${ellipsis}`;
+}
+
 /** 收藏格透明点击热区宽高，略小于网格步长以免误触邻格。 */
 export const SKIN_FAVORITES_ITEM_HIT_WIDTH = SKIN_FAVORITES_GRID_COLUMN_STEP - 6;
 export const SKIN_FAVORITES_ITEM_HIT_HEIGHT = SKIN_FAVORITES_GRID_ROW_STEP - 4;
@@ -12,8 +41,13 @@ export const SKIN_FAVORITES_ITEM_HIT_HEIGHT = SKIN_FAVORITES_GRID_ROW_STEP - 4;
 /** 收藏格左上角绿勾的边长。 */
 export const SKIN_FAVORITES_SELECTED_MARK_SIZE = 16;
 
-/** 收藏格右上角删除热区边长。正在使用的那张不画。 */
+/** 收藏格右上角删除按钮。正在使用的那张不画。 */
 export const SKIN_FAVORITES_DELETE_SIZE = 18;
+export const FAVORITE_DELETE_FILL = 'rgba(0,0,0,0.65)';
+export const FAVORITE_DELETE_TEXT_COLOR = '#F1E6B9';
+export const FAVORITE_DELETE_FONT_SIZE = 14;
+export const FAVORITE_DELETE_MARGIN = 2;
+export const FAVORITE_DELETE_Z_ORDER = 1000;
 
 /** 按下和松开都会进来，这段时间里只删一张。 */
 export const SKIN_FAVORITES_DELETE_GESTURE_MS = 500;
