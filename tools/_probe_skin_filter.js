@@ -1,0 +1,11 @@
+﻿const fs = require('fs');
+const path = 'apps/extension/src/features/skin-background/official-background-controller.ts';
+const s = fs.readFileSync(path, 'utf8');
+const idx = s.indexOf('function filterWallPaperSkinItemsToOwned');
+const idx2 = s.indexOf('function applySkinPanelArrayAfterOwnedFilter');
+const idx3 = s.indexOf('const result = original.apply(this, args);', s.indexOf('function patchSkinItemsBuilder'));
+console.log({ idx, idx2, idx3 });
+console.log('---FILTER BLOCK---');
+console.log(s.slice(idx - 120, idx2 + 450));
+console.log('---ONSHOW APPLY---');
+console.log(s.slice(idx3 - 200, idx3 + 350));

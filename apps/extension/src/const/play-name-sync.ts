@@ -1,2 +1,6 @@
-/** 排位、斗地主开局后深搜整桌座位昵称的毫秒数。之后只按普通方式同步。 */
-export const RANK_NAME_DEEP_SYNC_MS = 15_000;
+/** 名字同步调试日志最多留的条数。 */
+export const PLAY_NAME_DEBUG_LOG_MAX = 80;
+
+/** 调试日志每行开头只留 ISO 时间里的时分秒和毫秒。 */
+export const PLAY_NAME_DEBUG_CLOCK_START = 11;
+export const PLAY_NAME_DEBUG_CLOCK_END = 23;

@@ -1,5 +1,5 @@
 /**
- * 打开资料时提示人机，真人显示资料页编号按钮；座位上的人机使用游戏原名。
+ * 打开资料时提示人机，真人显示资料页编号按钮；座位上真人用游戏的画法显示等级和昵称，人机不显示。
  */
 
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
@@ -10,24 +10,19 @@ import {
   shouldDeferSeatTopManagerSync,
 } from '../../runtime/game-native-dialog.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
-import { RANK_NAME_DEEP_SYNC_MS } from '../../const/play-name-sync.ts';
+import { PLAY_NAME_DEBUG_LOG_MAX } from '../../const/play-name-sync.ts';
 import {
   AI_PLAYER_SCAN_IN_GAME_MS,
   AI_PLAYER_SCAN_OUT_OF_GAME_MS,
   AI_PLAYER_SCAN_START_MS
 } from '../../const/poll-intervals.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
-import { clearSeatGeneralTips } from '../extra-assist/seat-general-tips.ts';
 import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
-  beginPlayNameScanBatch,
-  endPlayNameScanBatch,
   isPlayNameSyncPaused,
   isRankOrDoudizhuScene,
-  isReplayLikeScene,
-  readSeatNickNameForDebug,
-  seedPlayNameDirectory,
+  readSeatPlayNameForDebug,
   syncSeatPlayName
 } from './play-name-sync.ts';
 
@@ -37,14 +32,12 @@ const AI_PLAYER_PERF_LABEL = '人机提示';
 export interface PlayNameDebugState {
   pauseSync: boolean;
   verbose: boolean;
-  forceFullSync: boolean;
   log: string[];
   maxLog: number;
   scanCount: number;
   lastScanAt: number;
   lastScanMs: number;
   lastError: string;
-  replayLike: boolean;
   probe: () => ReturnType<typeof probePlayNameSeats>;
   selfCheck: () => ReturnType<typeof runPlayNameSelfCheck>;
   pause: () => void;
@@ -57,54 +50,42 @@ interface PlayNameDebugWindow extends GameRuntimeWindow {
   __xcPlayNameDebug?: PlayNameDebugState;
 }
 
-/** 录像或局内排查：看每个座位有没有编号、名字开关在不在。 */
+/** 局内排查：先同步一轮，再看每个座位的编号、游戏名字层里写的字和开关。 */
 export function probePlayNameSeats(globalObject: GameRuntimeWindow = window) {
   const scene = asRecord(locateGameScene(globalObject));
   if (!scene) {
     return { scene: false as const, seats: [] as readonly object[] };
   }
-  const flags: Record<string, unknown> = {};
-  for (const key of [
-    'isDouDiZhu', 'IsDouDiZhu', 'isReplay', 'IsReplay', 'isPlayBack', 'IsPlayBack',
-    'isRecord', 'IsRecord', 'modeName', 'ModeName'
-  ]) {
-    if (key in scene) flags[key] = scene[key];
-  }
   const seatUis = readSeatUis(scene);
-  beginPlayNameScanBatch(globalObject, { forceFull: true });
-  try {
-    seedPlayNameDirectory(globalObject, seatUis);
-    for (let i = 0; i < seatUis.length; i += 1) {
-      syncSeatPlayName(seatUis[i], globalObject, i);
+  const steps = seatUis.map((seatUi) => {
+    try {
+      return syncSeatPlayName(seatUi, globalObject);
+    } catch (error) {
+      return `error: ${String(error)}`;
     }
-  } finally {
-    endPlayNameScanBatch();
-  }
+  });
   const seats = seatUis.map((seatUi, index) => {
     const seat = asRecord(seatUi.seat);
-    const playerInfo = asRecord(seat?.playerInfo);
-    const clientId = playerInfo?.ClientId ?? playerInfo?.clientId;
-    const debug = readSeatNickNameForDebug(seatUi, globalObject, index);
+    const debug = readSeatPlayNameForDebug(seatUi, globalObject);
     return {
       index,
+      step: steps[index],
       isHide: seat?.isHide === true,
-      clientId: clientId ?? null,
-      playNameVisible: playNameVisible(clientId),
-      managerKeys: debug.managers,
+      playNameVisible: playNameVisible(debug.clientId),
       hasOtherTopManager: Boolean(seatUi.otherTopManager),
       hasTopManager: Boolean(seatUi.topManager),
-      playerName: debug.name,
-      nameLabelCount: debug.nameLabelCount,
-      clonedPlayName: debug.clonedPlayName,
-      mountStrategy: debug.mountStrategy,
-      playNameLabels: debug.playNameLabels
+      ...debug
     };
   });
-  const acceptance = {
-    liveRankOrDdz: '真人局排位/斗地主应显示对面昵称',
-    replay: '录像尽量补显；游戏不支持时靠 mountStrategy C 挂头像上'
+  const debugState = (globalObject as PlayNameDebugWindow).__xcPlayNameDebug;
+  return {
+    scene: true as const,
+    rankOrDoudizhu: isRankOrDoudizhuScene(globalObject, scene),
+    scanCount: debugState?.scanCount ?? null,
+    lastError: debugState?.lastError ?? '',
+    seatCount: seats.length,
+    seats
   };
-  return { scene: true as const, flags, seatCount: seats.length, acceptance, seats };
 }
 
 /** 自动跑一轮昵称同步并返回探测结果，供本地排查。 */
@@ -114,7 +95,6 @@ export function runPlayNameSelfCheck(globalObject: GameRuntimeWindow = window) {
   return result;
 }
 
-/** 安装对战 AI 开局提示、资料页人机提示和座位名称处理。 */
 /** 挂到 window 与 __XIAOCHAO_ENGINEERING__，控制台可反复调用。 */
 export function mountPlayNameProbe(globalObject: GameRuntimeWindow): () => ReturnType<typeof probePlayNameSeats> {
   const run = () => probePlayNameSeats(globalObject);
@@ -135,14 +115,12 @@ export function mountPlayNameDebug(globalObject: GameRuntimeWindow): PlayNameDeb
   const state: PlayNameDebugState = {
     pauseSync: false,
     verbose: true,
-    forceFullSync: false,
     log: [],
-    maxLog: 80,
+    maxLog: PLAY_NAME_DEBUG_LOG_MAX,
     scanCount: 0,
     lastScanAt: 0,
     lastScanMs: 0,
     lastError: '',
-    replayLike: false,
     probe,
     selfCheck: () => runPlayNameSelfCheck(globalObject),
     pause() { state.pauseSync = true; },
@@ -159,6 +137,7 @@ export function mountPlayNameDebug(globalObject: GameRuntimeWindow): PlayNameDeb
   return state;
 }
 
+/** 安装对战 AI 开局提示、资料页人机提示和座位名字处理。 */
 export function installAiPlayerTipController(
   gameEvents: GameEventBus,
   globalObject: GameRuntimeWindow = window
@@ -167,14 +146,11 @@ export function installAiPlayerTipController(
   let profileTipId = 0;
   let aiTipShownThisGame = false;
   let gameEnded = false;
-  // 中途装上时没有开局事件，从装上算起。
-  let deepNameSyncUntil = Date.now() + RANK_NAME_DEEP_SYNC_MS;
   const stopEvents = gameEvents.subscribe((event) => {
     // 仅在结束后的下一局开始时解锁；启动轮询时收到的首个开始事件不重复弹。
     if (event.type === 'game-started') {
       if (gameEnded) aiTipShownThisGame = false;
       gameEnded = false;
-      deepNameSyncUntil = Date.now() + RANK_NAME_DEEP_SYNC_MS;
       scan();
     } else if (event.type === 'game-ended') {
       gameEnded = true;
@@ -204,29 +180,23 @@ export function installAiPlayerTipController(
     try { scanProfile(); } catch { /* 下一轮重试 */ }
   }
 
-  /** 排位和斗地主提示人机；真人的游戏内名字与资料页编号保持可见。 */
+  /** 同步每个座位的名字；排位和斗地主里有人机时提示一次。 */
   function scanSeats(): void {
     const scene = asRecord(locateGameScene(globalObject));
     if (!scene) return;
     const seatUis = readSeatUis(scene);
-    const replayLike = isReplayLikeScene(globalObject);
     const debugState = (globalObject as PlayNameDebugWindow).__xcPlayNameDebug;
-    if (debugState) debugState.replayLike = replayLike;
 
     const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const skipNameSync = isPlayNameSyncPaused(globalObject);
     if (!skipNameSync) {
-      // 排位斗地主开局时昵称陆续到，这段时间深搜整桌座位数据；之后按普通方式同步，省性能。
-      const forceFull = debugState?.forceFullSync === true
-        || (Date.now() < deepNameSyncUntil && isRankOrDoudizhuScene(globalObject, scene));
-      beginPlayNameScanBatch(globalObject, { forceFull });
-      try {
-        seedPlayNameDirectory(globalObject, seatUis);
-        for (let i = 0; i < seatUis.length; i += 1) {
-          try { syncSeatPlayName(seatUis[i], globalObject, i); } catch { /* 单座失败不影响其他座 */ }
+      for (const seatUi of seatUis) {
+        try {
+          syncSeatPlayName(seatUi, globalObject);
+        } catch (error) {
+          // 单座失败不影响其他座。
+          if (debugState) debugState.lastError = String(error);
         }
-      } finally {
-        endPlayNameScanBatch();
       }
     }
 
@@ -238,16 +208,10 @@ export function installAiPlayerTipController(
       appendPlayNameDebugLog(
         globalObject,
         skipNameSync
-          ? `scan skip nameSync replay=${replayLike} pause=${isPlayNameSyncPaused(globalObject)}`
-          : `scan nameSync ${seatUis.length} seats ${debugState.lastScanMs}ms replay=${replayLike}`
+          ? 'scan skip nameSync pause=true'
+          : `scan nameSync ${seatUis.length} seats ${debugState.lastScanMs}ms`
       );
     }
-
-    const idTargets = seatUis.map((seatUi) => ({
-      seat: seatUi.seat ?? seatUi,
-      seatAvatar: asRecord(seatUi.seatAvatar)
-    }));
-    clearSeatGeneralTips(idTargets, 'player-id');
 
     const seats = seatUis
       .map((seatUi) => ({ seatUi, seat: asRecord(seatUi.seat) }))
