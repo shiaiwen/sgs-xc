@@ -9,7 +9,7 @@
  * - 正式包启用 electron-updater 自动更新；
  * - 开发时监视 dist/electron/xiaochao.js 变更并通知渲染进程热重载。
  *
- * 本地脚本注入由 preload（electron_frame.cjs）通过 read-local-script 完成；
+ * 本地脚本注入由 preload（electron_frame.js）通过 read-local-script 完成；
  * 网络层壁纸/贴图替换见 interceptor.js。
  */
 
@@ -186,7 +186,7 @@ async function createWindow() {
             allowRunningInsecureContent: true,
             allowDisplayingInsecureContent: true,
             backgroundThrottling: false,
-            preload: path.join(app.getAppPath(), './script/electron_frame.cjs')
+            preload: path.join(app.getAppPath(), './tools/release-app-shell/script/electron_frame.js')
             //allowRunningInsecureContent: true,
             // allowDisplayingInsecureContent :true
         }

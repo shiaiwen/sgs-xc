@@ -21,7 +21,7 @@ import type { MethodPatcher } from '../../runtime/method-patch.ts';
 import { measureXiaochao } from '../../runtime/perf-monitor.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import { ACCOUNT_STORAGE_KEY_MAX_LENGTH } from '../../const/account-storage.ts';
-import { GENERAL_SKIN_QUERY_BY_SEAT } from '../../const/general-skin-protocol.ts';
+import { GENERAL_SKIN_QUERY_BY_PLAYER, GENERAL_SKIN_QUERY_BY_SEAT } from '../../const/general-skin-protocol.ts';
 
 export type UnknownRecord = Record<string, unknown>;
 
@@ -1024,6 +1024,33 @@ export function isOwnSkinMessage(locator: LayaObjectLocator, message: UnknownRec
   if (Number(asRecord(seat?.PlayerInfo ?? seat?.playerInfo)?.ClientId) === target) return true;
   const account = currentGameAccountId();
   return account !== '' && String(message.ClientID) === account;
+}
+
+/**
+ * 皮肤回包是不是别的玩家的。只认按座位号和按玩家编号查的两种回包，
+ * 其余几种查的都是自己的皮肤。认不出自己坐几号位、自己是谁时一律不算别人，
+ * 不然会把自己的动态皮肤改成静态。观战和看回放时桌上没有自己，牌局里的回包都算别人的。
+ */
+export function isOtherPlayerSkinMessage(locator: LayaObjectLocator, message: UnknownRecord): boolean {
+  const type = Number(message.Type);
+  if (type !== GENERAL_SKIN_QUERY_BY_SEAT && type !== GENERAL_SKIN_QUERY_BY_PLAYER) return false;
+  const context = locator.gameContext();
+  try {
+    if (locator.gameScene() && callMethod(context, 'IsViewerOrReplay') === true) return true;
+  } catch {
+    return false;
+  }
+  const target = Number(message.ClientID);
+  if (type === GENERAL_SKIN_QUERY_BY_SEAT) {
+    const selfSeatIndex = Number(context?.SelfSeatIndex);
+    return Number.isInteger(selfSeatIndex) && selfSeatIndex >= 0 && target !== selfSeatIndex;
+  }
+  if (!(target > 0)) return false;
+  const selfSeat = asRecord(context?.SelfSeat);
+  const selfIds = [currentGameAccountId(), asRecord(selfSeat?.PlayerInfo ?? selfSeat?.playerInfo)?.ClientId]
+    .map(Number)
+    .filter((id) => id > 0);
+  return selfIds.length > 0 && !selfIds.includes(target);
 }
 
 /** 皮肤详情或换肤项是否支持动态。 */

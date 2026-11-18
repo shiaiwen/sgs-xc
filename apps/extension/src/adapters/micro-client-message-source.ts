@@ -104,7 +104,12 @@ export function installMicroClientMessageSource(
     fallbackClassName = '',
     source: MessageSourceName = 'console'
   ): void {
-    measureXiaochao(PROTOCOL_PARSE_LABEL, () => deliverMeasured(rawArguments, fallbackClassName, source));
+    // console.log 劫持与协议钩子都在这条路径上，任一抛错都不能冒进游戏调用栈。
+    try {
+      measureXiaochao(PROTOCOL_PARSE_LABEL, () => deliverMeasured(rawArguments, fallbackClassName, source));
+    } catch (error) {
+      console.warn('[小抄] 协议解析抛错', fallbackClassName, error);
+    }
   }
 
   function deliverMeasured(rawArguments: unknown[], fallbackClassName: string, source: MessageSourceName): void {

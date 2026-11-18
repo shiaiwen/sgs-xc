@@ -27,3 +27,19 @@ export function getPool() {
   pool = new Pool({ connectionString });
   return pool;
 }
+
+/** 在一个事务里跑完，出错整个撤回。 */
+export async function inTransaction(run) {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await run(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}

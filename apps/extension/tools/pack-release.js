@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { USERSCRIPT_PAYLOAD_FILE_NAME, USERSCRIPT_PAYLOAD_URL } from '../src/const/userscript-payload.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const vitePackageJson = createRequire(path.join(root, 'package.json')).resolve('vite/package.json');
@@ -27,6 +28,9 @@ const stagingRoot = path.join(releaseDir, '.staging');
 const appDir = path.join(stagingRoot, 'app');
 const packDir = path.join(stagingRoot, 'pack');
 const builtScript = path.join(root, 'dist', 'electron', 'xiaochao.js');
+const builtUserscriptPayload = path.join(root, 'dist', 'userscript', USERSCRIPT_PAYLOAD_FILE_NAME);
+/** 上次发版时微端外壳的指纹和外壳版本号。外壳文件一变，正式发版时版本号加 1；这个文件要提交进仓库。 */
+const shellVersionRecordPath = path.join(root, 'tools', 'release-shell-version.json');
 function releaseZipName(version) {
   return `wd-xc-${version}.zip`;
 }
@@ -92,6 +96,58 @@ function resolveVersion() {
   return current;
 }
 
+/** 外壳指纹：发布壳里除小抄脚本和说明文档以外每个文件的路径和内容，和组装 app 时去掉的文件一致。 */
+function hashShellDirectory() {
+  const hash = createHash('sha256');
+  const walk = (directory) => {
+    const entries = readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      const relativePath = path.relative(shellDir, fullPath).split(path.sep).join('/');
+      if (relativePath === 'xiaochao.js' || (directory === shellDir && entry.name.endsWith('.md'))) continue;
+      hash.update(relativePath);
+      hash.update('\0');
+      hash.update(readFileSync(fullPath));
+      hash.update('\0');
+    }
+  };
+  walk(shellDir);
+  return hash.digest('hex');
+}
+
+function readShellVersionRecord() {
+  if (!existsSync(shellVersionRecordPath)) return null;
+  const record = JSON.parse(readFileSync(shellVersionRecordPath, 'utf8'));
+  const shellVersion = Number(record.shellVersion);
+  if (!Number.isSafeInteger(shellVersion) || shellVersion < 1 || typeof record.shellHash !== 'string') {
+    throw new Error(`外壳版本记录格式不对: ${shellVersionRecordPath}`);
+  }
+  return { shellVersion, shellHash: record.shellHash };
+}
+
+/**
+ * 外壳没变就沿用记录里的版本号；变了就加 1，正式发版时写回记录。
+ * 微端拿清单里的外壳版本和自己 package.json 里的 xiaochaoShellVersion 比，落后才提示装整包。
+ */
+function resolveShellVersion() {
+  const shellHash = hashShellDirectory();
+  const record = readShellVersionRecord();
+  if (record && record.shellHash === shellHash) return record.shellVersion;
+  const nextVersion = (record ? record.shellVersion : 0) + 1;
+  if (process.env.RELEASE_BUILD === '1') {
+    writeFileSync(shellVersionRecordPath, `${JSON.stringify({ shellVersion: nextVersion, shellHash }, null, 2)}\n`);
+    console.log(`[pack] 微端外壳有改动，外壳版本 → ${nextVersion}（记得提交 tools/release-shell-version.json）`);
+  } else {
+    console.log(`[pack] 微端外壳有未发布的改动，本次按外壳版本 ${nextVersion} 打包，不写记录`);
+  }
+  return nextVersion;
+}
+
 function writeBundledScript(version) {
   const body = readFileSync(builtScript, 'utf8');
   const banner = [
@@ -128,6 +184,7 @@ async function main() {
   }
 
   const bumpedVersion = resolveVersion();
+  const shellVersion = resolveShellVersion();
 
   console.log('[pack] 构建小抄脚本…');
   await run(process.execPath, [
@@ -147,6 +204,7 @@ async function main() {
   ]);
   const userscript = path.join(root, 'dist', 'userscript', 'xiaochao.user.js');
   if (!existsSync(userscript)) throw new Error(`缺少油猴脚本: ${userscript}`);
+  if (!existsSync(builtUserscriptPayload)) throw new Error(`缺少油猴新版代码: ${builtUserscriptPayload}`);
 
   console.log('[pack] 组装 app 目录（正式微端壳 + 当前脚本）…');
   rmSync(stagingRoot, { recursive: true, force: true });
@@ -165,6 +223,7 @@ async function main() {
   shellPackage.main = 'main.js';
   shellPackage.IsDebug = false;
   shellPackage.IsTest = false;
+  shellPackage.xiaochaoShellVersion = shellVersion;
   writeFileSync(path.join(appDir, 'package.json'), `${JSON.stringify(shellPackage, null, 2)}\n`);
   writeBundledScript(scriptVersion);
 
@@ -195,12 +254,15 @@ async function main() {
   const releaseScriptPath = path.join(releaseDir, 'xiaochao.js');
   if (!existsSync(stagedScript)) throw new Error('缺少组装后的 xiaochao.js');
   copyFileSync(stagedScript, releaseScriptPath);
+  const releasePayloadPath = path.join(releaseDir, USERSCRIPT_PAYLOAD_FILE_NAME);
+  copyFileSync(builtUserscriptPayload, releasePayloadPath);
 
   rmSync(stagingRoot, { recursive: true, force: true });
 
   const zipSize = statSync(releaseZipPath).size;
   const appSha256 = createHash('sha256').update(readFileSync(releaseAppZipPath)).digest('hex');
   const scriptSha256 = createHash('sha256').update(readFileSync(releaseScriptPath)).digest('hex');
+  const userscriptPayloadSha256 = createHash('sha256').update(readFileSync(releasePayloadPath)).digest('hex');
   const manifest = {
     version: scriptVersion,
     notes: '',
@@ -208,17 +270,23 @@ async function main() {
     appUrl: 'https://xc.95chong.cn/downloads/app.zip',
     appSha256,
     scriptUrl: 'https://xc.95chong.cn/downloads/xiaochao.js',
-    scriptSha256
+    scriptSha256,
+    shellVersion,
+    userscriptPayloadUrl: USERSCRIPT_PAYLOAD_URL,
+    userscriptPayloadSha256
   };
   const manifestPath = path.join(releaseDir, 'xiaochao-manifest.json');
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   const serverManifest = path.resolve(root, '..', 'server', 'data', 'xiaochao-manifest.json');
   if (existsSync(path.dirname(serverManifest))) {
+    // 先放新版代码再放清单：清单一换，浏览器就会来下这份代码。
+    const serverPayload = path.join(path.dirname(serverManifest), USERSCRIPT_PAYLOAD_FILE_NAME);
+    copyFileSync(releasePayloadPath, serverPayload);
     copyFileSync(manifestPath, serverManifest);
-    console.log(`[pack] 版本清单已同步到 ${serverManifest}`);
+    console.log(`[pack] 版本清单和油猴新版代码已同步到 ${path.dirname(serverManifest)}`);
   }
   console.log(`[pack] 完成: ${releaseZipPath}`);
-  console.log(`[pack] ${(zipSize / 1024).toFixed(1)} KB（脚本 v${scriptVersion}，微端壳 v${shellPackage.version}）`);
+  console.log(`[pack] ${(zipSize / 1024).toFixed(1)} KB（脚本 v${scriptVersion}，微端壳 v${shellPackage.version}，外壳版本 ${shellVersion}）`);
   console.log(`[pack] 清单: ${manifestPath}（copy:portal 会放到门户 /downloads/manifest.json）`);
 }
 

@@ -17,3 +17,4 @@ export {
   type UpdateNoticeController,
   type UpdateNoticeSnapshot
 } from './update-notice-controller.ts';
+export type { AutoUpdatePhase } from './auto-update-coordinator.ts';

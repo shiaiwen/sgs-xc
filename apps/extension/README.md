@@ -81,5 +81,6 @@ npm run dev:userscript
    - <https://95chong.cn/api/xiaochao-version>：更新检查使用的 API 清单，必须同步。
    - <https://xc.95chong.cn/downloads/manifest.json>：下载页用它选择版本化的微端安装包。
    - <https://xc.95chong.cn/downloads/sgs-xc.user.js>：浏览器脚本。
+   - <https://95chong.cn/api/xiaochao-userscript>：浏览器脚本在后台下载的新版代码。
 
-微端启动时通过 API 检查版本；发现新版本后，用户确认并通过 Windows UAC，微端才会替换安装文件。浏览器脚本的检查更新按钮也读取 API 清单；Tampermonkey 根据脚本的 `@updateURL` 更新脚本。
+微端和浏览器脚本都通过 API 检查版本，在后台准备好新版，等玩家不在打牌时刷新一次游戏页换上，详见 `docs/发版.md` 的「更新是否无感」。微端外壳有变化时，启动后会弹窗确认并通过 Windows UAC 安装整包。Tampermonkey 仍按脚本的 `@updateURL` 每天更新。

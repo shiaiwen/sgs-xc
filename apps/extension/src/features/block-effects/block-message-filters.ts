@@ -18,14 +18,18 @@ export interface BlockMessageFilterOptions {
   otherSkinState: boolean;
   factionSlogan: boolean;
   noticeWindow: boolean;
+  chatEmotion: boolean;
   inTableGame: boolean;
-  /** 皮肤回包是不是自己的。 */
-  isOwnSkinMessage(message: UnknownRecord): boolean;
+  /** 皮肤回包是不是别的玩家的。认不准时返回 false，不改。 */
+  isOtherPlayerSkinMessage(message: UnknownRecord): boolean;
+  /** 聊天消息是不是别的玩家的动画表情。认不准时返回 false，不改。 */
+  isOtherPlayerBigFaceMessage(message: UnknownRecord): boolean;
 }
 
 /**
  * 在协议分发前改写消息：击杀特效把 Type 置 0；他人动态皮肤把别人的皮肤回包
- * state 置 0；势力口号删除游戏读取的 data.protoObj 使其不显示。
+ * state 置 0；势力口号删除游戏读取的 data.protoObj 使其不显示；动画表情删掉
+ * 别人的大表情 protoObj 使其不显示。
  * 必须在游戏处理该协议前调用。
  */
 export function applyBlockMessageFilters(
@@ -41,13 +45,20 @@ export function applyBlockMessageFilters(
     suppressMarqueeBroadcastPayload(payload);
     return;
   }
+  if (options.chatEmotion && isChatMessage(className)) {
+    const chat = readChatRecord(payload);
+    if (chat && options.isOtherPlayerBigFaceMessage(chat)) {
+      hideChatProto(payload);
+      return;
+    }
+  }
   if (options.factionSlogan && (isChatMessage(className) || containsFactionSlogan(payload))) {
     if (containsFactionSlogan(payload)) clearChatProto(payload);
     if (isChatMessage(className)) return;
   }
   if (className === 'ClientGeneralSkinRep' && options.otherSkinState) {
     const message = generalSkinMessage(payload);
-    if (!message || options.isOwnSkinMessage(message)) return;
+    if (!message || !options.isOtherPlayerSkinMessage(message)) return;
     for (const item of message.GeneralSkinList as unknown[]) {
       if (item && typeof item === 'object') (item as UnknownRecord).state = 0;
     }
@@ -56,6 +67,31 @@ export function applyBlockMessageFilters(
 
 function isChatMessage(className: string): boolean {
   return CHAT_MESSAGE_NAMES.has(className) || /chatmsg/i.test(className);
+}
+
+/** 聊天正文：游戏读 data.protoObj 前，聊天字段挂在 data 上。 */
+function readChatRecord(payload: UnknownRecord): UnknownRecord | null {
+  const data = asRecord(payload.data) ?? asRecord(payload.Data);
+  if (data) return data;
+  return isChatPayload(payload) ? payload : null;
+}
+
+function isChatPayload(record: UnknownRecord): boolean {
+  return 'SpokerMan' in record || 'spokerMan' in record || 'chatMsg' in record || 'ChatMsg' in record;
+}
+
+/** 删掉聊天协议对象，游戏读不到大表情就不会画。 */
+function hideChatProto(payload: UnknownRecord): void {
+  for (const record of [payload, asRecord(payload.data) ?? asRecord(payload.Data)]) {
+    if (!record) continue;
+    for (const key of ['protoObj', 'ProtoObj', 'proto', 'msg']) {
+      hideProperty(record, key);
+    }
+  }
+}
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null;
 }
 
 const MARQUEE_BROADCAST_CLASS = /marquee|chatsysnews|systemnotice|scrollnotice|luckdraw|lotterybroadcast/i;

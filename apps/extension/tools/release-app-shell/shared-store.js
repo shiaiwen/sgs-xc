@@ -5,8 +5,39 @@ const crypto = require('crypto');
 const { applyGameRecordStorageOperation } = require('./game-record-store');
 const { applyNativeGameStorageOperation } = require('./native-game-store');
 
+const BROKEN_FILE_SUFFIX = '.broken-';
+const BROKEN_FILE_DIGEST_LENGTH = 12;
+const UTF8_BOM = '\uFEFF';
+
 function sleepSync(milliseconds) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** 先刷盘再改名；只改名不刷盘，断电后文件可能只剩一串空字节。 */
+function writeFileSynced(filePath, text) {
+    const descriptor = fs.openSync(filePath, 'w');
+    try {
+        fs.writeFileSync(descriptor, text, 'utf8');
+        fs.fsyncSync(descriptor);
+    } finally {
+        fs.closeSync(descriptor);
+    }
+}
+
+// 别的微端版本会在锁目录里留文件，只删空目录会一直删不掉，启动就卡在等锁上。
+function removeLockDirectory(lockPath) {
+    if (typeof fs.rmSync === 'function') fs.rmSync(lockPath, { recursive: true, force: true });
+    else fs.rmdirSync(lockPath, { recursive: true });
+}
+
+function parseStoreText(raw) {
+    const text = raw.toString('utf8');
+    try {
+        const store = JSON.parse(text.startsWith(UTF8_BOM) ? text.slice(UTF8_BOM.length) : text);
+        return store && typeof store === 'object' && !Array.isArray(store) ? store : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 function normalizeCredentials(list) {
@@ -57,20 +88,37 @@ function ensureCredentialScopes(store) {
     }
 }
 
-function createJsonStore(filePath) {
+function createJsonStore(filePath, options = {}) {
     const lockPath = filePath + '.lock';
+    let reportedBrokenDigest = '';
+
+    // 坏文件要先原样留一份：这里读出空对象后，下一次写入就会把它覆盖掉。
+    function backupBrokenFile(raw) {
+        const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, BROKEN_FILE_DIGEST_LENGTH);
+        if (digest === reportedBrokenDigest) return;
+        reportedBrokenDigest = digest;
+        const backupPath = filePath + BROKEN_FILE_SUFFIX + digest;
+        let failure = null;
+        try {
+            fs.writeFileSync(backupPath, raw, { flag: 'wx' });
+        } catch (error) {
+            if (error.code !== 'EEXIST') failure = error;
+        }
+        if (options.onBrokenFile) options.onBrokenFile(filePath, failure ? '' : backupPath, failure);
+    }
 
     function read() {
+        let raw;
         try {
-            const raw = fs.readFileSync(filePath, 'utf8');
-            const store = JSON.parse(raw);
-            if (!store || typeof store !== 'object' || Array.isArray(store)) throw new Error('invalid config object');
-            return store;
+            raw = fs.readFileSync(filePath);
         } catch (error) {
             if (error.code === 'ENOENT') return {};
-            // 读取失败时不能把空对象写回，否则会把仍可恢复的配置彻底覆盖。
             throw error;
         }
+        const store = parseStoreText(raw);
+        if (store) return store;
+        backupBrokenFile(raw);
+        return {};
     }
 
     function acquireLock() {
@@ -85,7 +133,7 @@ function createJsonStore(filePath) {
                 try {
                     const stat = fs.statSync(lockPath);
                     if (Date.now() - stat.mtimeMs > 15000) {
-                        fs.rmdirSync(lockPath);
+                        removeLockDirectory(lockPath);
                         continue;
                     }
                 } catch (statError) {
@@ -104,7 +152,7 @@ function createJsonStore(filePath) {
             const store = read();
             const result = callback(store);
             tempPath = filePath + '.' + process.pid + '.' + Date.now() + '.tmp';
-            fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), 'utf8');
+            writeFileSynced(tempPath, JSON.stringify(store, null, 2));
             fs.renameSync(tempPath, filePath);
             tempPath = '';
             return result;
@@ -127,8 +175,8 @@ function createJsonStore(filePath) {
     return { read, update };
 }
 
-function createJsonConfig(filePath) {
-    const { read, update } = createJsonStore(filePath);
+function createJsonConfig(filePath, options = {}) {
+    const { read, update } = createJsonStore(filePath, options);
     return {
         get(key, fallback) {
             const store = read();
@@ -146,10 +194,10 @@ function createJsonConfig(filePath) {
     };
 }
 
-function createSharedStore(filePath) {
-    const { read, update } = createJsonStore(filePath);
+function createSharedStore(filePath, options = {}) {
+    const { read, update } = createJsonStore(filePath, options);
     // 战绩可能远大于设置，独立落盘，避免每次读开关都解析整份历史。
-    const gameRecordsStore = createJsonStore(path.join(path.dirname(filePath), 'game-records.json'));
+    const gameRecordsStore = createJsonStore(path.join(path.dirname(filePath), 'game-records.json'), options);
     const nativeDirectory = path.join(path.dirname(filePath), 'native-settings');
     const nativeStores = new Map();
     function nativeSnapshot(store) {
@@ -158,7 +206,7 @@ function createSharedStore(filePath) {
     return {
         nativeGameStorage(origin, operation, source) {
             const name = crypto.createHash('sha256').update(origin).digest('hex') + '.json';
-            if (!nativeStores.has(name)) nativeStores.set(name, { origin, settings: createJsonStore(path.join(nativeDirectory, name)) });
+            if (!nativeStores.has(name)) nativeStores.set(name, { origin, settings: createJsonStore(path.join(nativeDirectory, name), options) });
             const { settings } = nativeStores.get(name);
             if (operation.action === 'get') return applyNativeGameStorageOperation(settings.read(), operation, source);
             return settings.update(store => {

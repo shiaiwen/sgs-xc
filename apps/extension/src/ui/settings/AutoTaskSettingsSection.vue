@@ -1,6 +1,7 @@
 <script setup>
 /** 自动领取设置：总开关控制下面的领取项。勾选表示要领，写入配置时取反为 skip。 */
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import BlockCheck from '../BlockCheck.vue';
 import BaseDialog from '../dialog/BaseDialog.vue';
 import {
   AUTO_TASK_ENABLED_KEY,
@@ -113,26 +114,17 @@ function toggleClaims() {
           </button>
         </h4>
         <div class="xiaochao-block-group__grid">
-          <div
+          <BlockCheck
             v-for="setting in AUTO_TASK_SKIP_SETTINGS"
             :key="setting.key"
-            class="xiaochao-block-check xiaochao-auto-task-row"
+            class="xiaochao-auto-task-row"
             :class="{ 'xiaochao-block-check--disabled': !enabled }"
-            :data-tooltip="setting.tooltip"
-            :title="setting.tooltip"
-          >
-            <label class="xiaochao-block-check__hit">
-              <input
-                type="checkbox"
-                :aria-label="setting.label"
-                :checked="claimValues[setting.key]"
-                :disabled="!enabled"
-                @change="updateClaim(setting.key, $event)"
-              >
-              <span class="xiaochao-block-check__box" />
-            </label>
-            <span class="xiaochao-block-check__label">{{ setting.label }}</span>
-          </div>
+            :label="setting.label"
+            :tooltip="setting.tooltip"
+            :checked="claimValues[setting.key]"
+            :disabled="!enabled"
+            @change="updateClaim(setting.key, $event)"
+          />
         </div>
       </section>
     </BaseDialog>

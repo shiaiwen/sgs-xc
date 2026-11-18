@@ -1,5 +1,5 @@
 /**
- * 判断三国杀账号是否已登录，供启动与面板挂载使用。
+ * 判断三国杀账号是否已登录，读游戏用户编号和这个号的登录账号。
  */
 
 import {
@@ -7,6 +7,7 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../adapters/laya-object-locator.ts';
+import { LOGIN_ACCOUNT_RETRY_MS } from '../const/account-sync.ts';
 type UnknownRecord = Record<string, unknown>;
 
 export interface ReadUserDataSelfOptions {
@@ -123,14 +124,13 @@ export function readUserDataSelf(
   return self;
 }
 
-export function resolveGameAccountId(
+function readGameUserId(
   globalObject: LayaRuntimeWindow,
-  locator?: LayaObjectLocator,
-  userDataSelf: UnknownRecord | null = null,
-  options: ReadUserDataSelfOptions = {}
+  locator: LayaObjectLocator,
+  userDataSelf: UnknownRecord | null,
+  options: ReadUserDataSelfOptions
 ): string {
-  const resolvedLocator = locator ?? createLayaObjectLocator(globalObject);
-  const manager = resolvedLocator.manager('UserInfoManger');
+  const manager = locator.manager('UserInfoManger');
   const managerSelf = asRecord(manager?.Self) ?? asRecord(manager?.self);
   const fromManager = managerSelf?.clientId
     ?? managerSelf?.ClientId
@@ -144,6 +144,50 @@ export function resolveGameAccountId(
   const self = userDataSelf ?? readUserDataSelf(globalObject, options);
   const value = self?.clientId ?? self?.ClientId ?? self?.ClientID;
   return isValidGameAccountId(value) ? String(value).trim() : '';
+}
+
+/** 每个游戏用户编号登录时用的账号。换过的号都留着，换号前没传完的改动还能传给原来那个号。 */
+const loginAccountByUserId = new Map<string, string>();
+let pairedUserId = '';
+let nextPairAttemptAt = 0;
+
+/**
+ * 登录成功时游戏写下登录账号和用户编号，之后在线期间登录账号不会变。
+ * 换号要先下线，再点登录时登录账号马上换成新输入的，编号要等登录成功才换。
+ * 所以只在在线时读，配上之后同一个编号不再重读，等编号换了再读。
+ */
+function pairLoginAccount(userId: string, locator: LayaObjectLocator): void {
+  if (userId === pairedUserId || Date.now() < nextPairAttemptAt) return;
+  nextPairAttemptAt = Date.now() + LOGIN_ACCOUNT_RETRY_MS;
+  try {
+    const manager = locator.manager('LoginManager');
+    if (!manager || manager.IsOnLine === false) return;
+    const name = manager.loginUserName ?? manager.LoginUserName;
+    // 游戏登录时自己也把输入的账号转成小写，大小写不同的是同一个号。
+    const loginAccount = typeof name === 'string' ? name.trim().toLowerCase() : '';
+    if (!loginAccount) return;
+    pairedUserId = userId;
+    loginAccountByUserId.set(userId, loginAccount);
+  } catch {
+    // 读不到登录账号时这个号先按用户编号和服务器往来，读用户编号不受影响。
+  }
+}
+
+/** 这个游戏用户编号登录时用的账号。游戏里没找到时返回空。 */
+export function gameLoginAccountOf(userId: string): string {
+  return loginAccountByUserId.get(userId) ?? '';
+}
+
+export function resolveGameAccountId(
+  globalObject: LayaRuntimeWindow,
+  locator?: LayaObjectLocator,
+  userDataSelf: UnknownRecord | null = null,
+  options: ReadUserDataSelfOptions = {}
+): string {
+  const resolvedLocator = locator ?? createLayaObjectLocator(globalObject);
+  const userId = readGameUserId(globalObject, resolvedLocator, userDataSelf, options);
+  if (userId) pairLoginAccount(userId, resolvedLocator);
+  return userId;
 }
 
 export function isGameAccountLoggedIn(globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow): boolean {

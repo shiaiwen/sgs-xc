@@ -1,6 +1,10 @@
 /**
  * 从官方微端 zip 解出 xiaochao.js，生成 .dev-data/appbak 下的本地逆向镜像。
  * 用法：node tools/refresh-reference-reverse.js [zip路径]
+ *
+ * 1.6.79 起官方把微端本体与小抄拆分：weiduan zip 只含 app.zip 等安装文件，
+ * 不再内嵌 app/xiaochao.js。若 zip 内没有该脚本，则按官网经典版清单
+ * （https://xiaochao.org/download/classic/manifest.json）下载并校验后写入 appbak。
  */
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
@@ -12,13 +16,56 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(__dirname, '..');
 const defaultZip =
   process.env.XIAOCHAO_REFERENCE_ZIP ||
-  path.join(extensionRoot, '.reference', 'xiaochao-1.6.76-weiduan-1.1.88.zip');
+  path.join(extensionRoot, '.reference', 'xiaochao-weiduan-1.1.92.zip');
 const zipPath = path.resolve(process.argv[2] || defaultZip);
 const outDir = path.join(extensionRoot, '.dev-data', 'appbak');
 const updatesUrl = 'https://log.xiaochao.org/updates.txt';
+const classicManifestUrl = 'https://xiaochao.org/download/classic/manifest.json';
+
+let scriptPathInZip = 'app/xiaochao.js';
+let scriptSource = 'zip';
 
 function rmrf(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function fetchClassicScript(dest) {
+  const tmpManifest = dest + '.manifest.json';
+  execSync(`curl -fsSL ${JSON.stringify(classicManifestUrl)} -o ${JSON.stringify(tmpManifest)}`, {
+    stdio: 'inherit',
+    shell: true,
+  });
+  const manifest = JSON.parse(fs.readFileSync(tmpManifest, 'utf8'));
+  fs.unlinkSync(tmpManifest);
+  if (
+    !manifest ||
+    manifest.format !== 1 ||
+    typeof manifest.url !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(manifest.sha256) ||
+    !Number.isSafeInteger(manifest.size)
+  ) {
+    console.error('经典版清单无效', manifest);
+    process.exit(1);
+  }
+  execSync(`curl -fsSL ${JSON.stringify(manifest.url)} -o ${JSON.stringify(dest)}`, {
+    stdio: 'inherit',
+    shell: true,
+  });
+  const buf = fs.readFileSync(dest);
+  const sha = createHash('sha256').update(buf).digest('hex');
+  if (sha !== manifest.sha256 || buf.length !== manifest.size) {
+    console.error('经典版脚本校验失败', {
+      sha,
+      expected: manifest.sha256,
+      bytes: buf.length,
+      expectedSize: manifest.size,
+    });
+    process.exit(1);
+  }
+  scriptPathInZip = manifest.url;
+  scriptSource = 'classic-manifest';
+  console.log(`已从官网经典版清单下载脚本 ${manifest.version || ''}，SHA256 校验通过`);
+  return dest;
 }
 
 function extractXiaochao() {
@@ -27,24 +74,33 @@ function extractXiaochao() {
     process.exit(1);
   }
   fs.mkdirSync(outDir, { recursive: true });
+  const dest = path.join(outDir, 'xiaochao.js');
   const tmp = path.join(outDir, '_tmp');
   rmrf(tmp);
   fs.mkdirSync(tmp, { recursive: true });
   const q = (p) => `"${p.replace(/"/g, '\\"')}"`;
-  execSync(`unzip -q -o ${q(zipPath)} app.zip -d ${q(tmp)}`, {
-    stdio: 'inherit',
-    shell: true,
-  });
-  const inner = path.join(tmp, 'app.zip');
-  execSync(`unzip -q -o ${q(inner)} app/xiaochao.js -d ${q(tmp)}`, {
-    stdio: 'inherit',
-    shell: true,
-  });
-  const src = path.join(tmp, 'app', 'xiaochao.js');
-  const dest = path.join(outDir, 'xiaochao.js');
-  fs.copyFileSync(src, dest);
-  rmrf(tmp);
-  return dest;
+  try {
+    execSync(`unzip -q -o ${q(zipPath)} app.zip -d ${q(tmp)}`, {
+      stdio: 'inherit',
+      shell: true,
+    });
+    const inner = path.join(tmp, 'app.zip');
+    execSync(`unzip -q -o ${q(inner)} app/xiaochao.js -d ${q(tmp)}`, {
+      stdio: 'inherit',
+      shell: true,
+    });
+    const src = path.join(tmp, 'app', 'xiaochao.js');
+    if (!fs.existsSync(src)) throw new Error('zip 内无 app/xiaochao.js');
+    fs.copyFileSync(src, dest);
+    rmrf(tmp);
+    scriptPathInZip = 'app/xiaochao.js';
+    scriptSource = 'zip';
+    return dest;
+  } catch {
+    rmrf(tmp);
+    console.log('zip 内无 app/xiaochao.js（微端本体已与小抄拆分），改从官网经典版清单下载脚本…');
+    return fetchClassicScript(dest);
+  }
 }
 
 function detectVersion(text) {
@@ -86,7 +142,8 @@ function writeManifest({ scriptVersion, sha256, bytes, logLatest }) {
   const manifest = {
     refreshedAt: new Date().toISOString(),
     zipPath,
-    scriptPath: 'app/xiaochao.js',
+    scriptPath: scriptPathInZip,
+    scriptSource,
     scriptVersion,
     scriptBytes: bytes,
     scriptSha256: sha256,
@@ -123,6 +180,6 @@ console.log(
 );
 if (scriptVersion && logLatest && scriptVersion !== logLatest) {
   console.log(
-    `提示：zip 内脚本为 ${scriptVersion}，官网日志已到 ${logLatest}；1.6.31 之后的行为以 updates.txt 为准，并尽快换更新的 zip。`,
+    `提示：脚本为 ${scriptVersion}，官网日志已到 ${logLatest}；1.6.31 之后的行为以 updates.txt 为准，并尽快换更新的 zip / 脚本。`,
   );
 }

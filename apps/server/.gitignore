@@ -3,3 +3,4 @@ node_modules
 data/gift-codes-upstream.json
 # 由 extension pack 写入，部署时再上传
 data/xiaochao-manifest.json
+data/xiaochao-userscript.js

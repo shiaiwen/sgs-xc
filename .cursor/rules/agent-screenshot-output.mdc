@@ -1,0 +1,29 @@
+---
+description: 验收截图写入 Cursor 聊天工作区并在编辑器打开，不污染 git 仓库。
+alwaysApply: true
+---
+
+# 截图与验收图输出
+
+## 两种工作区
+
+- **工程工作区**：用户打开的 git 仓库根目录，例如 `d:\workspace\sgs-xc`。业务代码只改这里，**不要把样式验收截图放进仓库**。
+- **聊天工作区**：Cursor 为本仓库挂的 Agent 目录，形如 `%USERPROFILE%\.cursor\projects\d-workspace-sgs-xc\`。验收截图、对比图只写这里。
+
+本仓库对应的聊天工作区根目录：`C:\Users\24745\.cursor\projects\d-workspace-sgs-xc\`。
+
+## 写入位置
+
+- 默认目录：`assets\agent-shots\`，不存在则先创建。
+- 文件名带用途，例如 `portal-home-desktop.png`、`portal-home-mobile.png`。
+- 禁止把截图写到仓库内的 `apps\`、`public\` 等路径，避免误提交。
+
+## 截完后的动作
+
+1. 用 Shell 生成 png 后，调用 `cursor-app-control` 的 `open_resource`，URI 为 `file:///` 加绝对路径，在编辑器里打开该图。
+2. 回复里写**聊天工作区下的相对路径**，例如 `assets/agent-shots/portal-home-desktop.png`，并说明在左侧文件树从 Cursor 项目目录打开；**不要**用 `![](磁盘绝对路径)` 当作唯一交付方式，聊天里通常无法预览。
+3. 提交时不得 `git add` 聊天工作区路径；该目录不在 git 仓库内。
+
+## 与 workspace-boundary 的关系
+
+写业务代码仍只限工程工作区。仅生成样式验收截图、临时对比图时，允许在对应聊天工作区根目录下读写 `assets\agent-shots\`。

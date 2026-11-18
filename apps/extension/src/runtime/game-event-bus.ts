@@ -191,7 +191,15 @@ export function createGameEventBus(): GameEventBus {
       const normalizedEvent = normalizeGameEvent(event);
       if (!normalizedEvent) return;
       measureXiaochao(eventLabel(normalizedEvent.type), () => {
-        listeners.forEach((listener) => listener(normalizedEvent));
+        // 单个监听器抛错不能中断其他监听器，也不能冒回游戏协议分发栈，
+        // 否则游戏会因此弹「未知错误」。
+        listeners.forEach((listener) => {
+          try {
+            listener(normalizedEvent);
+          } catch (error) {
+            console.warn('[小抄] 游戏事件监听抛错', normalizedEvent.type, error);
+          }
+        });
       });
     },
     subscribe(listener) {

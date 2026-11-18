@@ -23,7 +23,6 @@ export interface XiaochaoPanelLayout {
   top: number;
   right: number;
   width: string;
-  height: number;
   fontFamily: string;
 }
 

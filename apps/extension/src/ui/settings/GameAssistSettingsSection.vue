@@ -1,6 +1,7 @@
 <script setup>
 /** 游戏辅助开关：进阶辅助、自动托管、自动换将、百胜、酒馆目标。 */
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import BlockCheck from '../BlockCheck.vue';
 import {
   AUTO_BOT_ENABLED_KEY,
   AUTO_HG_ENABLED_KEY,
@@ -82,26 +83,17 @@ function updateSetting(key, event) {
         v-if="values[EXTRA_ASSIST_ENABLED_KEY]"
         class="xiaochao-assist-characters"
       >
-        <div
+        <BlockCheck
           v-for="setting in EXTRA_ASSIST_CHARACTER_SETTINGS"
           :key="setting.key"
-          class="xiaochao-block-switch xiaochao-game-assist-switch xiaochao-assist-character"
-          :data-tooltip="setting.tooltip"
+          class="xiaochao-assist-character-check"
+          :label="setting.label"
+          :tooltip="setting.tooltip"
+          :checked="values[setting.key]"
           @mouseenter="hoverKey = setting.key"
           @mouseleave="hoverKey = ''"
-        >
-          <span class="xiaochao-block-switch__label">{{ setting.label }}</span>
-          <label class="xiaochao-block-switch__toggle" :data-tooltip="setting.tooltip" :title="setting.tooltip">
-            <input
-              type="checkbox"
-              :aria-label="setting.label"
-              :checked="values[setting.key]"
-              @change="updateSetting(setting.key, $event)"
-            >
-            <span class="xiaochao-block-switch__slider" />
-            <span class="xiaochao-block-switch__state" aria-hidden="true" />
-          </label>
-        </div>
+          @change="updateSetting(setting.key, $event)"
+        />
       </div>
     </div>
   </section>
@@ -116,34 +108,16 @@ function updateSetting(key, event) {
 .xiaochao-assist-characters {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
-  margin: 6px 8px 10px 18px;
+  gap: 6px 16px;
+  margin: 4px 8px 10px 14px;
 }
 
-.xiaochao-assist-character {
+.xiaochao-assist-character-check {
   min-width: 0;
 }
 
-.xiaochao-assist-character :deep(.xiaochao-block-switch__label) {
-  margin: 0 0 3px;
-  font-size: 11px;
-}
-
-.xiaochao-assist-character :deep(.xiaochao-block-switch__toggle) {
-  width: 36px;
-  height: 16px;
-  margin-left: 0;
-}
-
-.xiaochao-assist-character :deep(.xiaochao-block-switch__slider::before) {
-  top: 1px;
-  left: 1px;
-  width: 12px;
-  height: 12px;
-}
-
-.xiaochao-assist-character :deep(.xiaochao-block-switch__toggle input:checked + .xiaochao-block-switch__slider::before) {
-  transform: translateX(20px);
+.xiaochao-assist-character-check :deep(.xiaochao-block-check__label) {
+  font-size: 12px;
 }
 
 .xiaochao-game-assist-tip {

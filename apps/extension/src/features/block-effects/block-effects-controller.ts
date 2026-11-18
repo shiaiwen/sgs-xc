@@ -10,11 +10,22 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { createMethodPatcher, type MethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { MARQUEE_SWEEP_MS, NOTICE_BLOCK_CHECK_MS } from '../../const/poll-intervals.ts';
 import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
-import { isBackgroundUiScene, isOwnSkinMessage } from '../skin-background/skin-runtime.ts';
+import { SKILL_SWITCH_SKIN_PLAY_TYPES } from '../../const/skin-play-type.ts';
+import {
+  EFFECT_CONTROLLER_ARGS,
+  EFFECT_PLAYER_ARGS,
+  MULTI_EFFECT_EXTRA_ARGS,
+  type EffectPlaybackArgLayout
+} from '../../const/effect-playback-args.ts';
+import {
+  isBackgroundUiScene,
+  isOtherPlayerSkinMessage,
+  isXiaochaoGameplayUiReady
+} from '../skin-background/skin-runtime.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
 import { applyBlockMessageFilters, shouldDropNoticeProtocol } from './block-message-filters.ts';
 import { installPersistentMarqueeEventBlock } from './marquee-event-hook.ts';
@@ -42,6 +53,10 @@ import {
   LOBBY_AD_PUSH_WINDOW_NAMES,
   looksLikeAdPushCarouselWindow
 } from '../../const/block-ad-window.ts';
+import {
+  HALL_TOOLBAR_WAIT_INTERVAL_MS,
+  HALL_TOOLBAR_WAIT_RETRIES
+} from '../../const/hall-toolbar-red-dot.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -57,6 +72,7 @@ const JINNANG_PLAY_METHODS = [
   'PlayJuedouEffect',
   'PlayTaoyuanEffect'
 ];
+const EFFECT_PLAYBACK_METHODS = ['ShowEffectByData', 'ShowEffectByDataWithJson', 'ShowMulitEffectByData'];
 const LOBBY_AD_BUTTON_TYPE = 0x27cb;
 const MARQUEE_EVENTS = ['CHAT_MARQUEE_ADD', 'CHAT_MARQUEE2023_ADD', 'CHAT_MARQUEE2023_ACT_ADD'];
 const MARQUEE_SHOW_METHODS = ['ShowMarquee', 'intActDataMarquee', 'ShowNextActMarquee'];
@@ -73,10 +89,8 @@ const MARQUEE_MANAGER_CLASS_NAMES = [
 /** 显示后需要处理的窗口及其对应开关；未开启时不轮询窗口。 */
 const SHOWN_WINDOW_SWITCHES: Record<string, BlockSettingKey> = {
   AdPushWindow: 'block.adWindow',
-  RogueLike1v1ZhanJiWindow: 'block.mvpWindow',
-  GameResultWindow: 'block.mvpWindow',
+  VersionNoticeWindow: 'block.adWindow',
   GameMvpWindow: 'block.mvpWindow',
-  GameZhanJiWindow: 'block.mvpWindow',
   GeneralOpenResultWindow: 'block.packageWindow',
   SkinOpenResultWindowNew: 'block.packageWindow',
   OldbackOneClickDrawAwdWin: 'block.packageWindow',
@@ -126,8 +140,13 @@ export function installBlockEffectsController(
   const unsubscribes: Array<() => void> = [];
   const skillEffects = new Set<UnknownRecord>();
   const effectControllers = new Set<UnknownRecord>();
-  let manualRecordView = false;
+  // 座位补丁挂在当前牌局的每个座位上，换局或离开牌局时整批撤掉，不攥着上一局的座位。
+  const seatPatcher = createMethodPatcher();
+  const seatEffectControllers = new Set<UnknownRecord>();
+  const seatNamePatcher = createMethodPatcher();
+  let seatPatchScene: UnknownRecord | null = null;
   let disposed = false;
+  let hallToolbarWaitToken = 0;
 
   if (options.gameEvents) {
     unsubscribes.push(options.gameEvents.subscribe((event) => {
@@ -148,8 +167,7 @@ export function installBlockEffectsController(
   const resourceFlags = (): EffectResourceFlags => ({
     sha: isOn('block.shaEffect'),
     shan: isOn('block.shanEffect'),
-    heal: isOn('block.healEffect'),
-    shake: isOn('block.shakeEffect')
+    heal: isOn('block.healEffect')
   });
   const KIND_SWITCH: Record<PlaybackKind, BlockSettingKey> = {
     sha: 'block.shaEffect',
@@ -166,11 +184,18 @@ export function installBlockEffectsController(
   const skinBlocked = (seat: UnknownRecord | null) => Boolean(seat?.IsSelf)
     ? isOn('block.selfSkinEffect')
     : isOn('block.otherSkinState');
+  const skinPlayBlocked = (seat: UnknownRecord | null, type: unknown) => skinBlocked(seat)
+    || (SKILL_SWITCH_SKIN_PLAY_TYPES.has(Number(type)) && isOn('block.skillEffect'));
   const replaceUrl = (url: unknown) => {
     if (typeof url !== 'string' || url.length === 0) return url;
     const flags = resourceFlags();
     return hasAnyEffectResourceBlock(flags) ? replaceBlockedEffectUrl(url, flags) : url;
   };
+
+  /** 大厅或牌局已就绪。登录后直接进的模式大厅不算背景页，也要装屏蔽。 */
+  function isBlockUiReady(): boolean {
+    return isBackgroundUiScene(locator, globalObject) || isXiaochaoGameplayUiReady(locator, globalObject);
+  }
 
   function later(callback: () => void, delay = 0): void {
     if (disposed) return;
@@ -403,17 +428,10 @@ export function installBlockEffectsController(
       return;
     }
     switch (name) {
-      case 'RogueLike1v1ZhanJiWindow':
-        callMethod(win, 'onClickClose');
+      case 'VersionNoticeWindow':
+        callMethod(win, 'Close');
         break;
-      case 'GameResultWindow':
       case 'GameMvpWindow':
-      case 'GameZhanJiWindow':
-        // 玩家从牌桌主动查看战绩时不自动关闭。
-        if (manualRecordView) {
-          manualRecordView = false;
-          break;
-        }
         later(() => {
           if (win.destroyed || disposed) return;
           callMethod(win, 'laterClose');
@@ -465,9 +483,12 @@ export function installBlockEffectsController(
   }
 
   async function installLobbyAdBlock(): Promise<void> {
-    patcher.wrap(locator.classPrototype('ModeScene'), 'showAdView', (original) => function (this: unknown, ...args) {
+    patcher.wrap(locator.classPrototype('ModeScene'), 'showAdView', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       const result = original.apply(this, args);
-      if (isOn('block.adWindow')) hideLobbyAd(0);
+      if (isOn('block.adWindow')) {
+        hideLobbyAd(0);
+        hideHomeBanner(this);
+      }
       return result;
     });
     const leftViewPrototype = await poll(
@@ -488,6 +509,27 @@ export function installBlockEffectsController(
           return leftIcon === rightIcon ? 0 : asRecord(right)?.zhutiIcon ? 1 : -1;
         });
     });
+    syncHomeBanner();
+  }
+
+  /** 首页轮播横幅：开关打开时藏掉 ModeScene 的 adBanner，关掉时恢复显示。 */
+  function syncHomeBanner(): void {
+    const scenes = [locator.scene(), ...locator.findInLayer('SceneLayer', 'ModeScene')];
+    for (const item of scenes) {
+      const banner = asRecord(asRecord(item)?.adBanner);
+      if (!banner || banner.destroyed) continue;
+      banner.visible = !isOn('block.adWindow');
+    }
+  }
+
+  function hideHomeBanner(scene?: UnknownRecord | null): void {
+    if (!isOn('block.adWindow')) return;
+    const items = scene ? [scene] : [locator.scene(), ...locator.findInLayer('SceneLayer', 'ModeScene')];
+    for (const item of items) {
+      const banner = asRecord(asRecord(item)?.adBanner);
+      if (!banner || banner.destroyed) continue;
+      banner.visible = false;
+    }
   }
 
   // ---------- 狗托（顶部跑马灯） ----------
@@ -827,7 +869,7 @@ export function installBlockEffectsController(
   }
 
   function tickMarqueeBlock(): void {
-    if (!isBackgroundUiScene(locator, globalObject)) return;
+    if (!isBlockUiReady()) return;
     tryInstallGedPersistentMarqueeHook();
     wrapMarqueeDispatchListeners();
     installDisplayAddChildGuard();
@@ -895,7 +937,7 @@ export function installBlockEffectsController(
   }
 
   function ensureMarqueeBlockInstalled(): Promise<void> {
-    if (!isBackgroundUiScene(locator, globalObject)) return Promise.resolve();
+    if (!isBlockUiReady()) return Promise.resolve();
     if (!marqueeBlockInstallPromise) marqueeBlockInstallPromise = installMarqueeBlock();
     return marqueeBlockInstallPromise;
   }
@@ -964,7 +1006,10 @@ export function installBlockEffectsController(
   }
 
   function installSceneEffectPatches(): void {
-    if (!isBackgroundUiScene(locator, globalObject)) return;
+    if (!isBlockUiReady()) return;
+    void poll(() => locator.gameScene()?.SelfSeatUi, 60, 100).then(() => {
+      patchSceneSeats(locator.gameScene());
+    });
     void (async () => {
       const userInfo = await poll(
         () => userInfoManager() ?? locator.managerFromList((manager) => (
@@ -1035,20 +1080,6 @@ export function installBlockEffectsController(
         return undefined;
       });
 
-      const selfSeatPrototype = await poll(() => {
-        const selfSeatUi = asRecord(locator.gameScene()?.SelfSeatUi);
-        const prototype = asRecord(asRecord(selfSeatUi?.constructor)?.prototype);
-        return typeof prototype?.ShowEffect === 'function' ? prototype : null;
-      }, 60, 100);
-      patcher.wrap(selfSeatPrototype, 'ShowEffect', (original) => function (this: unknown, ...args) {
-        const [name, , hit] = args;
-        if (!isOn('block.jinnangEffect') || (name !== 'nanmanhit' && name !== 'jiaoyin')) {
-          return original.apply(this, args);
-        }
-        triggerHit(asRecord(hit));
-        return undefined;
-      });
-
       const effectPlayer = await poll(findEffectPlayer, 60, 100);
       if (effectPlayer) {
         patcher.wrap(effectPlayer, 'ShowEffect', (original) => function (this: unknown, ...args) {
@@ -1080,74 +1111,15 @@ export function installBlockEffectsController(
         }
       }
 
-      const seatUiPrototype = await poll(() => {
-        const selfSeatUi = asRecord(locator.gameScene()?.SelfSeatUi);
-        const prototype = asRecord(asRecord(selfSeatUi?.constructor)?.prototype);
-        return typeof prototype?.playCardSkillAnimate === 'function' ? prototype : null;
-      }, 60, 100);
-      patcher.wrap(seatUiPrototype, 'play2DHurtShaEffect', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && (isOn('block.shaEffect') || isOn('block.shakeEffect'))) return undefined;
-        return original.apply(this, args);
-      });
-      patcher.wrap(seatUiPrototype, 'OnShowAttackedEffect', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && isOn('block.selectEffect')) return undefined;
-        return original.apply(this, args);
-      });
-      patcher.wrap(seatUiPrototype, 'BaojiHurtStart', (original) => function (this: unknown, ...args) {
-        const result = original.apply(this, args);
-        if (locator.gameScene() && isOn('block.shakeEffect')) stripBaojiSlots(asRecord(asRecord(args[0])?.[0]));
-        return result;
-      });
-      patcher.wrap(seatUiPrototype, 'playXDJXSkillEffect', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
-        return original.apply(this, args);
-      });
-      patcher.wrap(seatUiPrototype, 'playHurtShake', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && isOn('block.shakeEffect')) return undefined;
-        return original.apply(this, args);
-      });
-      patcher.wrap(seatUiPrototype, 'playCardSkillAnimate', (original) => function (this: UnknownRecord, card: unknown, ...rest) {
-        const kind = kindFromCard(asRecord(card) as never);
-        if (kindOn(kind)) {
-          if (kind === 'shan') callMethod(this, 'SetWanJianFlag', false);
-          return undefined;
-        }
-        return original.call(this, card, ...rest);
-      });
-      patcher.wrap(seatUiPrototype, 'playGeneralSpEffect', (original) => function (this: UnknownRecord, ...args) {
-        if (isOn('block.skillEffect') || skinBlocked(asRecord(this.seat))) return false;
-        return original.apply(this, args);
-      });
-      patcher.wrap(seatUiPrototype, 'onPlayNewSpEffect', (original) => function (this: UnknownRecord, type: unknown, ...rest) {
-        const seat = asRecord(this.seat);
-        const skillTyped = [2, 4, 5].includes(Number(type)) && isOn('block.skillEffect');
-        if (skinBlocked(seat) || skillTyped) return undefined;
-        return original.call(this, type, ...rest);
-      });
       patcher.wrap(asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat) && Object.getPrototypeOf(asRecord(locator.gameScene()?.SelfSeatUi)?.seat as object), 'DrawCards', (original) => function (this: unknown, ...args) {
         if (locator.gameScene() && isOn('block.jinnangEffect') && asRecord(args[5])?.SpellID === 7) args[6] = null;
         return original.apply(this, args);
       });
 
-      const effectCtrl = asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.effectCtrl);
-      const playbackTargets = [effectPlayer, asRecord(effectPlayer?.effectCtrl), effectCtrl]
-        .filter((item, index, list) => item && list.indexOf(item) === index);
-      for (const target of playbackTargets) {
-        if (target) effectControllers.add(target);
-        for (const method of ['ShowEffectByData', 'ShowEffectByDataWithJson', 'ShowMulitEffectByData']) {
-          patcher.wrap(target, method, (original) => function (this: unknown, data: unknown, ...rest) {
-            if (!locator.gameScene()) return original.call(this, data, ...rest);
-            const multi = method === 'ShowMulitEffectByData';
-            const animation = rest[multi ? 1 : 0];
-            const hit = asRecord(rest[multi ? 2 : 1]);
-            const record = asRecord(data);
-            const kind = classifyPlayback(record?.EffectPath, animation ?? record?.AniName, () => '', record?.Sound);
-            if (!kindOn(kind)) return original.call(this, data, ...rest);
-            finishBlockedPlayback(record, hit, kind, method === 'ShowEffectByDataWithJson');
-            return null;
-          });
-        }
-      }
+      wrapPlaybackMethods(patcher, effectPlayer, EFFECT_PLAYER_ARGS);
+      const playerEffectCtrl = asRecord(effectPlayer?.effectCtrl);
+      wrapPlaybackMethods(patcher, playerEffectCtrl, EFFECT_CONTROLLER_ARGS);
+      if (playerEffectCtrl) effectControllers.add(playerEffectCtrl);
       if (effectPlayer) {
         const wrapSkill = (target: UnknownRecord | null) => {
           if (!target) return;
@@ -1175,6 +1147,135 @@ export function installBlockEffectsController(
     })();
   }
 
+  /** 其他人的座位和自己的座位不是同一个类，补丁要挂在每个座位实例上才对所有人生效。 */
+  function patchSceneSeats(scene: UnknownRecord | null): void {
+    if (disposed) return;
+    if (scene !== seatPatchScene) {
+      seatPatcher.restoreAll();
+      seatEffectControllers.clear();
+      seatPatchScene = scene;
+      // 同一个牌局场景里重开一局、断线重连会重建座位，建完再补挂。
+      seatPatcher.wrap(scene, 'initSeatUis', (original) => function (this: unknown, ...args) {
+        const result = original.apply(this, args);
+        try {
+          patchSeatUis(asRecord(this));
+        } catch (error) {
+          console.warn('[屏蔽设置] 座位补丁安装失败:', error);
+        }
+        return result;
+      });
+    }
+    patchSeatUis(scene);
+  }
+
+  function patchSeatUis(scene: UnknownRecord | null): void {
+    if (!scene || scene !== seatPatchScene) return;
+    for (const seatUi of sceneSeatUis(scene)) patchSeatUi(seatUi);
+  }
+
+  function sceneSeatUis(scene: UnknownRecord): UnknownRecord[] {
+    const seatUis = asRecord(scene.seatContainer)?.seatUIs ?? scene.seatUIs;
+    const found: UnknownRecord[] = [];
+    for (const candidate of [scene.SelfSeatUi, ...(Array.isArray(seatUis) ? seatUis : [])]) {
+      const seatUi = asRecord(candidate);
+      if (seatUi && !found.includes(seatUi)) found.push(seatUi);
+    }
+    return found;
+  }
+
+  function patchSeatUi(seatUi: UnknownRecord): void {
+    seatPatcher.wrap(seatUi, 'ShowEffect', (original) => function (this: unknown, ...args) {
+      const [name, , options] = args;
+      if (!isOn('block.jinnangEffect') || (name !== 'nanmanhit' && name !== 'jiaoyin')) {
+        return original.apply(this, args);
+      }
+      triggerHit(asRecord(options));
+      return undefined;
+    });
+    seatPatcher.wrap(seatUi, 'play2DHurtShaEffect', (original) => function (this: unknown, ...args) {
+      if (locator.gameScene() && (isOn('block.shaEffect') || isOn('block.shakeEffect'))) return undefined;
+      return original.apply(this, args);
+    });
+    seatPatcher.wrap(seatUi, 'OnShowAttackedEffect', (original) => function (this: unknown, ...args) {
+      if (locator.gameScene() && isOn('block.selectEffect')) return undefined;
+      return original.apply(this, args);
+    });
+    seatPatcher.wrap(seatUi, 'BaojiHurtStart', (original) => function (this: unknown, ...args) {
+      const result = original.apply(this, args);
+      if (locator.gameScene() && isOn('block.shakeEffect')) stripBaojiSlots(asRecord(asRecord(args[0])?.[0]));
+      return result;
+    });
+    seatPatcher.wrap(seatUi, 'playXDJXSkillEffect', (original) => function (this: unknown, ...args) {
+      if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
+      return original.apply(this, args);
+    });
+    seatPatcher.wrap(seatUi, 'playHurtShake', (original) => function (this: unknown, ...args) {
+      if (locator.gameScene() && isOn('block.shakeEffect')) return undefined;
+      return original.apply(this, args);
+    });
+    seatPatcher.wrap(seatUi, 'playCardSkillAnimate', (original) => function (this: UnknownRecord, card: unknown, ...rest) {
+      const kind = kindFromCard(asRecord(card) as never);
+      if (kindOn(kind)) {
+        if (kind === 'shan') callMethod(this, 'SetWanJianFlag', false);
+        return undefined;
+      }
+      return original.call(this, card, ...rest);
+    });
+    seatPatcher.wrap(seatUi, 'playGeneralSpEffect', (original) => function (this: UnknownRecord, ...args) {
+      if (isOn('block.skillEffect') || skinBlocked(asRecord(this.seat))) return false;
+      return original.apply(this, args);
+    });
+    seatPatcher.wrap(seatUi, 'onPlayNewSpEffect', (original) => function (this: UnknownRecord, type: unknown, ...rest) {
+      if (skinPlayBlocked(asRecord(this.seat), type)) return undefined;
+      return original.call(this, type, ...rest);
+    });
+    patchSeatEmotion(seatUi);
+    const effectCtrl = seatEffectController(seatUi);
+    if (!effectCtrl) return;
+    seatEffectControllers.add(effectCtrl);
+    wrapPlaybackMethods(seatPatcher, effectCtrl, EFFECT_CONTROLLER_ARGS);
+  }
+
+  /** 动画表情屏蔽：别人座位不播放大表情。 */
+  function patchSeatEmotion(seatUi: UnknownRecord): void {
+    const emotionProto = prototypeOwningMethod(seatUi, 'ShowBigFace');
+    seatNamePatcher.wrap(emotionProto, 'ShowBigFace', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      if (isOn('block.chatEmotion') && asRecord(this.seat)?.IsSelf !== true) return undefined;
+      return original.apply(this, args);
+    });
+  }
+
+  /**
+   * 座位的特效控制器在第一次用到时才建，建的时候记下座位的特效层。
+   * 特效层还没建好就提前取，这个座位之后的特效都画不出来。
+   */
+  function seatEffectController(seatUi: UnknownRecord): UnknownRecord | null {
+    const existing = asRecord(seatUi.effectCtrl);
+    if (existing) return existing;
+    if (!seatUi.stateEffectSprite || !seatUi.effectSprite) return null;
+    return asRecord(seatUi.EffectCtrl);
+  }
+
+  function wrapPlaybackMethods(
+    methodPatcher: MethodPatcher,
+    target: UnknownRecord | null,
+    layout: EffectPlaybackArgLayout
+  ): void {
+    for (const method of EFFECT_PLAYBACK_METHODS) {
+      const shift = method === 'ShowMulitEffectByData' ? MULTI_EFFECT_EXTRA_ARGS : 0;
+      methodPatcher.wrap(target, method, (original) => function (this: unknown, ...args) {
+        if (!locator.gameScene()) return original.apply(this, args);
+        const data = asRecord(args[0]);
+        const name = layout.nameIndex === null ? '' : args[layout.nameIndex + shift];
+        const kind = classifyPlayback(data?.EffectPath, name || data?.AniName, () => '', data?.Sound);
+        if (!kindOn(kind)) return original.apply(this, args);
+        const options = asRecord(args[layout.optionsIndex + shift]);
+        finishBlockedPlayback(data, options, kind, method === 'ShowEffectByDataWithJson');
+        return null;
+      });
+    }
+  }
+
   /** 原版 y4：跳过南蛮/箭雨动画时仍需按原延迟触发受击。 */
   function triggerHit(hit: UnknownRecord | null, delay = Number(hit?.HitDelay) || 0): void {
     const trigger = hit?.HitTrigger;
@@ -1190,7 +1291,7 @@ export function installBlockEffectsController(
     kind: string,
     useDataDelay: boolean
   ): void {
-    const delay = Number((useDataDelay ? data?.HitDelay : hit?.HitDelay) || 0);
+    const delay = Number((useDataDelay ? data?.HitDelay : hit?.HitDelay || data?.HitDelay) || 0);
     triggerHit(hit, delay);
     if (kind !== 'skill' && typeof hit?.EndTrigger === 'function') hit.EndTrigger();
   }
@@ -1278,13 +1379,14 @@ export function installBlockEffectsController(
   async function installSceneSwitchHook(): Promise<void> {
     const sceneManager = await poll(findSceneManager);
     patcher.wrap(sceneManager, 'executeSwitchScene', (original) => function (this: unknown, ...args) {
-      if (isBackgroundUiScene(locator, globalObject)) installSceneEffectPatches();
+      if (isBlockUiReady()) installSceneEffectPatches();
       const result = original.apply(this, args);
       const sceneName = asRecord(args[0])?.SceneName;
       if (sceneName) {
         later(() => {
-          if (!isBackgroundUiScene(locator, globalObject)) return;
-          if (sceneName === 'TableScene') installRecordViewTracker();
+          patchSceneSeats(locator.gameScene());
+          armHallToolbarRedDots();
+          if (!isBlockUiReady()) return;
           installSceneEffectPatches();
           refreshMarqueeBlock();
         });
@@ -1305,39 +1407,31 @@ export function installBlockEffectsController(
   /** 开关打开时清掉已经在播的选中、受击和武将动画，避免要等下一次才消失。 */
   function sweepLiveEffects(restoreSelect = false): void {
     const scene = locator.gameScene();
-    const seats = asRecord(scene?.seatContainer)?.seatUIs ?? scene?.seatUIs;
-    if (Array.isArray(seats)) {
-      for (const item of seats) {
-        const seatUi = asRecord(item);
-        if (!seatUi) continue;
-        const seat = asRecord(seatUi.seat);
-        const seatEffect = asRecord(seatUi.effectCtrl);
-        if (seatEffect) effectControllers.add(seatEffect);
-        if (isOn('block.selectEffect')) {
-          callMethod(seatUi.allowAttackEffect, 'destroy');
-          seatUi.allowAttackEffect = null;
-        } else if (restoreSelect && seat?.Selected) {
-          callMethod(seatUi, 'OnShowAttackedEffect');
+    patchSceneSeats(scene);
+    for (const seatUi of scene ? sceneSeatUis(scene) : []) {
+      const seat = asRecord(seatUi.seat);
+      if (isOn('block.selectEffect')) {
+        callMethod(seatUi.allowAttackEffect, 'destroy');
+        seatUi.allowAttackEffect = null;
+      } else if (restoreSelect && seat?.Selected) {
+        callMethod(seatUi, 'OnShowAttackedEffect');
+      }
+      if (isOn('block.skillEffect') || skinBlocked(seat)) {
+        callMethod(seatUi, 'clearOutAvatarAni');
+        callMethod(seatUi, 'clearSkinSkillEffect');
+      }
+      if (skinPlayBlocked(seat, seatUi.playingNewSpType)) {
+        const playing = asRecord(seatUi.playingNewSpEffect);
+        if (playing) {
+          callMethod(seatUi, 'aniNewcallBack');
+          callMethod(playing, 'destroy');
         }
-        if (isOn('block.skillEffect') || skinBlocked(seat)) {
-          callMethod(seatUi, 'clearOutAvatarAni');
-          callMethod(seatUi, 'clearSkinSkillEffect');
-        }
-        const playingType = Number(seatUi.playingNewSpType);
-        const skillTyped = [2, 4, 5].includes(playingType) && isOn('block.skillEffect');
-        if (skinBlocked(seat) || skillTyped) {
-          const playing = asRecord(seatUi.playingNewSpEffect);
-          if (playing) {
-            callMethod(seatUi, 'aniNewcallBack');
-            callMethod(playing, 'destroy');
-          }
-          callMethod(seatUi, 'clearNewFullScreenEffect');
-        }
-        if (isOn('block.shakeEffect') && seatUi.hurtShakeTween) {
-          callMethod(seatUi.hurtShakeTween, 'clear');
-          seatUi.hurtShakeTween = null;
-          callMethod(seatUi, 'setSeatPos', seatUi.seatX, seatUi.seatY, false);
-        }
+        callMethod(seatUi, 'clearNewFullScreenEffect');
+      }
+      if (isOn('block.shakeEffect') && seatUi.hurtShakeTween) {
+        callMethod(seatUi.hurtShakeTween, 'clear');
+        seatUi.hurtShakeTween = null;
+        callMethod(seatUi, 'setSeatPos', seatUi.seatX, seatUi.seatY, false);
       }
     }
     if (isOn('block.skillEffect')) {
@@ -1347,13 +1441,15 @@ export function installBlockEffectsController(
         for (const skill of skillEffects) clearAll.call(timer, skill);
       }
     }
-    for (const player of effectControllers) {
-      const parent = asRecord(player.parent);
-      if (!parent || parent.destroyed) {
-        effectControllers.delete(player);
-        continue;
+    for (const players of [effectControllers, seatEffectControllers]) {
+      for (const player of players) {
+        const parent = asRecord(player.parent);
+        if (!parent || parent.destroyed) {
+          players.delete(player);
+          continue;
+        }
+        hideBlockedPlayingEffects(player);
       }
-      hideBlockedPlayingEffects(player);
     }
     if (scene && (isOn('block.shakeEffect') || isOn('block.skillEffect'))) {
       const killEffect = asRecord(scene.killEffect);
@@ -1392,14 +1488,6 @@ export function installBlockEffectsController(
         endings.forEach((ending) => ending());
       }
     }
-  }
-
-  function installRecordViewTracker(): void {
-    const scene = locator.scene();
-    patcher.wrap(scene ? Object.getPrototypeOf(scene) : null, 'showRecordWindow', (original) => function (this: unknown, ...args) {
-      manualRecordView = Boolean(args[0]);
-      return original.apply(this, args);
-    });
   }
 
   // ---------- 击杀、红点、资源 ----------
@@ -1483,32 +1571,127 @@ export function installBlockEffectsController(
   function taskRedDotManager(): UnknownRecord | null {
     const fromEvent = locator.manager('TaskRedDotManager');
     const fromList = locator.managerFromList((item) => (
-      typeof item.setNodeState === 'function' && Boolean(asRecord(item.tree)?.root)
+      typeof item.setNodeState === 'function' && Boolean(asRecord(item.tree)?.Root)
     ));
     const candidates = [fromEvent, fromList].filter((item): item is UnknownRecord => Boolean(item));
     return candidates.find((item) => (
-      typeof item.setNodeState === 'function' && Boolean(asRecord(asRecord(item.tree)?.root)?.state)
+      typeof item.setNodeState === 'function' && Boolean(asRecord(asRecord(item.tree)?.Root)?.state)
     )) ?? candidates.find((item) => typeof item.setNodeState === 'function') ?? null;
   }
 
   async function installRedDotBlock(): Promise<void> {
     const redDotManager = await poll(() => taskRedDotManager(), 40, 500);
-    patcher.wrap(redDotManager, 'setNodeState', (original) => function (this: UnknownRecord, node: unknown, state: unknown) {
-      if (node === Infinity) {
-        activeLeafNodes(asRecord(this.tree)?.root).forEach((leaf) => original.call(this, leaf, 0));
-        return undefined;
-      }
+    // 参考脚本拦的是 tree.SetNodeState（大写 S），不是 manager.setNodeState。
+    const tree = asRecord(redDotManager?.tree);
+    patcher.wrap(tree, 'SetNodeState', (original) => function (this: UnknownRecord, node: unknown, state: unknown) {
       return original.call(this, node, isOn('block.taskRedDot') ? 0 : state);
     });
+    installHallRedDotBlock();
     if (isOn('block.taskRedDot')) clearAllRedDots();
+  }
+
+  /** 大厅右上角图标（活动日历/公告/任务/官阶）上的小红点。 */
+  function installHallRedDotBlock(): void {
+    const calendar = locator.managerFromList((manager) => typeof manager?.GetSpecialActivityCalendar === 'function');
+    const notice = locator.managerFromList((manager) => typeof manager?.getActiveNotice === 'function');
+    const tasks = locator.managerFromList((manager) => manager !== null && 'ShowNewAdNoticeRed' in manager);
+    const power = locator.managerFromList((manager) => typeof manager?.ShowPowerEntryWin === 'function');
+
+    // 方法级：屏蔽时返回假，让图标不亮红点。
+    for (const [target, method] of [[calendar, 'IsReddot'], [power, 'HasRedDot']] as const) {
+      if (!target) continue;
+      patcher.wrap(target, method, (original) => function (this: UnknownRecord, ...args: unknown[]) {
+        return !isOn('block.taskRedDot') && original.apply(this, args);
+      });
+    }
+    // getter 级：NoticeRed / ShowNewAdNoticeRed 挂在原型上，在实例上覆盖回去。
+    for (const [target, key] of [[notice, 'NoticeRed'], [tasks, 'ShowNewAdNoticeRed']] as const) {
+      if (target) blockPrototypeGetter(target, key);
+    }
+    armHallToolbarRedDots();
+  }
+
+  /**
+   * 工具栏随大厅场景新建，登录后和每次回大厅都比屏蔽模块安装得晚；
+   * 一直等到它出现再挂上，建的时候已经亮过一次红点，挂上后马上重算。
+   */
+  function armHallToolbarRedDots(): void {
+    const token = ++hallToolbarWaitToken;
+    void poll(() => {
+      if (token !== hallToolbarWaitToken) return true;
+      const toolbar = hallToolbar();
+      if (typeof toolbar?.checkMoreRed !== 'function') return false;
+      if (!patcher.isWrapped(toolbar, 'checkMoreRed')) {
+        installMoreMenuRedDotBlock(toolbar);
+        if (isOn('block.taskRedDot')) callMethod(toolbar, 'moreUpdate');
+      }
+      return true;
+    }, HALL_TOOLBAR_WAIT_RETRIES, HALL_TOOLBAR_WAIT_INTERVAL_MS);
+  }
+
+  function blockPrototypeGetter(instance: UnknownRecord, key: string): void {
+    if (Object.prototype.hasOwnProperty.call(instance, key)) return;
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(instance), key);
+    if (!descriptor?.get) return;
+    const originalGet = descriptor.get;
+    try {
+      Object.defineProperty(instance, key, {
+        ...descriptor,
+        get(this: unknown) {
+          return !isOn('block.taskRedDot') && (originalGet as () => unknown).call(this);
+        }
+      });
+      cleanups.push(() => {
+        try {
+          delete instance[key];
+        } catch {
+          // 实例已销毁时忽略。
+        }
+      });
+    } catch {
+      // 覆盖不了就跳过这个图标。
+    }
+  }
+
+  function hallToolbar(): UnknownRecord | null {
+    const scene = asRecord(locator.scene());
+    return asRecord(scene?.hallToolbar) ?? asRecord(scene?.toolBar);
+  }
+
+  /** 大厅右下角「更多」按钮的红点，以及展开菜单里各入口的红点和数字角标。 */
+  function installMoreMenuRedDotBlock(toolbar: UnknownRecord | null): void {
+    patcher.wrap(toolbar, 'checkMoreRed', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      const moreView = asRecord(this.moreView);
+      if (moreView) installMoreViewRedDotBlock(moreView);
+      const hasRed = original.apply(this, args);
+      return !isOn('block.taskRedDot') && hasRed;
+    });
+  }
+
+  /** 菜单是第一次点「更多」时才建的，建好后游戏紧接着会重算一次红点，在那时挂上。 */
+  function installMoreViewRedDotBlock(moreView: UnknownRecord): void {
+    patcher.wrap(moreView, 'UpdateRedPoint', (original) => function (this: unknown, funcId: unknown, show: unknown) {
+      return original.call(this, funcId, isOn('block.taskRedDot') ? false : show);
+    });
+    patcher.wrap(moreView, 'UpdateNumRedPoint', (original) => function (this: unknown, funcId: unknown, count: unknown) {
+      return original.call(this, funcId, isOn('block.taskRedDot') ? 0 : count);
+    });
+  }
+
+  /** 重新算一遍大厅图标红点，屏蔽开关切换后让右上角立即更新。 */
+  function refreshHallRedDots(): void {
+    const toolbar = hallToolbar();
+    installMoreMenuRedDotBlock(toolbar);
+    callMethod(toolbar, 'moreUpdate');
   }
 
   function clearAllRedDots(): void {
     const manager = taskRedDotManager();
     if (!manager || typeof manager.setNodeState !== 'function') return;
-    for (const leaf of activeLeafNodes(asRecord(manager.tree)?.root)) {
-      callMethod(manager, 'setNodeState', leaf, 0);
+    for (const node of activeRedDotNodes(asRecord(manager.tree)?.Root)) {
+      callMethod(manager, 'setNodeState', node, 0);
     }
+    refreshHallRedDots();
   }
 
   function installResourceRequestFilter(): void {
@@ -1557,22 +1740,50 @@ export function installBlockEffectsController(
       otherSkinState: isOn('block.otherSkinState'),
       factionSlogan: isOn('block.factionSlogan'),
       noticeWindow: isOn('block.noticeWindow'),
+      chatEmotion: isOn('block.chatEmotion'),
       inTableGame: Boolean(locator.gameScene()),
-      isOwnSkinMessage: (message) => isOwnSkinMessage(locator, message)
+      isOtherPlayerSkinMessage: (message) => isOtherPlayerSkinMessage(locator, message),
+      isOtherPlayerBigFaceMessage: (message) => isOtherPlayerBigFaceMessage(message)
     });
+  }
+
+  /** 聊天消息是不是别的玩家发的大表情。认不准时返回 false，不改。 */
+  function isOtherPlayerBigFaceMessage(message: UnknownRecord): boolean {
+    const chatManager = gameClass('ChatManager');
+    const userData = gameClass('UserData');
+    const spoker = message.SpokerMan ?? message.spokerMan;
+    if (typeof userData?.IsSelf === 'function' && userData.IsSelf(spoker)) return false;
+    if (typeof chatManager?.IsBigFaceMsg !== 'function') return false;
+    const chatMsg = message.chatMsg ?? message.ChatMsg ?? '';
+    try {
+      return chatManager.IsBigFaceMsg({ ...message, chatMsg }) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function gameClass(className: string): UnknownRecord | null {
+    const classUtils = asRecord(globalObject.Laya?.ClassUtils);
+    const getClass = classUtils?.getClass;
+    return typeof getClass === 'function' ? asRecord(getClass.call(classUtils, className)) : null;
   }
 
   unsubscribes.push(
     configStore.subscribe('block.adWindow', ({ value }) => {
-      if (!value) return;
+      if (!value) {
+        syncHomeBanner();
+        return;
+      }
       closeBySwitch('block.adWindow', 6, 500);
       hideLobbyAd(3);
+      hideHomeBanner();
     }),
     configStore.subscribe('block.noticeWindow', () => {
       void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
     }),
     configStore.subscribe('block.taskRedDot', ({ value }) => {
       if (value) clearAllRedDots();
+      else refreshHallRedDots();
     }),
     ...([
       'block.shaEffect',
@@ -1593,7 +1804,7 @@ export function installBlockEffectsController(
 
   // 工程入口早于游戏登录，管理器就绪后才安装其余补丁。
   void poll(() => {
-    if (!isBackgroundUiScene(locator, globalObject)) return null;
+    if (!isBlockUiReady()) return null;
     return locator.dispatcher() && locator.manager('WindowManager');
   }, Infinity, 1000).then((ready) => {
     if (!ready) return;
@@ -1647,9 +1858,10 @@ export function installBlockEffectsController(
     clearRedDots() {
       const manager = taskRedDotManager();
       if (typeof manager?.setNodeState !== 'function') return { found: false, count: 0 };
-      const leaves = activeLeafNodes(asRecord(manager.tree)?.root);
-      for (const leaf of leaves) callMethod(manager, 'setNodeState', leaf, 0);
-      return { found: true, count: leaves.length };
+      const nodes = activeRedDotNodes(asRecord(manager.tree)?.Root);
+      for (const node of nodes) callMethod(manager, 'setNodeState', node, 0);
+      refreshHallRedDots();
+      return { found: true, count: nodes.length };
     },
     dispose() {
       disposed = true;
@@ -1657,36 +1869,46 @@ export function installBlockEffectsController(
       timers.clear();
       unsubscribes.splice(0).forEach((unsubscribe) => unsubscribe());
       cleanups.splice(0).forEach((cleanup) => cleanup());
+      seatPatcher.restoreAll();
+      seatEffectControllers.clear();
+      seatPatchScene = null;
+      seatNamePatcher.restoreAll();
       patcher.restoreAll();
     }
   };
 }
 
-/** 原版红点清理：广度遍历找出所有仍亮着的叶子。子节点只要有 filter 就走，不要求是普通数组。 */
-function activeLeafNodes(root: unknown): unknown[] {
+/** 原版红点清理：广度遍历红点树，找出所有 state 非 0 的节点（含中间节点，不只看叶子）。 */
+function activeRedDotNodes(root: unknown): UnknownRecord[] {
+  const nodes: UnknownRecord[] = [];
+  const stack: UnknownRecord[] = [];
   const rootRecord = asRecord(root);
-  if (!rootRecord?.state) return [];
-  const leaves: unknown[] = [];
-  const queue: UnknownRecord[] = [rootRecord];
-  while (queue.length) {
-    const node = queue.shift()!;
-    const children = activeChildren(node);
-    if (children.length) queue.push(...children);
-    else leaves.push(node);
+  if (rootRecord) stack.push(rootRecord);
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.state) nodes.push(node);
+    const children = node.children;
+    if (Array.isArray(children)) {
+      for (const child of children) {
+        const record = asRecord(child);
+        if (record) stack.push(record);
+      }
+    }
   }
-  return leaves;
-}
-
-function activeChildren(node: UnknownRecord): UnknownRecord[] {
-  const children = node.children as { filter?: (predicate: (child: unknown) => unknown) => unknown[] } | undefined;
-  if (typeof children?.filter !== 'function') return [];
-  return children.filter((child) => Boolean(asRecord(child)?.state))
-    .map(asRecord)
-    .filter((child): child is UnknownRecord => Boolean(child));
+  return nodes;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
+}
+
+/** 在原型链上找真正拥有该方法的那一层，用于包装原型上的共享方法。 */
+function prototypeOwningMethod(target: unknown, method: string): UnknownRecord | null {
+  let proto = target !== null && typeof target === 'object' ? Object.getPrototypeOf(target) : null;
+  while (proto && !Object.prototype.hasOwnProperty.call(proto, method)) {
+    proto = Object.getPrototypeOf(proto);
+  }
+  return proto && typeof (proto as UnknownRecord)[method] === 'function' ? proto as UnknownRecord : null;
 }

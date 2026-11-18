@@ -1,4 +1,7 @@
-/** 微端更新：脚本级无感热更优先；整包替换仍保留为后备。 */
+/**
+ * 微端更新：后台下载新脚本换进用户目录，不刷新游戏页；游戏页里的小抄问到新版就绪后，
+ * 自己挑不打牌的时候刷新。微端外壳变了才走整包，整包要确认和管理员授权，只在启动后不久问。
+ */
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -28,6 +31,13 @@ const DOWNLOAD_TIMEOUT_MS = 120000;
 const MAX_UPDATE_BYTES = 100 * 1024 * 1024;
 const MAX_SCRIPT_BYTES = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
+/** 和小抄里 MICRO_CLIENT_UPDATE_STATUS_CHANNEL 一致。 */
+const UPDATE_STATUS_CHANNEL = 'xiaochao-update-status';
+/** 整包更新要弹确认框，只在启动后这段时间里问，免得打牌中途弹出来。 */
+const FULL_PACKAGE_PROMPT_WINDOW_MS = 3 * 60 * 1000;
+const MANUAL_CHECK_THROTTLE_MS = 5000;
+/** 脚本下载出错后过多久自己再试一次，每个版本只自动重试一次。 */
+const SCRIPT_RETRY_DELAY_MS = 2 * 60 * 1000;
 
 function sha256File(filePath) {
     return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
@@ -181,6 +191,21 @@ function readLocalScriptVersion(getScriptPath) {
     ), '');
 }
 
+/** 壳版本写在 package.json 的 xiaochaoShellVersion，是个整数；没有这个字段的旧壳当成 0。 */
+function readShellVersion() {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+        return normalizeShellVersion(pkg.xiaochaoShellVersion);
+    } catch (error) {
+        return 0;
+    }
+}
+
+function normalizeShellVersion(value) {
+    const version = Number(value);
+    return Number.isSafeInteger(version) && version > 0 ? version : 0;
+}
+
 function writeScriptAtomically(scriptPath, body) {
     const directory = path.dirname(scriptPath);
     const tempPath = path.join(directory, `xiaochao.js.${process.pid}.hot.tmp`);
@@ -192,8 +217,9 @@ function writeScriptAtomically(scriptPath, body) {
 
 /**
  * 正式包启动后检查门户清单。
- * 优先：scriptUrl → 写入 userData/xiaochao.js → 清缓存并重载注入（无确认、无 UAC）。
- * 后备：仅当清单无有效 scriptUrl 时，走整包 app.zip + 确认 + UAC。
+ * 脚本：scriptUrl → 写入 userData/xiaochao.js → 清缓存，等游戏页自己刷新（无确认、无 UAC）。
+ * 整包：清单里的壳版本比本地新，或者清单没有可用的 scriptUrl 时，确认 + UAC 安装 app.zip。
+ * 传了 ipcMain 才登记进度通道；不登记时游戏页里的小抄只提示手动更新。
  */
 function scheduleMicroClientUpdate(deps) {
     const {
@@ -205,9 +231,42 @@ function scheduleMicroClientUpdate(deps) {
         logMessage,
         getScriptPath,
         clearLocalScriptCache,
-        reloadScriptInjection
+        notifyScriptStaged,
+        ipcMain
     } = deps;
     if (process.platform !== 'win32') return;
+
+    const startedAt = Date.now();
+    const localShellVersion = readShellVersion();
+    /** 不装整包就换不上的线上版本，例如清单里没有可用的脚本地址；成功或重新检查时清空。下载出错不算，过一会儿会再试。 */
+    let failedVersion = '';
+    const retriedVersions = new Set();
+    /** 线上要求更新外壳时记下线上版本，游戏页据此提示手动装整包。 */
+    let shellUpdateVersion = '';
+    const injectedVersionCache = { sourcePath: '', mtimeMs: -1, size: -1, version: '' };
+
+    /** 下次刷新游戏页时会注入的脚本版本：用户目录有脚本就用它，否则用安装包里的。 */
+    function readInjectedScriptVersion() {
+        const userScriptPath = getScriptPath();
+        const sourcePath = userScriptPath && fs.existsSync(userScriptPath)
+            ? userScriptPath
+            : path.join(__dirname, 'xiaochao.js');
+        try {
+            const stat = fs.statSync(sourcePath);
+            if (
+                injectedVersionCache.sourcePath === sourcePath
+                && injectedVersionCache.mtimeMs === stat.mtimeMs
+                && injectedVersionCache.size === stat.size
+            ) {
+                return injectedVersionCache.version;
+            }
+            const version = readScriptVersion(sourcePath);
+            Object.assign(injectedVersionCache, { sourcePath, mtimeMs: stat.mtimeMs, size: stat.size, version });
+            return version;
+        } catch (error) {
+            return '';
+        }
+    }
 
     let updateProgressWindow = null;
 
@@ -268,7 +327,7 @@ function scheduleMicroClientUpdate(deps) {
         return dialog.showMessageBox(mainWindow, options);
     }
 
-    const declinedVersions = new Set();
+    const promptedVersions = new Set();
     let running = false;
     let queued = false;
     let lastCheckAt = 0;
@@ -286,7 +345,7 @@ function scheduleMicroClientUpdate(deps) {
 
     function queueCheck() {
         const now = Date.now();
-        if (now - lastCheckAt < 5000 && lastCheckAt !== 0) return;
+        if (now - lastCheckAt < MANUAL_CHECK_THROTTLE_MS && lastCheckAt !== 0) return;
         arm(getMainWindow());
         if (running) {
             queued = true;
@@ -319,7 +378,24 @@ function scheduleMicroClientUpdate(deps) {
     setTimeout(queueCheck, 500);
     setTimeout(queueCheck, 8000);
 
-    /** 无感：下载脚本 → userData → 清缓存 → 重载注入。失败只记日志，不弹窗。 */
+    if (ipcMain && typeof ipcMain.handle === 'function') {
+        ipcMain.removeHandler(UPDATE_STATUS_CHANNEL);
+        ipcMain.handle(UPDATE_STATUS_CHANNEL, (_event, request) => {
+            if (request && request.check === true) {
+                failedVersion = '';
+                lastCheckAt = 0;
+                queueCheck();
+            }
+            return {
+                supported: true,
+                scriptVersion: readInjectedScriptVersion(),
+                failedVersion,
+                shellUpdateVersion
+            };
+        });
+    }
+
+    /** 无感：下载脚本 → userData → 清缓存，不刷新游戏页。失败只记日志，不弹窗。 */
     async function applySilentScriptHotUpdate(manifest) {
         const scriptPath = getScriptPath();
         if (!scriptPath) {
@@ -351,14 +427,14 @@ function scheduleMicroClientUpdate(deps) {
         }
         writeScriptAtomically(scriptPath, body);
         if (typeof clearLocalScriptCache === 'function') clearLocalScriptCache();
-        if (typeof reloadScriptInjection === 'function') {
+        if (typeof notifyScriptStaged === 'function') {
             try {
-                reloadScriptInjection();
+                notifyScriptStaged();
             } catch (error) {
-                logMessage(`micro-client script reload injection failed: ${error.message}`);
+                logMessage(`micro-client script staged notify failed: ${error.message}`);
             }
         }
-        logMessage(`micro-client script hot-updated to v${remoteVersion} (silent, no UAC)`);
+        logMessage(`micro-client script staged v${remoteVersion}, waiting for page reload (silent, no UAC)`);
         return true;
     }
 
@@ -368,7 +444,7 @@ function scheduleMicroClientUpdate(deps) {
             logMessage('micro-client script version unreadable, skip update check');
             return;
         }
-        logMessage(`micro-client update check started, script=${currentVersion}`);
+        logMessage(`micro-client update check started, script=${currentVersion}, shell=${localShellVersion}`);
         let manifest;
         try {
             manifest = await fetchJson(`${MANIFEST_URL}?t=${Date.now()}`);
@@ -376,53 +452,75 @@ function scheduleMicroClientUpdate(deps) {
             logMessage(`micro-client manifest fetch failed, skip update check: ${error.message}`);
             return;
         }
-        if (!isValidManifest(manifest) || compareVersions(manifest.version, currentVersion) <= 0) {
-            logMessage('micro-client is up to date or manifest invalid');
+        if (!isValidManifest(manifest)) {
+            logMessage('micro-client manifest invalid');
             return;
         }
+
+        const shellOutdated = normalizeShellVersion(manifest.shellVersion) > localShellVersion;
+        shellUpdateVersion = shellOutdated ? manifest.version : '';
+        if (shellOutdated && await offerFullPackage(manifest, currentVersion)) return;
 
         const latestLocalVersion = readLocalScriptVersion(getScriptPath);
         if (!latestLocalVersion) return;
         if (compareVersions(manifest.version, latestLocalVersion) <= 0) {
-            logMessage(`micro-client already updated before apply, script=${latestLocalVersion}`);
+            failedVersion = '';
+            logMessage(`micro-client script is up to date, script=${latestLocalVersion}`);
             return;
         }
 
-        // 优先脚本级无感热更（打包/未打包均可写 userData）
+        // 外壳没换或者玩家没装整包，脚本照样在后台换好。
         if (isValidScriptManifest(manifest)) {
             try {
-                const applied = await applySilentScriptHotUpdate(manifest);
-                if (applied) return;
+                const staged = await applySilentScriptHotUpdate(manifest);
+                failedVersion = staged ? '' : manifest.version;
             } catch (error) {
                 logMessage(`micro-client script hot update failed: ${error.message}`);
-                // 有 scriptUrl 时不自动降级弹 UAC；下次检查再试。
-                return;
+                scheduleScriptRetry(manifest.version);
             }
+            return;
         }
 
-        // 后备：整包（仅正式包；需确认 + UAC）
+        // 清单没有可用的脚本地址，只能装整包。
+        failedVersion = manifest.version;
+        if (!shellOutdated) await offerFullPackage(manifest, latestLocalVersion);
+    }
+
+    function scheduleScriptRetry(version) {
+        if (retriedVersions.has(version)) return;
+        retriedVersions.add(version);
+        setTimeout(() => {
+            lastCheckAt = 0;
+            queueCheck();
+        }, SCRIPT_RETRY_DELAY_MS);
+    }
+
+    /** 问玩家要不要装整包：只在启动后不久问，每次启动同一个版本只问一次。返回是否已经开始安装。 */
+    async function offerFullPackage(manifest, localScriptVersion) {
         if (!isValidAppManifest(manifest)) {
             logMessage('micro-client full-package path skipped: app manifest fields missing');
-            return;
+            return false;
         }
         if (!app.isPackaged) {
             logMessage(`micro-client update available ${manifest.version}, skip full install while unpackaged`);
-            return;
+            return false;
         }
-        if (declinedVersions.has(manifest.version)) return;
+        if (promptedVersions.has(manifest.version)) return false;
+        if (Date.now() - startedAt > FULL_PACKAGE_PROMPT_WINDOW_MS) {
+            logMessage(`micro-client full package ${manifest.version} waits for next launch`);
+            return false;
+        }
+        promptedVersions.add(manifest.version);
         const confirm = await present({
             type: 'info',
             title: '微端更新',
             message: `检测到新版本 ${manifest.version}，将更新微端与小抄，是否立即更新？`,
-            detail: `当前小抄 ${latestLocalVersion}`,
+            detail: `这次要更新微端本体，需要管理员授权。当前小抄 ${localScriptVersion}`,
             buttons: ['立即更新', '暂不更新'],
             defaultId: 0,
             cancelId: 1
         });
-        if (confirm.response !== 0) {
-            declinedVersions.add(manifest.version);
-            return;
-        }
+        if (confirm.response !== 0) return false;
 
         const updateDirectory = path.join(app.getPath('userData'), 'xiaochao-update');
         const archivePath = path.join(updateDirectory, `app-${manifest.version}.zip`);
@@ -496,7 +594,10 @@ function scheduleMicroClientUpdate(deps) {
                     buttons: ['确定']
                 }).catch(() => {});
             }
+            lastCheckAt = 0;
+            queueCheck();
         });
+        return true;
     }
 }
 

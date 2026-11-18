@@ -8,9 +8,7 @@
  */
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
-import { DOCK_COLLAPSED_PANEL_WIDTH, resolveDockedReserveWidth } from '../const/panel-dock';
-import { accountScopedStorageKey } from '../features/skin-background/skin-runtime';
+import { DOCK_COLLAPSED_PANEL_HEIGHT, DOCK_COLLAPSED_PANEL_WIDTH, resolveDockedReserveWidth } from '../const/panel-dock';
 // Vite 在构建时解析这些 Vue 单文件；类型检查缺少项目声明时会误报，这里压掉误报。
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import PanelHeader from './panel/PanelHeader.vue';
@@ -29,6 +27,7 @@ import ShanhetuSettingsSection from './settings/ShanhetuSettingsSection.vue';
 import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import VersionNoticeSection from './settings/VersionNoticeSection.vue';
+import AuthorTipSection from './settings/AuthorTipSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import DeckRecordSection from './cards/DeckRecordSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -91,7 +90,7 @@ const props = defineProps<{
   updateNoticeController: UpdateNoticeController | null;
 }>();
 /** 折叠态只保留标题栏，做成状态胶囊。 */
-const COLLAPSED_PANEL_HEIGHT = '34px';
+const COLLAPSED_PANEL_HEIGHT = `${DOCK_COLLAPSED_PANEL_HEIGHT}px`;
 const COLLAPSED_PANEL_WIDTH = `${DOCK_COLLAPSED_PANEL_WIDTH}px`;
 const EXPANDED_PANEL_MIN_HEIGHT = 160;
 const DEFAULT_EXPANDED_PANEL_HEIGHT = 640;
@@ -146,7 +145,7 @@ let collapseUnlockTimer: ReturnType<typeof setTimeout> | undefined;
 onMounted(() => {
   const shell = panelElement.value;
   if (!shell) return;
-  const initialHeight = resolveExpandedHeight(props.layout.height);
+  const initialHeight = resolveExpandedHeight(props.configStore.get('panel.expandedHeight'));
   setOwnedPanelLayout(shell, {
     top: `${props.layout.top}px`,
     right: `${props.layout.right}px`,
@@ -589,19 +588,10 @@ function scheduleDockLayoutSync(shell: HTMLElement): void {
   });
 }
 
+/** 没调过高度时用默认高度。窗口比上次调的矮时收进窗口里。 */
 function resolveExpandedHeight(savedHeight: number): number {
-  const preferred = savedHeight >= 480 ? savedHeight : DEFAULT_EXPANDED_PANEL_HEIGHT;
+  const preferred = savedHeight >= EXPANDED_PANEL_MIN_HEIGHT ? savedHeight : DEFAULT_EXPANDED_PANEL_HEIGHT;
   return Math.min(preferred, Math.max(EXPANDED_PANEL_MIN_HEIGHT, window.innerHeight - 16));
-}
-
-function rememberExpandedHeight(heightPx: number): void {
-  expandedHeight = `${heightPx}px`;
-  try {
-    const key = accountScopedStorageKey('XC::panelExpandedHeight');
-    writeBrowserSetting(key, String(Math.round(heightPx)));
-  } catch {
-    // 写不进本地存储时，这次会话里仍然使用刚调好的高度。
-  }
 }
 
 /** 调整面板高度；限制在标题栏以下和当前窗口可见区域以内。 */
@@ -611,13 +601,14 @@ function handleResizeStart(event: PointerEvent): void {
   const startY = event.clientY;
   const startHeight = shell.offsetHeight;
   const maximumHeight = Math.max(EXPANDED_PANEL_MIN_HEIGHT, window.innerHeight - shell.offsetTop);
+  let resizedHeight: number | undefined;
 
   const handleMove = (moveEvent: PointerEvent) => {
-    const nextHeight = Math.min(
+    resizedHeight = Math.min(
       maximumHeight,
       Math.max(EXPANDED_PANEL_MIN_HEIGHT, startHeight + moveEvent.clientY - startY)
     );
-    rememberExpandedHeight(nextHeight);
+    expandedHeight = `${resizedHeight}px`;
     setOwnedPanelLayout(shell, { height: expandedHeight, maxHeight: 'none' });
   };
   const handleUp = () => stopResizing?.();
@@ -625,6 +616,8 @@ function handleResizeStart(event: PointerEvent): void {
     window.removeEventListener('pointermove', handleMove);
     window.removeEventListener('pointerup', handleUp);
     stopResizing = undefined;
+    // 松手才存，拖的时候每动一下都写一遍整份配置会卡。
+    if (resizedHeight !== undefined) props.configStore.set('panel.expandedHeight', Math.round(resizedHeight));
   };
   window.addEventListener('pointermove', handleMove);
   window.addEventListener('pointerup', handleUp, { once: true });
@@ -699,6 +692,7 @@ function handleResizeStart(event: PointerEvent): void {
       <section class="xiaochao-settings-section" aria-label="工具栏">
         <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">
           <VersionNoticeSection :update-notice-controller="updateNoticeController" />
+          <AuthorTipSection />
           <GuanxingEntry :platform="platform" />
           <button
             type="button"

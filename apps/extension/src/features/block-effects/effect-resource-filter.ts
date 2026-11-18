@@ -1,12 +1,12 @@
 /**
- * 特效资源 URL 过滤：按开关将杀、闪、回血、受击骨骼替换为空动画。
+ * 特效资源 URL 过滤：按开关将杀、闪、回血骨骼替换为空动画。
+ * 血条上的掉血动画不受任何开关影响，有来源的 diaoxie 和体力流失、无来源伤害的 tlls 都照常播。
  */
 
 export interface EffectResourceFlags {
   sha: boolean;
   shan: boolean;
   heal: boolean;
-  shake: boolean;
 }
 
 const PLACEHOLDER_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADklEQVR4AWNgGAWgEAAAAQgAAfZFpq0AAAAASUVORK5CYII=';
@@ -18,25 +18,22 @@ const SHA_EFFECT_PATH = '/res/assets/animate/game/neweffect/EF_Basic_Sha_';
 const HEAL_EFFECT_PATH = '/res/assets/animate/game/neweffect/OtherEffect/FX_MatchGame_huixie_';
 const HEAL_EFFECT_NAMES = ['FX_', 'xuanhujishi', 'xinglinchunman', 'miaoshouhuichun'];
 const SHAN_EFFECT_PATH = '/res/assets/animate/game/neweffect/EFF_shan';
-/** 受击只换掉震动骨骼。diaoxie 是掉血数字，开着屏蔽也要继续播。 */
-const SHAKE_EFFECT_PATTERN = /\/res\/assets\/animate\/game\/neweffect\/OtherEffect\/FX_MatchGame_tlls\.sk$/;
 /** 铁索、酒的骨骼同时承担状态标记，替换后会丢失常驻图标。 */
 const PRESERVED_SKELETONS = ['EF_Plot_tiesuo', 'Plot_tiesuolianhuan', 'EFF_jiu', 'EFF_hejiu'];
 
-/** 杀、闪、治疗或受击特效只要开了任意一项屏蔽就生效。 */
+/** 杀、闪、治疗特效只要开了任意一项屏蔽就生效。 */
 export function hasAnyEffectResourceBlock(flags: EffectResourceFlags): boolean {
-  return flags.sha || flags.shan || flags.heal || flags.shake;
+  return flags.sha || flags.shan || flags.heal;
 }
 
 function isBlockedSkeleton(path: string, flags: EffectResourceFlags): boolean {
   const sha = flags.sha && path.includes(SHA_EFFECT_PATH);
   const shan = flags.shan && path.includes(SHAN_EFFECT_PATH);
-  const shake = flags.shake && SHAKE_EFFECT_PATTERN.test(path);
   const heal = flags.heal && (
     path.includes(HEAL_EFFECT_PATH)
     || HEAL_EFFECT_NAMES.some((name) => path.includes(`res/assets/animate/game/effect/${name}`))
   );
-  return sha || shan || heal || shake;
+  return sha || shan || heal;
 }
 
 /** 被屏蔽的 .sk 资源换成空动画；空动画引用的 placeholder.png 换成透明图。 */

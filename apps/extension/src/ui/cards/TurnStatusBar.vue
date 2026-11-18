@@ -28,7 +28,7 @@ onBeforeUnmount(stop);
   >
     <template v-if="compact">
       <span class="xc-turn-status__item xc-turn-status__item--compact-sha" title="当前行动角色本回合剩余出杀次数">
-        剩余{{ formatShaRemaining(snapshot.shaRemaining) }}
+        剩余<span class="xc-turn-status__compact-count">{{ formatShaRemaining(snapshot.shaRemaining) }}</span>
       </span>
     </template>
     <template v-else>
@@ -75,10 +75,9 @@ onBeforeUnmount(stop);
   flex-direction: row;
   align-items: center;
   justify-content: flex-start;
-  padding: 0 0 0 8px;
-  font-size: 16px;
+  padding: 0;
+  font-size: 12px;
   line-height: 1;
-  letter-spacing: 0.01em;
 }
 
 .xc-turn-status__item {
@@ -108,10 +107,14 @@ onBeforeUnmount(stop);
 }
 
 .xc-turn-status__item--compact-sha {
-  color: #f2de9c;
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .62);
+  gap: 2px;
+  color: rgba(242, 222, 156, .72);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.xc-turn-status__compact-count {
+  color: #fff1bd;
+  font-variant-numeric: tabular-nums;
 }
 </style>

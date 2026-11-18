@@ -123,12 +123,26 @@ function runProtocolHook(
   const payload = data && typeof data === 'object' ? data as UnknownRecord : null;
   const className = resolveClassName(type, payload);
   if (className) diagnostics.lastClassName = className;
-  if (payload && className) handlers.mutate?.(className, payload);
-  if (payload && className && handlers.shouldDrop?.(className, payload)) {
-    diagnostics.dropped += 1;
-    return undefined;
+  // 每个钩子都单独兜底：小抄这段代码跑在游戏自己的协议分发调用栈里，
+  // 任一抛错都不能让 forward() 丢、也不能冒进游戏，否则游戏会弹「未知错误」。
+  try {
+    if (payload && className) handlers.mutate?.(className, payload);
+  } catch (error) {
+    console.warn('[小抄] 协议改写抛错', className, error);
   }
-  if (payload && className) handlers.onBeforeForward?.(className, payload);
+  try {
+    if (payload && className && handlers.shouldDrop?.(className, payload)) {
+      diagnostics.dropped += 1;
+      return undefined;
+    }
+  } catch (error) {
+    console.warn('[小抄] 协议丢弃判断抛错', className, error);
+  }
+  try {
+    if (payload && className) handlers.onBeforeForward?.(className, payload);
+  } catch (error) {
+    console.warn('[小抄] 协议转发前抛错', className, error);
+  }
   return forward();
 }
 

@@ -1,20 +1,21 @@
 /**
- * 开关和小抄背景按游戏账号存到服务器，微端、浏览器、换电脑登录同一个账号都用这一份。
+ * 开关和小抄背景按登录账号存到服务器，微端、浏览器、换电脑登录同一个账号都用这一份。本机还按游戏用户编号分开存。
  *
- * 本机先存：改动马上写进本机，几秒内的改动合成一次再传，页面关掉前把还没传的发出去。
+ * 本机先存：改动马上写进本机，几秒内的改动合成一次再传，页面关掉前把还没传的发出去。每次都传整份。
  * 读到账号后从服务器读一次，按每一项的改动时间合并，谁改得晚用谁，服务器上旧的不会盖掉本机刚改的。
- * 面板位置这类跟屏幕有关的项只存本机。上传的图片和视频只在上传的那台设备上有，服务器只记选的是哪一个。
+ * 服务器上还没有这个账号，或者缺了本机有的项，读完马上把整份传上去补齐。
+ * 面板的位置、高度、折叠和停靠也跟着账号走。上传的图片和视频只在上传的那台设备上有，服务器只记选的是哪一个。
  */
 
 import { ACCOUNT_CONFIG_PATH, ACCOUNT_RESET_PATH } from '../const/account-config-endpoint.ts';
 import {
   ACCOUNT_CONFIG_DOCUMENT_VERSION,
   ACCOUNT_CONFIG_LEDGER_KEY_BASE,
+  ACCOUNT_CONFIG_STARTUP_WAIT_MS,
   ACCOUNT_CONFIG_UNSYNCED_SAVED_AT,
   ACCOUNT_RESET_TIMEOUT_MS,
   ACCOUNT_SYNC_PUSH_WAIT_MS,
-  ACCOUNT_SYNC_RETRY_MS,
-  DEVICE_ONLY_CONFIG_KEYS
+  ACCOUNT_SYNC_RETRY_MS
 } from '../const/account-sync.ts';
 import { FNV1A_OFFSET_BASIS, FNV1A_PRIME, HASH_TEXT_RADIX } from '../const/text-hash.ts';
 import {
@@ -36,7 +37,7 @@ import {
 import { readJson, removeStored, storageKeyForAccount, writeJson } from '../features/skin-background/skin-runtime.ts';
 import { readAccountApi, usableAccount, writeAccountApi } from './account-api.ts';
 import { CONFIG_SCHEMA, type XiaochaoConfig, type XiaochaoConfigKey } from './config-schema.ts';
-import { CONFIG_CHANGE_EVENT, type ConfigChangeDetail, type XiaochaoConfigStore } from './config-store.ts';
+import { CONFIG_CHANGE_EVENT, type XiaochaoConfigStore } from './config-store.ts';
 
 type BackgroundStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
@@ -46,8 +47,7 @@ type SyncSection = typeof SECTIONS[number];
 const BACKGROUND_FIELDS = ['paperResource', 'favorites', 'officialChoice'] as const;
 type BackgroundField = typeof BACKGROUND_FIELDS[number];
 
-const SYNCED_CONFIG_KEYS = (Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[])
-  .filter((key) => !DEVICE_ONLY_CONFIG_KEYS.includes(key));
+const CONFIG_KEYS = Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[];
 
 interface SyncEntry {
   value: unknown;
@@ -89,11 +89,15 @@ interface LocalState {
 export interface AccountConfigSyncOptions {
   configStore: XiaochaoConfigStore;
   storage: BackgroundStorage | undefined;
+  /** 每次从服务器读完都调，读失败也调。 */
+  onPullSettled?: () => void;
 }
 
 export interface AccountConfigSync {
   /** 账号同步时调用：读到新账号就从服务器读一次，失败或没传上去的隔一会儿再试。 */
   checkAccount(): void;
+  /** 当前账号正在头一回从服务器读，还没等太久。面板等它读完再挂，一出来就是服务器上的样子。 */
+  awaitingServer(): boolean;
   dispose(): void;
 }
 
@@ -113,6 +117,16 @@ function hashValue(value: unknown): string {
     hash = Math.imul(hash ^ text.charCodeAt(index), FNV1A_PRIME) >>> 0;
   }
   return `${text.length}:${hash.toString(HASH_TEXT_RADIX)}`;
+}
+
+/** 两个值是不是同一个。库里存的对象读回来键的顺序会变，按键排好再比。记下的摘要不能用这个，用了旧摘要全对不上。 */
+function sameValue(left: unknown, right: unknown): boolean {
+  const sortedText = (value: unknown) => JSON.stringify(value ?? null, (_key, item: unknown) => (
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey)))
+      : item
+  ));
+  return sortedText(left) === sortedText(right);
 }
 
 function itemName(section: SyncSection, name: string): string {
@@ -233,47 +247,54 @@ function remoteStateOf(body: RemoteBody | null | undefined): RemoteState {
   return { entries, resetAt: savedAtOf(body?.resetAt) };
 }
 
-/** 没改过的默认值不传，服务器上没有这一项时各台设备本来就用默认值。 */
+/** 整份传，没改过的默认值也带上，改动时间是 0，合并时不会盖掉别的设备改过的值。 */
 function documentOf(entries: SectionEntries): Record<string, unknown> {
-  const document: Record<string, unknown> = { version: ACCOUNT_CONFIG_DOCUMENT_VERSION };
-  for (const section of SECTIONS) {
-    document[section] = Object.fromEntries(
-      Object.entries(entries[section]).filter(([, entry]) => entry.savedAt > 0)
-    );
-  }
-  return document;
+  return { version: ACCOUNT_CONFIG_DOCUMENT_VERSION, ...entries };
+}
+
+/** 两边都是开始同步以前就改过的值、又不一样时用服务器上的。不然两台设备各留各的，一直对不上。 */
+function unsyncedTieLost(mine: SyncEntry, theirs: SyncEntry): boolean {
+  return mine.savedAt === ACCOUNT_CONFIG_UNSYNCED_SAVED_AT
+    && theirs.savedAt === ACCOUNT_CONFIG_UNSYNCED_SAVED_AT
+    && !sameValue(mine.value, theirs.value);
 }
 
 interface Comparison {
   /** 要写进本机的项：服务器上改得更晚的，以及服务器重置以前本机改过、要改回默认的。 */
   changes: SectionEntries;
-  /** 本机有服务器上没有、或者比服务器改得晚的项。 */
+  /** 本机有服务器上没有、或者比服务器改得晚的改动。 */
   localNewer: boolean;
+  /** 服务器那份缺了本机有的项，没改过的默认值也算。 */
+  remoteMissing: boolean;
 }
 
 function compare(local: SectionEntries, remote: RemoteState): Comparison {
   const changes = emptyEntries();
   let localNewer = false;
+  let remoteMissing = false;
   for (const section of SECTIONS) {
     for (const [name, mine] of Object.entries(local[section])) {
       const theirs = remote.entries[section][name];
-      if (theirs && theirs.savedAt > mine.savedAt) {
+      if (!theirs) remoteMissing = true;
+      if (theirs && (theirs.savedAt > mine.savedAt || unsyncedTieLost(mine, theirs))) {
         changes[section][name] = theirs;
       } else if (mine.savedAt > remote.resetAt && (!theirs || mine.savedAt > theirs.savedAt)) {
         localNewer = true;
-      } else if (!theirs && mine.savedAt > 0 && !isDefaultValue(section, name, mine.value)) {
-        changes[section][name] = { value: defaultValueOf(section, name), savedAt: remote.resetAt };
+      } else if (mine.savedAt > 0 && mine.savedAt <= remote.resetAt) {
+        // 服务器重置以前的改动作废，改回默认值并记成没改过。服务器不收重置以前的时间，记成 0 才能补进那一行。
+        changes[section][name] = { value: defaultValueOf(section, name), savedAt: 0 };
       }
     }
   }
-  return { changes, localNewer };
+  return { changes, localNewer, remoteMissing };
 }
 
 /** 启动后按账号和服务器同步开关和小抄背景。 */
 export function startAccountConfigSync(options: AccountConfigSyncOptions): AccountConfigSync {
-  const { configStore, storage } = options;
+  const { configStore, storage, onPullSettled } = options;
   let pulledAccount = '';
-  let pulling = false;
+  let pullingAccount = '';
+  let pullStartedAt = 0;
   let pullRetryAt = 0;
   let pushing = false;
   let pushAgain = false;
@@ -294,7 +315,7 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
     if (configStore.account() !== account) return null;
     const snapshot = configStore.snapshot();
     const values: Record<SyncSection, Record<string, unknown>> = {
-      settings: Object.fromEntries(SYNCED_CONFIG_KEYS.map((key) => [key, snapshot[key]])),
+      settings: Object.fromEntries(CONFIG_KEYS.map((key) => [key, snapshot[key]])),
       background: readLocalBackground(storage, account)
     };
     const ledger = readLedger(storage, account);
@@ -325,19 +346,30 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
 
   /** 把服务器上较新的项写进本机，记下它们在服务器上的改动时间，不算本机的改动。 */
   function applyRemote(account: string, state: LocalState, changes: SectionEntries): void {
+    let ledgerChanged = false;
     const settings: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(changes.settings)) {
       const parsed = CONFIG_SCHEMA[key as XiaochaoConfigKey]?.parse(entry.value);
       if (parsed === undefined) continue;
       settings[key] = parsed;
       state.ledger.items[itemName('settings', key)] = { hash: hashValue(parsed), savedAt: entry.savedAt };
+      ledgerChanged = true;
     }
     const background: Partial<Record<BackgroundField, unknown>> = {};
     for (const field of BACKGROUND_FIELDS) {
-      if (changes.background[field]) background[field] = changes.background[field].value;
+      const entry = changes.background[field];
+      if (!entry) continue;
+      const localValue = state.entries.background[field]?.value;
+      if (sameValue(entry.value, localValue)) {
+        // 值没变只改记下的时间，不重写本机，背景也不重画。摘要按本机的值算，下次比对才对得上。
+        state.ledger.items[itemName('background', field)] = { hash: hashValue(localValue), savedAt: entry.savedAt };
+        ledgerChanged = true;
+      } else {
+        background[field] = entry.value;
+      }
     }
     const backgroundFields = Object.keys(background) as BackgroundField[];
-    if (!Object.keys(settings).length && !backgroundFields.length) return;
+    if (!ledgerChanged && !backgroundFields.length) return;
     applyingRemote = true;
     try {
       configStore.setMany(settings as Partial<XiaochaoConfig>);
@@ -358,26 +390,30 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
     if (backgroundFields.length) notifySkinBackgroundSynced(account);
   }
 
-  /** 合并服务器回来的那份。返回本机是不是还有比服务器新的项。 */
+  /** 合并服务器回来的那份。返回还要不要再传一次。 */
   function settle(account: string, remote: RemoteState, sentRevision?: number): boolean {
     const state = stampLocal(account, takeDirtySince());
     if (!state) return false;
     const comparison = compare(state.entries, remote);
     applyRemote(account, state, comparison.changes);
-    const nothingNewSinceSent = sentRevision === undefined || state.ledger.revision === sentRevision;
-    if (!comparison.localNewer && nothingNewSinceSent && state.ledger.unpushed) {
-      state.ledger.unpushed = false;
+    const pulled = sentRevision === undefined;
+    // 只在读的时候看缺项：传完回来还缺，说明服务器不收，再传也一样，不能一直重传。
+    const needsPush = comparison.localNewer || (pulled && comparison.remoteMissing);
+    const changedSinceSent = !pulled && state.ledger.revision !== sentRevision;
+    const unpushed = needsPush || (state.ledger.unpushed && changedSinceSent);
+    if (unpushed !== state.ledger.unpushed) {
+      state.ledger.unpushed = unpushed;
       writeLedger(storage, account, state.ledger);
     }
-    return comparison.localNewer;
+    return needsPush;
   }
 
   async function pull(account: string): Promise<void> {
     const body = await readAccountApi<RemoteBody>(ACCOUNT_CONFIG_PATH, account);
     if (disposed || configStore.account() !== account) return;
-    const localNewer = settle(account, remoteStateOf(body));
+    const needsPush = settle(account, remoteStateOf(body));
     pulledAccount = account;
-    if (localNewer) pushCurrent(false);
+    if (needsPush) pushCurrent(false);
   }
 
   async function push(account: string, pageClosing: boolean): Promise<void> {
@@ -388,19 +424,20 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
     const state = stampLocal(account, takeDirtySince());
     if (!state || !state.ledger.unpushed) return;
     pushing = true;
-    let localNewer = false;
+    let needsPush = false;
     try {
       const body = await writeAccountApi<RemoteBody>(
         ACCOUNT_CONFIG_PATH,
-        { account, document: documentOf(state.entries) },
+        account,
+        { document: documentOf(state.entries) },
         pageClosing
       );
       if (disposed) return;
-      localNewer = settle(account, remoteStateOf(body), state.ledger.revision);
+      needsPush = settle(account, remoteStateOf(body), state.ledger.revision);
     } finally {
       pushing = false;
     }
-    if (localNewer || pushAgain) {
+    if (needsPush || pushAgain) {
       pushAgain = false;
       schedulePush();
     }
@@ -433,11 +470,7 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
     schedulePush();
   }
 
-  const onConfigChange = (event: Event) => {
-    const key = (event as CustomEvent<ConfigChangeDetail>).detail?.key;
-    if (key && DEVICE_ONLY_CONFIG_KEYS.includes(key)) return;
-    markDirty();
-  };
+  const onConfigChange = () => markDirty();
   const stopBackgroundListen = onSkinBackgroundDocumentPatched(() => markDirty());
   const onPageHide = () => {
     if (pushTimer !== undefined) pushCurrent(true);
@@ -455,12 +488,14 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
       const account = usableAccount(configStore.account());
       if (!account) return;
       if (account !== pulledAccount) {
-        if (pulling || Date.now() < pullRetryAt) return;
-        pulling = true;
+        if (pullingAccount || Date.now() < pullRetryAt) return;
+        pullingAccount = account;
+        pullStartedAt = Date.now();
         pull(account).catch(() => {
           pullRetryAt = Date.now() + ACCOUNT_SYNC_RETRY_MS;
         }).finally(() => {
-          pulling = false;
+          pullingAccount = '';
+          if (!disposed) onPullSettled?.();
         });
         return;
       }
@@ -468,6 +503,11 @@ export function startAccountConfigSync(options: AccountConfigSyncOptions): Accou
         pushRetryAt = 0;
         pushCurrent(false);
       }
+    },
+    awaitingServer() {
+      return Boolean(pullingAccount)
+        && pullingAccount === usableAccount(configStore.account())
+        && Date.now() - pullStartedAt < ACCOUNT_CONFIG_STARTUP_WAIT_MS;
     },
     dispose() {
       disposed = true;
@@ -492,7 +532,7 @@ export async function resetAccountDataOnServer(accountId: string): Promise<boole
     timer = setTimeout(() => reject(new Error('服务器没有回话')), ACCOUNT_RESET_TIMEOUT_MS);
   });
   try {
-    await Promise.race([writeAccountApi(ACCOUNT_RESET_PATH, { account, resetAt: Date.now() }), timeout]);
+    await Promise.race([writeAccountApi(ACCOUNT_RESET_PATH, account, { resetAt: Date.now() }), timeout]);
     return true;
   } catch {
     return false;

@@ -8,6 +8,9 @@ export interface XiaochaoUpdateManifest {
   version: string;
   notes: string;
   pageUrl: string;
+  /** 浏览器后台下载的新版代码；旧清单没有这两项时为空字符串。 */
+  userscriptPayloadUrl: string;
+  userscriptPayloadSha256: string;
 }
 
 /** 版本比较：按点分段的整数，缺段当 0。 */
@@ -67,7 +70,14 @@ export function parseUpdateManifest(raw: unknown, fallbackPageUrl = XIAOCHAO_UPD
   const notes = String(data.notes ?? data.changelog ?? '').trim();
   const pageUrlRaw = String(data.pageUrl ?? data.url ?? fallbackPageUrl).trim();
   const pageUrl = isHttpUrl(pageUrlRaw) ? pageUrlRaw : fallbackPageUrl;
-  return { version, notes, pageUrl };
+  const payloadUrlRaw = String(data.userscriptPayloadUrl ?? '').trim();
+  return {
+    version,
+    notes,
+    pageUrl,
+    userscriptPayloadUrl: isHttpUrl(payloadUrlRaw) ? payloadUrlRaw : '',
+    userscriptPayloadSha256: String(data.userscriptPayloadSha256 ?? '').trim().toLowerCase()
+  };
 }
 
 /** 从完整油猴脚本文本解析 @version。 */

@@ -15,9 +15,7 @@ import {
   installRuntimeBridge,
   waitForGameRuntime
 } from '../runtime/wait-for-game-runtime.js';
-import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from '../adapters/browser-settings';
 import {
-  accountScopedStorageKey,
   describeHallStartupProbe,
   isHallLoginTransitionLoading,
   isXiaochaoGameplayUiReady
@@ -83,7 +81,6 @@ import { installAutoHgController } from '../features/auto-hg';
 import { installAutoBotController } from '../features/auto-bot';
 import { installUpdateNoticeController } from '../features/update-notice';
 import { installGiftCodeController } from '../features/gift-code';
-import { installDiscountRechargeController } from '../features/discount-recharge';
 import { installRuntimeSearchController } from '../features/runtime-search';
 import { installHandSortController } from '../features/cards/hand-sort-controller';
 import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-controller';
@@ -149,7 +146,14 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   // popup protector：只卸旧守卫；技能 tip 停驻等进大厅后再挂，避免登录初始化链被打断
   lifecycle.register(installGameNativePopupProtector(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
-  const accountConfigSync = startAccountConfigSync({ configStore, storage: pageStorage() });
+  const accountConfigSync = startAccountConfigSync({
+    configStore,
+    storage: pageStorage(),
+    // 启动在等服务器那份时，读完马上接着启动，不等下一轮轮询。
+    onPullSettled: () => {
+      if (!core) syncAccountSession();
+    }
+  });
   lifecycle.register(() => accountConfigSync.dispose());
   const startupStatus = bindPanelStartupStatus(bootBag);
   installSkinTraceConsoleBridge(bootBag);
@@ -199,6 +203,12 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
       if (waitingForAccount) {
         startupStatus.state = 'waiting';
         startupStatus.missing = ['GameAccountId'];
+        return;
+      }
+      // 面板只在挂出来时读一次位置、高度和折叠，等这个账号的配置从服务器读回来再挂。
+      if (accountConfigSync.awaitingServer()) {
+        startupStatus.state = 'waiting';
+        startupStatus.missing = ['AccountConfig'];
         return;
       }
       if (coreStartError) return;
@@ -392,9 +402,6 @@ function startXiaochaoCore(
   }
   lifecycle.register(autoTask.dispose);
   lifecycle.register(installGiftCodeController());
-  lifecycle.register(installDiscountRechargeController({
-    openExternal: (url) => platform.openExternal(url)
-  }));
   lifecycle.register(installRuntimeSearchController());
   const extraAssist = installExtraAssistController(configStore, {
     getExtraAssistData: () => cardConfigSource.getExtraAssistData(),
@@ -408,9 +415,7 @@ function startXiaochaoCore(
   lifecycle.register(autoHg.dispose);
   const autoBot = installAutoBotController(configStore, { gameEvents });
   lifecycle.register(autoBot.dispose);
-  const updateNotice = installUpdateNoticeController(configStore, (url) => platform.openExternal(url), {
-    platform: platform.platform
-  });
+  const updateNotice = installUpdateNoticeController(configStore, platform);
   lifecycle.register(updateNotice.dispose);
   const shanhetu = installShanhetuController(configStore, {
     cardConfigSource,
@@ -521,33 +526,12 @@ function startXiaochaoCore(
   };
 }
 
-/** 面板初始几何；height 读账号作用域存储，0 表示内容自适应。 */
+/** 面板初始几何。展开高度跟着账号配置走，挂面板时再读。 */
 const DEFAULT_PANEL_LAYOUT: XiaochaoPanelLayout = {
   top: 31,
   right: 155,
   width: '250px',
-  height: readSavedPanelHeight(),
   fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Noto Sans SC",Arial,sans-serif'
 };
-
-/** 读面板展开高度；顺带把旧全局键迁到账号作用域键。 */
-function readSavedPanelHeight(): number {
-  try {
-    const key = accountScopedStorageKey('XC::panelExpandedHeight');
-    let raw = readBrowserSetting(key);
-    if (!raw) {
-      raw = readBrowserSetting('XC::panelExpandedHeight');
-      if (raw) {
-        writeBrowserSetting(key, raw);
-        removeBrowserSetting('XC::panelExpandedHeight');
-      }
-    }
-    const saved = Number(raw);
-    // 0 表示没有保存过高度，让面板按内容自适应。
-    return Number.isFinite(saved) && saved >= 160 ? Math.round(saved) : 0;
-  } catch {
-    return 0;
-  }
-}
 
 

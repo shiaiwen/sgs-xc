@@ -704,13 +704,39 @@ function initElectronFrame() {
             if (event.channel === 'xiaochao-focus-webview') webview.focus();
         });
     }
+    if (!webview.__sgsolLoginHelperBound) {
+        webview.__sgsolLoginHelperBound = true;
+        webview.addEventListener('did-finish-load', () => {
+            try {
+                if (isLikelyLoginPageUrl(webview.getURL())) execute(webview);
+            } catch (error) {
+                console.warn('[xiaochao] 登录页密码助手注入跳过', error);
+            }
+        });
+        webview.addEventListener('did-navigate-in-page', (event) => {
+            try {
+                if (isLikelyLoginPageUrl(event.url)) execute(webview);
+            } catch (error) {
+                console.warn('[xiaochao] 登录页密码助手注入跳过', error);
+            }
+        });
+    }
     webview.addEventListener("dom-ready", function () {
         developmentWebviewReady = true;
         developmentReloadQueued = false;
         installReportWindowPageBridge(webview);
-        loadScript(webview);
         execute(webview);
+        loadScript(webview);
     })
+}
+
+/** 登录页、4399 区等地址；游戏内大厅不再重复注入密码助手。 */
+function isLikelyLoginPageUrl(url) {
+    const text = String(url || '').toLowerCase();
+    return text.includes('login')
+        || text.includes('4399.com')
+        || text.includes('kuaiwan.com')
+        || text.includes('wd-home');
 }
 
 ipcRenderer.on('set-video-path', (event, url) => {
@@ -1310,15 +1336,55 @@ function execute(webview) {
     return true;
   }
 
-  // 登录 DOM 可能晚于 dom-ready（尤其 4399 iframe），轮询挂载直到成功或超时
-  if (window.__sgsolPasswordManagerTimer) clearInterval(window.__sgsolPasswordManagerTimer);
+  function stopPasswordManagerWatch() {
+    if (window.__sgsolPasswordManagerTimer) {
+      clearInterval(window.__sgsolPasswordManagerTimer);
+      window.__sgsolPasswordManagerTimer = null;
+    }
+    if (window.__sgsolPasswordManagerRaf) {
+      cancelAnimationFrame(window.__sgsolPasswordManagerRaf);
+      window.__sgsolPasswordManagerRaf = null;
+    }
+    if (window.__sgsolPasswordManagerObserver) {
+      window.__sgsolPasswordManagerObserver.disconnect();
+      window.__sgsolPasswordManagerObserver = null;
+    }
+  }
+
+  function tryMountPasswordManager() {
+    const mounted = mountPasswordManager();
+    if (mounted) stopPasswordManagerWatch();
+    return mounted;
+  }
+
+  stopPasswordManagerWatch();
+  const watchStartedAt = Date.now();
+  const watchUntil = watchStartedAt + 30_000;
+  const rafTick = () => {
+    if (tryMountPasswordManager()) return;
+    if (Date.now() < watchUntil) window.__sgsolPasswordManagerRaf = requestAnimationFrame(rafTick);
+  };
+  window.__sgsolPasswordManagerRaf = requestAnimationFrame(rafTick);
+  tryMountPasswordManager();
+
+  const observeRoots = getAccessibleDocuments().map((doc) => doc.documentElement || doc.body).filter(Boolean);
+  if (!observeRoots.length && (document.documentElement || document.body)) {
+    observeRoots.push(document.documentElement || document.body);
+  }
+  if (typeof MutationObserver !== 'undefined' && observeRoots.length) {
+    window.__sgsolPasswordManagerObserver = new MutationObserver(() => tryMountPasswordManager());
+    observeRoots.forEach((root) => {
+      try {
+        window.__sgsolPasswordManagerObserver.observe(root, { childList: true, subtree: true });
+      } catch (error) {}
+    });
+  }
+
   let tries = 0;
   window.__sgsolPasswordManagerTimer = setInterval(() => {
     tries += 1;
-    const mounted = mountPasswordManager();
-    if (!is4399Login && (mounted || tries > 80)) clearInterval(window.__sgsolPasswordManagerTimer);
-  }, 250);
-  mountPasswordManager();
+    if (tryMountPasswordManager() || tries > 120 || Date.now() >= watchUntil) stopPasswordManagerWatch();
+  }, 100);
 })();
 `;
     webview.executeJavaScript(helperSource).catch((error) => {

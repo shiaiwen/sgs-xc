@@ -11,7 +11,9 @@ import {
   userscriptDevReloadEnabled
 } from './src/runtime/userscript-dev-build-id-plugin.ts';
 import { patchUserscriptDevInstallMount } from './tools/patch-userscript-dev-install.js';
+import { buildUserscriptPayload, wrapUserscriptWithPayloadLoader } from './tools/userscript-payload-prelude.ts';
 import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
+import { USERSCRIPT_PAYLOAD_FILE_NAME } from './src/const/userscript-payload.ts';
 import {
   USERSCRIPT_DEV_LOADER_NAME,
   USERSCRIPT_DEV_LOADER_PATH,
@@ -22,6 +24,7 @@ import {
 import { isUserscriptDevBuild } from './tools/vite-dev-fast.ts';
 
 const USERSCRIPT_FILE = resolve(import.meta.dirname, 'dist/userscript/xiaochao.user.js');
+const USERSCRIPT_PAYLOAD_FILE = resolve(import.meta.dirname, 'dist/userscript', USERSCRIPT_PAYLOAD_FILE_NAME);
 
 /**
  * 保留油猴头注释，把后面的程序收成一行。
@@ -102,12 +105,15 @@ export function collapseUserscriptBody(source: string): string {
   return `${header}\n\n${out.trim()}\n`;
 }
 
-function collapseUserscriptPlugin(): Plugin {
+/** 正式构建：压成一行后另存一份给后台下载的小抄本体，装进油猴的那份套上启动代码。 */
+function collapseUserscriptPlugin(version: string): Plugin {
   return {
     name: 'xiaochao-collapse-userscript',
     apply: 'build',
     writeBundle() {
-      writeFileSync(USERSCRIPT_FILE, collapseUserscriptBody(readFileSync(USERSCRIPT_FILE, 'utf8')));
+      const collapsed = collapseUserscriptBody(readFileSync(USERSCRIPT_FILE, 'utf8'));
+      writeFileSync(USERSCRIPT_PAYLOAD_FILE, buildUserscriptPayload(collapsed, version));
+      writeFileSync(USERSCRIPT_FILE, wrapUserscriptWithPayloadLoader(collapsed, version));
     }
   };
 }
@@ -487,7 +493,7 @@ export default defineConfig({
         systemjs: 'inline'
       }
     }),
-    ...(userscriptDevFast ? [] : [collapseUserscriptPlugin()])
+    ...(userscriptDevFast ? [] : [collapseUserscriptPlugin(xiaochaoVersion)])
   ],
   build: {
     outDir: 'dist/userscript',

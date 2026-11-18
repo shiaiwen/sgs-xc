@@ -62,6 +62,11 @@ export const BLOCK_EFFECT_SETTINGS: readonly BlockSetting[] = [
     tooltip: '屏蔽自己皮肤的攻击、互动、技能等动画'
   },
   {
+    key: 'block.chatEmotion',
+    label: '动画表情',
+    tooltip: '屏蔽其他玩家的动画表情'
+  },
+  {
     key: 'block.otherSkinState',
     label: '他人动效',
     tooltip: '屏蔽他人皮肤的攻击、互动、技能等动画，动态皮肤按静态显示'
@@ -87,7 +92,7 @@ export const BLOCK_OTHER_SETTINGS: readonly BlockSetting[] = [
   {
     key: 'block.adWindow',
     label: '广告',
-    tooltip: '屏蔽大厅自动弹出的活动广告，含节钺令等活动弹窗'
+    tooltip: '屏蔽大厅活动广告、首页轮播横幅和版本公告弹窗'
   },
   {
     key: 'block.noticeWindow',

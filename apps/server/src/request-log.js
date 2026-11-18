@@ -2,6 +2,8 @@ const MAX_LOGS = 100;
 const MAX_BODY = 4000;
 /** 按账号存的开关、背景和皮肤，日志页谁都能打开，这几个接口只记调用结果不记内容。 */
 const ACCOUNT_DATA_PATHS = new Set(['/api/account-config', '/api/account-skins', '/api/account-reset']);
+/** 返回整份脚本的接口，内容几兆，每次都复制一遍读成文字太费。 */
+const LARGE_BODY_PATHS = new Set(['/api/xiaochao-userscript']);
 const logs = [];
 
 function clip(text) {
@@ -24,7 +26,7 @@ export async function captureRequestLog(context) {
   const path = context.req.path;
   if (path === '/api/logs' || path === '/api/logs/data') return;
   let body = '';
-  if (!ACCOUNT_DATA_PATHS.has(path)) {
+  if (!ACCOUNT_DATA_PATHS.has(path) && !LARGE_BODY_PATHS.has(path)) {
     try {
       body = clip(await context.res.clone().text());
     } catch {

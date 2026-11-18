@@ -16,7 +16,7 @@ import { HALL_BACKDROP_REAPPLY_MS } from '../../const/paper-hall-cover.ts';
 import { isUploadedBackgroundUrl } from '../../const/uploaded-background.ts';
 import { XIAOCHAO_BACKGROUND_Z_ORDER, DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 import { isBackgroundDisplayReady } from './background-display-ready.ts';
-import { isSkinFrameSize, resolveBackgroundSourceSize, uniformCoverScale } from './background-fit.ts';
+import { resolveBackgroundSourceSize, uniformCoverScale } from './background-fit.ts';
 import { BACKGROUND_MEDIA_PROBE_TIMEOUT_MS } from './background-media-file.ts';
 import type { BackgroundResource, SkinBackgroundStore } from './skin-background-store.ts';
 import { asRecord, callMethod, type TaskScope, type UnknownRecord } from './skin-runtime.ts';
@@ -142,8 +142,11 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
   function gameSize(): { width: number; height: number } {
     const context = asRecord((globalObject as unknown as { SystemContext?: unknown }).SystemContext);
     const stage = asRecord(laya()?.stage);
-    const width = Number(context?.gameWidth) || Number(stage?.width) || DEFAULT_STAGE_WIDTH;
-    const height = Number(context?.gameHeight) || Number(stage?.height) || DEFAULT_STAGE_HEIGHT;
+    // 新版游戏移除了 window.SystemContext，牌局逻辑尺寸保留在场景层裁剪框上。
+    // stage 的尺寸可能包含缩放和留白，不能直接用来缩放牌局背景。
+    const sceneRect = asRecord(locator.layer('SceneLayer')?.scrollRect);
+    const width = Number(context?.gameWidth) || Number(sceneRect?.width) || Number(stage?.width) || DEFAULT_STAGE_WIDTH;
+    const height = Number(context?.gameHeight) || Number(sceneRect?.height) || Number(stage?.height) || DEFAULT_STAGE_HEIGHT;
     return { width, height };
   }
 
@@ -1360,7 +1363,7 @@ export function createSkinBackgroundRenderer(options: SkinBackgroundRendererOpti
       effect.AutoReleaseRes = true;
       callMethod(effect, 'InitEffect', `${url}/${part}.${extension}`, action, true);
       callMethod(effect, 'playEffect');
-      if (type === BACKGROUND_RESOURCE_TYPE_SK_EFFECT && width > 0 && height > 0 && !isSkinFrameSize(width, height)) {
+      if (type === BACKGROUND_RESOURCE_TYPE_SK_EFFECT && width > 0 && height > 0) {
         callMethod(effect, 'size', width, height);
       }
       idleEffects[part] = effect;

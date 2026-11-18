@@ -20,11 +20,7 @@ export function DownloadMode({
 
   return (
     <div>
-      <div
-        className="flex gap-2 rounded-full border border-ink/10 bg-card p-1"
-        role="tablist"
-        aria-label="下载方式"
-      >
+      <div className="segmented" role="tablist" aria-label="下载方式">
         {modes.map((item) => {
           const selected = mode === item.id;
           return (
@@ -33,11 +29,9 @@ export function DownloadMode({
               type="button"
               role="tab"
               aria-selected={selected}
-              className={`flex-1 rounded-full px-4 py-2 text-sm font-medium transition sm:flex-none sm:px-6 ${
-                selected
-                  ? "bg-[#1677ff] text-white"
-                  : "text-ink/70 hover:text-ink"
-              }`}
+              className={
+                selected ? "segmented__item segmented__item--active" : "segmented__item"
+              }
               onClick={() => setMode(item.id)}
             >
               {item.label}

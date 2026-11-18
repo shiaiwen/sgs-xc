@@ -9,6 +9,70 @@ const appPathCache = {};
 let runtimeGlobalsLoaded = false;
 let localScriptResponseCache = null;
 let localScriptInjectCache = null;
+let developmentReloadInProgress = false;
+let developmentReloadQueued = false;
+let developmentWebviewReady = false;
+
+ipcRenderer.on('xiaochao-dev-script-changed', () => {
+    localScriptResponseCache = null;
+    localScriptInjectCache = null;
+    requestDevelopmentWebviewReload();
+});
+
+function whenDevelopmentWebviewReady(webview) {
+    if (developmentWebviewReady || webview.__xcDevReloadReadyBound) return;
+    webview.__xcDevReloadReadyBound = true;
+    webview.addEventListener('dom-ready', () => {
+        webview.__xcDevReloadReadyBound = false;
+        developmentWebviewReady = true;
+        developmentReloadQueued = false;
+    }, { once: true });
+}
+
+function webviewHasLoadedPage(webview) {
+    if (!developmentWebviewReady) return false;
+    try {
+        return /^https?:/i.test(String(webview.getURL() || ''));
+    } catch {
+        return false;
+    }
+}
+
+function requestDevelopmentWebviewReload() {
+    const webview = document.getElementById('wb');
+    if (!webview || typeof webview.reload !== 'function' || !webview.isConnected) {
+        developmentReloadQueued = true;
+        return;
+    }
+    if (!developmentWebviewReady || !webviewHasLoadedPage(webview)) {
+        developmentReloadQueued = true;
+        whenDevelopmentWebviewReady(webview);
+        return;
+    }
+    if (developmentReloadInProgress) {
+        developmentReloadQueued = true;
+        return;
+    }
+    developmentReloadInProgress = true;
+    const handleReloadFinished = () => {
+        developmentReloadInProgress = false;
+        if (!developmentReloadQueued) return;
+        developmentReloadQueued = false;
+        requestDevelopmentWebviewReload();
+    };
+    webview.addEventListener('did-stop-loading', handleReloadFinished, { once: true });
+    console.info('[xiaochao-dev] source changed, reloading game webview');
+    try {
+        webview.reload();
+    } catch (error) {
+        developmentReloadInProgress = false;
+        developmentWebviewReady = false;
+        developmentReloadQueued = true;
+        webview.__xcDevReloadReadyBound = false;
+        whenDevelopmentWebviewReady(webview);
+        console.warn('[xiaochao-dev] webview 尚未就绪，已推迟重载', error);
+    }
+}
 
 function getReportWindowPageBridgeScript() {
     return `(() => {
@@ -203,16 +267,10 @@ async function loadElectronFrame() {
 
 window.loadElectronFrame = loadElectronFrame;
 
-ipcRenderer.on('xiaochao-script-hot-updated', () => {
+// 新脚本换好后不刷新游戏页，由页里的小抄挑不打牌的时候自己刷新。
+ipcRenderer.on('xiaochao-script-staged', () => {
     localScriptResponseCache = null;
     localScriptInjectCache = null;
-    const webview = document.getElementById('wb');
-    if (!webview) return;
-    try {
-        webview.reload();
-    } catch (error) {
-        console.error('xiaochao script hot reload failed:', error);
-    }
 });
 
 ipcRenderer.on('payment-authorized', (event, message) => {
@@ -323,15 +381,15 @@ function readLocalScriptFromDisk() {
     return '';
 }
 
+/** 每次注入都先问主进程：多开时别的窗口可能已经换了脚本文件，主进程按文件修改时间读最新的。 */
 async function readLocalScriptCompat() {
-    if (localScriptResponseCache && localScriptResponseCache.success && localScriptResponseCache.data) {
-        return localScriptResponseCache;
-    }
-
     const asyncResponse = await invokeCompat('read-local-script');
     if (asyncResponse && asyncResponse.success && asyncResponse.data) {
         localScriptResponseCache = asyncResponse;
         return asyncResponse;
+    }
+    if (localScriptResponseCache && localScriptResponseCache.success && localScriptResponseCache.data) {
+        return localScriptResponseCache;
     }
 
     try {
@@ -545,8 +603,20 @@ function initElectronFrame() {
     //webview.src = 'http://10.225.11.80:8080'
     const msgList = {
         channel(packageId) {
-            const url = Array.isArray(loginURL) ? loginURL[packageId - 1] : loginURL;
-            if (url) webview.loadURL(url)
+            const list = Array.isArray(loginURL) ? loginURL : [];
+            const index = Number(packageId) - 1;
+            let url = list[index] || list[0];
+            if (!url) return;
+            url += url.indexOf('?') !== -1 ? '&t=' + Date.now() : '?t=' + Math.floor(Date.now());
+            try {
+                if (developmentWebviewReady) {
+                    webview.loadURL(url);
+                    return;
+                }
+            } catch (error) {
+                console.warn('切换大区时 loadURL 失败，改为设置 src', error);
+            }
+            webview.src = url;
         },
         executeJS(str) {
             if (typeof str !== 'string' || !str.trim()) return;
@@ -594,11 +664,39 @@ function initElectronFrame() {
             if (event.channel === 'xiaochao-focus-webview') webview.focus();
         });
     }
+    if (!webview.__sgsolLoginHelperBound) {
+        webview.__sgsolLoginHelperBound = true;
+        webview.addEventListener('did-finish-load', () => {
+            try {
+                if (isLikelyLoginPageUrl(webview.getURL())) execute(webview);
+            } catch (error) {
+                console.warn('[xiaochao] 登录页密码助手注入跳过', error);
+            }
+        });
+        webview.addEventListener('did-navigate-in-page', (event) => {
+            try {
+                if (isLikelyLoginPageUrl(event.url)) execute(webview);
+            } catch (error) {
+                console.warn('[xiaochao] 登录页密码助手注入跳过', error);
+            }
+        });
+    }
     webview.addEventListener("dom-ready", function () {
+        developmentWebviewReady = true;
+        developmentReloadQueued = false;
         installReportWindowPageBridge(webview);
-        loadScript(webview);
         execute(webview);
+        loadScript(webview);
     })
+}
+
+/** 登录页、4399 区等地址；游戏内大厅不再重复注入密码助手。 */
+function isLikelyLoginPageUrl(url) {
+    const text = String(url || '').toLowerCase();
+    return text.includes('login')
+        || text.includes('4399.com')
+        || text.includes('kuaiwan.com')
+        || text.includes('wd-home');
 }
 
 ipcRenderer.on('set-video-path', (event, url) => {
@@ -1322,14 +1420,55 @@ function execute(webview) {
     return true;
   }
 
-  if (window.__sgsolPasswordManagerTimer) clearInterval(window.__sgsolPasswordManagerTimer);
+  function stopPasswordManagerWatch() {
+    if (window.__sgsolPasswordManagerTimer) {
+      clearInterval(window.__sgsolPasswordManagerTimer);
+      window.__sgsolPasswordManagerTimer = null;
+    }
+    if (window.__sgsolPasswordManagerRaf) {
+      cancelAnimationFrame(window.__sgsolPasswordManagerRaf);
+      window.__sgsolPasswordManagerRaf = null;
+    }
+    if (window.__sgsolPasswordManagerObserver) {
+      window.__sgsolPasswordManagerObserver.disconnect();
+      window.__sgsolPasswordManagerObserver = null;
+    }
+  }
+
+  function tryMountPasswordManager() {
+    const mounted = mountPasswordManager();
+    if (mounted) stopPasswordManagerWatch();
+    return mounted;
+  }
+
+  stopPasswordManagerWatch();
+  const watchStartedAt = Date.now();
+  const watchUntil = watchStartedAt + 30_000;
+  const rafTick = () => {
+    if (tryMountPasswordManager()) return;
+    if (Date.now() < watchUntil) window.__sgsolPasswordManagerRaf = requestAnimationFrame(rafTick);
+  };
+  window.__sgsolPasswordManagerRaf = requestAnimationFrame(rafTick);
+  tryMountPasswordManager();
+
+  const observeRoots = getAccessibleDocuments().map((doc) => doc.documentElement || doc.body).filter(Boolean);
+  if (!observeRoots.length && (document.documentElement || document.body)) {
+    observeRoots.push(document.documentElement || document.body);
+  }
+  if (typeof MutationObserver !== 'undefined' && observeRoots.length) {
+    window.__sgsolPasswordManagerObserver = new MutationObserver(() => tryMountPasswordManager());
+    observeRoots.forEach((root) => {
+      try {
+        window.__sgsolPasswordManagerObserver.observe(root, { childList: true, subtree: true });
+      } catch (error) {}
+    });
+  }
+
   let tries = 0;
   window.__sgsolPasswordManagerTimer = setInterval(() => {
     tries += 1;
-    const mounted = mountPasswordManager();
-    if (!is4399Login && (mounted || tries > 80)) clearInterval(window.__sgsolPasswordManagerTimer);
-  }, 250);
-  mountPasswordManager();
+    if (tryMountPasswordManager() || tries > 120 || Date.now() >= watchUntil) stopPasswordManagerWatch();
+  }, 100);
 })();
 `;
     webview.executeJavaScript(helperSource).catch((error) => {

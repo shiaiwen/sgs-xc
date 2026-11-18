@@ -1,20 +1,8 @@
 import type { Metadata } from "next";
-import { Noto_Sans_SC, Noto_Serif_SC } from "next/font/google";
 import { SiteHeader } from "@/components/site-header";
+import { PORTAL_FONT_CRITICAL_CSS, PORTAL_FONT_FAMILY } from "@/lib/portal-font";
 import { site } from "@/lib/site";
 import "./globals.css";
-
-const sans = Noto_Sans_SC({
-  variable: "--font-noto-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "700"],
-});
-
-const serif = Noto_Serif_SC({
-  variable: "--font-noto-serif",
-  subsets: ["latin"],
-  weight: ["600", "700"],
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL(site.url),
@@ -73,8 +61,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   };
 
   return (
-    <html lang="zh-CN" className={`${sans.variable} ${serif.variable} h-full`}>
-      <body className="flex h-dvh flex-col overflow-hidden antialiased">
+    <html lang="zh-CN" className="h-full" style={{ fontFamily: PORTAL_FONT_FAMILY }}>
+      <head>
+        <style dangerouslySetInnerHTML={{ __html: PORTAL_FONT_CRITICAL_CSS }} />
+      </head>
+      <body className="flex h-dvh flex-col overflow-hidden">
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}

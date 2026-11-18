@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { accountFrom } from '../account-param.js';
+import { accountKeyFrom } from '../account-param.js';
 import { readJsonBody } from '../json-body.js';
 import { resetAccountConfig } from '../background-config/store.js';
 import { resetAccountSkins } from '../account-skins/store.js';
@@ -14,14 +14,14 @@ export function createAccountResetRoutes() {
   routes.post('/api/account-reset', async (context) => {
     const body = await readJsonBody(context);
     if (!body) return context.json({ error: '内容不是 JSON' }, 400);
-    const account = accountFrom(body.account);
-    if (!account) return context.json({ error: '缺少账号' }, 400);
+    const key = accountKeyFrom(body.account, body.userId);
+    if (!key) return context.json({ error: '缺少账号' }, 400);
     const requested = Number(body.resetAt);
     const resetAt = Number.isFinite(requested) && requested > 0 ? requested : Date.now();
     try {
-      const configResetAt = await resetAccountConfig(account, resetAt);
-      const skinsResetAt = await resetAccountSkins(account, resetAt);
-      return context.json({ account, resetAt: Math.max(configResetAt, skinsResetAt) });
+      const configResetAt = await resetAccountConfig(key, resetAt);
+      const skinsResetAt = await resetAccountSkins(key, resetAt);
+      return context.json({ account: key.account, resetAt: Math.max(configResetAt, skinsResetAt) });
     } catch (error) {
       return context.json({ error: error instanceof Error ? error.message : '重置失败' }, 400);
     }

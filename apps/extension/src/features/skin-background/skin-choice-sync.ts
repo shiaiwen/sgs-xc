@@ -1,5 +1,5 @@
 /**
- * 皮肤解锁里选好的皮肤按游戏账号存到服务器，换浏览器或换电脑登录同一个账号也能带上。
+ * 皮肤解锁里选好的皮肤按登录账号存到服务器，换浏览器或换电脑登录同一个账号也能带上。
  * 本机先写一份，几秒内的改动合成一次再传，页面关掉前把还没传的发出去。服务器连不上时照常用本机记录换肤。
  * 同一个武将两边都有记录时，谁保存得晚用谁。服务器重置以前存的记录不算数。
  */
@@ -112,7 +112,8 @@ export function createSkinChoiceSync(options: SkinChoiceSyncOptions): SkinChoice
   async function push(account: string, pageClosing = false): Promise<void> {
     const body = await writeAccountApi<SkinChoiceBody | null>(
       ACCOUNT_SKINS_PATH,
-      { account, skins: normalizeSkinChoices(options.read(account)) },
+      account,
+      { skins: normalizeSkinChoices(options.read(account)) },
       pageClosing
     );
     takeRemote(account, body);

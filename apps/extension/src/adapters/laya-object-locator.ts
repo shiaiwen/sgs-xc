@@ -38,6 +38,7 @@ const MANAGER_LOOKUPS: Record<string, readonly [string, string?, string?]> = {
   GameGoodsManager: ['DbsCcMovegoodsRep'],
   GameShopManager: ['CcGoodsPriceRep'],
   GeneralSkinManager: ['ClientSkinFromRep'],
+  LoginManager: ['ClientLoginRep', 'ServerProxy', 'loginUserName'],
   MailManager: ['decodeClientGetMailNtf'],
   NewFuLiManager: ['decodeSetOutGiftInfoResp'],
   NewPrivilegeCardManager: ['decodeServerNewPrivilegeCardDataResp'],

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { AuthorTipEntry } from "@/components/author-tip-entry";
 import { Markdown } from "@/components/markdown";
 import { getPage, getPageSlugs } from "@/lib/pages";
 
@@ -45,21 +46,26 @@ export default async function ArticlePage({ params }: Props) {
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-12 sm:px-6 sm:py-16">
+    <main className="mx-auto max-w-3xl px-6 py-12 sm:py-16">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-      <header className="mb-8 border-b border-ink/10 pb-6">
-        <h1 className="mt-2 font-serif text-4xl leading-tight">{page.title}</h1>
+      <header className="mb-10 border-b border-line pb-8">
+        <h1 className="text-3xl font-bold leading-tight text-ink sm:text-4xl">{page.title}</h1>
         {page.description ? (
-          <p className="mt-3 text-ink/70">{page.description}</p>
+          <p className="mt-3 leading-7 text-muted">{page.description}</p>
         ) : null}
         {page.updated ? (
-          <p className="mt-3 text-xs text-ink/50">更新于 {page.updated}</p>
+          <p className="mt-3 text-sm text-muted">更新于 {page.updated}</p>
         ) : null}
       </header>
       <Markdown source={page.content} />
+      {slug === "about" ? (
+        <div className="mt-12 flex justify-center border-t border-line pt-10">
+          <AuthorTipEntry triggerClassName="site-header__tip" />
+        </div>
+      ) : null}
     </main>
   );
 }

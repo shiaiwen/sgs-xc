@@ -1,10 +1,12 @@
 /**
  * 油猴平台适配。
  * 外链用浏览器新窗口打开；配置读写走 browser-settings（无共享存储时即 localStorage）。
+ * 新版小抄在后台下载进本地数据库，刷新后由脚本开头的启动代码运行。
  * 只依赖 grant none 下可用的标准接口，不调用 GM_*。
  */
 import { readBrowserSetting, removeBrowserSetting, writeBrowserSetting } from './browser-settings.ts';
 import type { PlatformAdapter } from './platform';
+import { createUserscriptUpdateStager } from './userscript-update-stager.ts';
 
 /** 浏览器油猴适配器。目前只使用 grant none 可用的标准浏览器 API。 */
 export function createUserscriptPlatform(): PlatformAdapter {
@@ -15,6 +17,7 @@ export function createUserscriptPlatform(): PlatformAdapter {
     },
     getSetting: readBrowserSetting,
     setSetting: writeBrowserSetting,
-    removeSetting: removeBrowserSetting
+    removeSetting: removeBrowserSetting,
+    stageUpdate: createUserscriptUpdateStager()
   };
 }

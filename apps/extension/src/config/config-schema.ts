@@ -22,6 +22,8 @@ export interface XiaochaoConfig {
   'panel.collapsed': boolean;
   'panel.dockedRight': boolean;
   'panel.position': PanelPositionConfig | null;
+  /** 悬浮时手动调过的展开高度，单位像素。0 表示没调过。 */
+  'panel.expandedHeight': number;
   'display.seatUiEnabled': boolean;
   'display.deckHudEnabled': boolean;
   'display.recentCardMode': 'current' | 'player';
@@ -51,6 +53,7 @@ export interface XiaochaoConfig {
   'block.killEffect': boolean;
   'block.entranceEffect': boolean;
   'block.otherSkinState': boolean;
+  'block.chatEmotion': boolean;
   'block.taskRedDot': boolean;
   'block.factionSlogan': boolean;
   'skin.localSkin': boolean;
@@ -151,6 +154,10 @@ export const CONFIG_SCHEMA: {
         : undefined;
     }
   },
+  'panel.expandedHeight': {
+    defaultValue: 0,
+    parse: (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined
+  },
   // —— 局内显示 ——
   'display.seatUiEnabled': booleanDefinition(true, 'SEAT_UI_SWITCH'),
   'display.deckHudEnabled': booleanDefinition(true),
@@ -223,6 +230,7 @@ export const CONFIG_SCHEMA: {
   'block.killEffect': booleanDefinition(false, 'BLOCK_KILL_EFFECT_SWITCH'),
   'block.entranceEffect': booleanDefinition(false, 'BLOCK_ENTRANCE_EFFECT_SWITCH'),
   'block.otherSkinState': booleanDefinition(false, 'BLOCK_SKIN_STATE_SWITCH'),
+  'block.chatEmotion': booleanDefinition(false, 'BLOCK_CHAT_EMOTION_SWITCH'),
   'block.taskRedDot': booleanDefinition(false, 'RED_DOT_BLOCK_SWITCH'),
   'block.factionSlogan': booleanDefinition(false, 'BLOCK_FACTION_SLOGAN_SWITCH'),
   // —— 皮肤 / 壁纸 ——

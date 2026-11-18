@@ -1,10 +1,11 @@
 /**
- * 小抄服务器上按游戏账号存的数据：开关和背景、皮肤选择、重置。
+ * 小抄服务器上按登录账号存的数据：开关和背景、皮肤选择、重置。
  * 写的时候正文按纯文本发，浏览器不用先问一次能不能跨域，页面关掉时也能带着发出去。
  */
 
 import { ACCOUNT_CONFIG_REMOTE_URL } from '../const/account-config-endpoint.ts';
 import { KEEPALIVE_BODY_MAX_BYTES } from '../const/account-sync.ts';
+import { gameLoginAccountOf } from '../runtime/game-account-session.ts';
 
 const REQUEST_INIT: RequestInit = {
   mode: 'cors',
@@ -21,14 +22,24 @@ export function accountApiUrl(path: string): string {
   return new URL(path, injected || ACCOUNT_CONFIG_REMOTE_URL).toString();
 }
 
-/** 没登录或账号编号还没读到时返回空。 */
+/** 没登录或游戏用户编号还没读到时返回空。 */
 export function usableAccount(accountId: string): string {
   const account = String(accountId || '').trim();
   return account && account !== 'default' && account !== '0' ? account : '';
 }
 
-export async function readAccountApi<Body>(path: string, account: string): Promise<Body> {
-  const response = await fetch(`${accountApiUrl(path)}?account=${encodeURIComponent(account)}`, {
+/**
+ * 服务器按登录账号存，同时带上游戏用户编号，服务器把以前按编号存的那份并过来。
+ * 游戏里找不到登录账号时只按编号发，服务器先存在旧表里，以后读到登录账号再并过去。
+ */
+function accountFields(userId: string): Record<string, string> {
+  const loginAccount = gameLoginAccountOf(userId);
+  return loginAccount ? { account: loginAccount, userId } : { account: userId };
+}
+
+export async function readAccountApi<Body>(path: string, userId: string): Promise<Body> {
+  const query = new URLSearchParams(accountFields(userId));
+  const response = await fetch(`${accountApiUrl(path)}?${query}`, {
     ...REQUEST_INIT,
     method: 'GET'
   });
@@ -37,8 +48,13 @@ export async function readAccountApi<Body>(path: string, account: string): Promi
 }
 
 /** pageClosing 为 true 时页面关掉也会发完，正文太大时只能按普通请求发。 */
-export async function writeAccountApi<Body>(path: string, payload: unknown, pageClosing = false): Promise<Body> {
-  const body = JSON.stringify(payload);
+export async function writeAccountApi<Body>(
+  path: string,
+  userId: string,
+  payload: Record<string, unknown>,
+  pageClosing = false
+): Promise<Body> {
+  const body = JSON.stringify({ ...payload, ...accountFields(userId) });
   const keepalive = pageClosing && new TextEncoder().encode(body).length <= KEEPALIVE_BODY_MAX_BYTES;
   const response = await fetch(accountApiUrl(path), {
     ...REQUEST_INIT,

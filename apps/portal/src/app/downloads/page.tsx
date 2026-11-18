@@ -22,7 +22,7 @@ export const metadata: Metadata = {
 
 function Path({ children }: { children: string }) {
   return (
-    <code className="rounded bg-ink/5 px-1.5 py-0.5 text-[0.92em] text-ink">
+    <code className="rounded bg-tint px-1.5 py-0.5 text-[0.9em] text-ink">
       {children}
     </code>
   );
@@ -30,7 +30,7 @@ function Path({ children }: { children: string }) {
 
 function Steps({ items }: { items: ReactNode[] }) {
   return (
-    <ol className="mt-3 list-decimal space-y-2 pl-5 text-ink/80">
+    <ol className="mt-3 list-decimal space-y-2.5 pl-5 text-[#2e2a25] marker:text-muted">
       {items.map((item, index) => (
         <li key={index} className="pl-1">
           {item}
@@ -48,34 +48,31 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-ink/10 bg-card p-5 sm:p-6">
-      <h3 className="font-serif text-xl text-ink">{title}</h3>
-      <div className="mt-3 space-y-5 text-sm leading-7 sm:text-base">{children}</div>
+    <section className="doc-section">
+      <h3 className="text-lg font-semibold text-ink">{title}</h3>
+      <div className="mt-2 space-y-4 text-[0.9375rem] leading-7 text-[#2e2a25]">{children}</div>
     </section>
   );
 }
 
-const actionClass =
-  "inline-flex min-w-28 items-center justify-center rounded-full bg-[#1677ff] px-6 py-3 text-sm font-medium text-white transition hover:bg-[#4096ff]";
-
 export default function DownloadsPage() {
   return (
-    <main className="mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
-      <h1 className="font-serif text-4xl">下载</h1>
-      <div className="mt-6">
+    <main className="mx-auto max-w-3xl px-6 py-12 sm:py-16">
+      <h1 className="text-3xl font-bold text-ink sm:text-4xl">下载</h1>
+      <div className="mt-8">
       <DownloadMode
         client={
           <>
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-ink/10 pb-6">
-              <p className="max-w-xl text-sm leading-7 text-ink/70 sm:text-base">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-8">
+              <p className="max-w-xl leading-7 text-muted">
                 解压下载的测试包后，请先完全关闭三国杀官方微端，再按系统选择对应步骤。
               </p>
               <InstallerDownload />
             </div>
-            <div className="mt-8 space-y-8">
+            <div className="mt-10 space-y-12">
         <div>
-          <h2 className="font-serif text-2xl text-ink">Windows</h2>
-          <div className="mt-4 space-y-4">
+          <h2 className="text-2xl font-semibold text-ink">Windows</h2>
+          <div className="mt-5">
             <Section title="自动安装（推荐）">
               <Steps
                 items={[
@@ -154,8 +151,8 @@ export default function DownloadsPage() {
         </div>
 
         <div>
-          <h2 className="font-serif text-2xl text-ink">macOS</h2>
-          <div className="mt-4 space-y-4">
+          <h2 className="text-2xl font-semibold text-ink">macOS</h2>
+          <div className="mt-5">
             <Section title="自动安装（推荐）">
               <Steps
                 items={[
@@ -242,9 +239,9 @@ export default function DownloadsPage() {
           </div>
         </div>
 
-        <section className="rounded-2xl border border-accent/20 bg-accent/5 p-5 sm:p-6">
-          <h2 className="font-serif text-xl text-ink">注意</h2>
-          <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-7 text-ink/80 sm:text-base">
+        <section className="doc-note">
+          <h2 className="text-lg font-semibold text-ink">注意</h2>
+          <ul className="mt-2 list-disc space-y-2 pl-5 text-[0.9375rem] leading-7 text-[#2e2a25] marker:text-muted">
             <li>
               Windows：修改 <Path>C:\Program Files</Path>{" "}
               需要管理员权限，建议先把文件复制到桌面操作后再粘贴回去。
@@ -267,15 +264,15 @@ export default function DownloadsPage() {
         }
         script={
           <>
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-ink/10 pb-6">
-              <p className="max-w-xl text-sm leading-7 text-ink/70 sm:text-base">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-8">
+              <p className="max-w-xl leading-7 text-muted">
                 在浏览器里安装小抄脚本，打开三国杀网页端即可使用，不用替换微端文件。
               </p>
-              <a href={userscriptHref} className={actionClass}>
+              <a href={userscriptHref} className="btn-primary">
                 脚本小抄
               </a>
             </div>
-            <div className="mt-8">
+            <div className="mt-10">
               <Section title="安装">
                 <Steps
                   items={[
@@ -285,7 +282,7 @@ export default function DownloadsPage() {
                         href="https://www.tampermonkey.net/"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-accent underline-offset-2 hover:underline"
+                        className="text-accent underline underline-offset-4"
                       >
                         Tampermonkey
                       </a>{" "}

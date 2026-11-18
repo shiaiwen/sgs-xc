@@ -3,7 +3,12 @@
  * 样式需兼容偏旧 Chromium（避免 :is/:has 等导致整段失效）。
  */
 
+import { DOCK_COLLAPSED_PANEL_HEIGHT, DOCK_COLLAPSED_PANEL_WIDTH } from '../../const/panel-dock';
+
 export const PANEL_SHELL_STYLE_ID = 'xiaochao-vue-panel-shell-style';
+
+/** 折叠胶囊的圆角取高度一半，两头是半圆。 */
+const COLLAPSED_PANEL_RADIUS = DOCK_COLLAPSED_PANEL_HEIGHT / 2;
 
 /**
  * Vue 面板外壳的独立样式。
@@ -72,24 +77,33 @@ html.xiaochao-game-viewport--docked #GameDiv {
   visibility: hidden !important;
 }
 #createIframe.createIframe.xiaochao-panel--collapsed {
-  width: 96px !important;
-  min-width: 96px !important;
-  max-width: 96px !important;
-  height: 34px !important;
-  min-height: 34px !important;
-  max-height: 34px !important;
+  width: ${DOCK_COLLAPSED_PANEL_WIDTH}px !important;
+  min-width: ${DOCK_COLLAPSED_PANEL_WIDTH}px !important;
+  max-width: ${DOCK_COLLAPSED_PANEL_WIDTH}px !important;
+  height: ${DOCK_COLLAPSED_PANEL_HEIGHT}px !important;
+  min-height: ${DOCK_COLLAPSED_PANEL_HEIGHT}px !important;
+  max-height: ${DOCK_COLLAPSED_PANEL_HEIGHT}px !important;
 }
 #createIframe.xiaochao-panel--collapsed {
-  border: 1px solid rgba(220, 190, 119, .48);
-  border-radius: 10px;
-  clip-path: inset(0 round 10px);
-  background: linear-gradient(180deg, rgba(67, 51, 31, .97) 0%, rgba(35, 28, 21, .98) 100%);
-  box-shadow: 0 0 10px 2px rgba(255, 220, 120, .28), inset 0 1px 0 rgba(255, 242, 190, .18);
+  border: 1px solid rgba(220, 190, 119, .42);
+  border-radius: ${COLLAPSED_PANEL_RADIUS}px;
+  clip-path: inset(0 round ${COLLAPSED_PANEL_RADIUS}px);
+  background: linear-gradient(180deg, rgba(62, 48, 30, .96) 0%, rgba(35, 28, 21, .97) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 242, 190, .12);
+  transition: border-color .15s ease;
+}
+#createIframe.xiaochao-panel--collapsed:hover {
+  border-color: rgba(242, 222, 156, .7);
 }
 #createIframe.xiaochao-panel--docked-right {
   border-radius: 8px 0 0 8px;
   clip-path: inset(0 round 8px 0 0 8px);
   box-shadow: -4px 0 12px rgba(0, 0, 0, .32);
+}
+#createIframe.xiaochao-panel--collapsed.xiaochao-panel--docked-right {
+  border-right: 0;
+  border-radius: ${COLLAPSED_PANEL_RADIUS}px 0 0 ${COLLAPSED_PANEL_RADIUS}px;
+  clip-path: inset(0 round ${COLLAPSED_PANEL_RADIUS}px 0 0 ${COLLAPSED_PANEL_RADIUS}px);
 }
 #createIframe.xiaochao-panel--dragging {
   cursor: grabbing;
@@ -105,39 +119,35 @@ html.xiaochao-game-viewport--docked #GameDiv {
   pointer-events: auto;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-header {
-  min-height: 32px;
-  height: 32px;
-  padding: 0 2px 0 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 3px 0 8px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle {
-  box-sizing: border-box;
-  width: 24px;
-  height: 24px;
-  margin: 0 2px 0 0;
-  border: 1px solid rgba(224, 195, 124, .72);
-  border-radius: 6px;
-  background: linear-gradient(145deg, rgba(75, 61, 37, .95), rgba(38, 31, 22, .98));
-  box-shadow: inset 0 1px 0 rgba(255, 242, 190, .2), 0 1px 4px rgba(0, 0, 0, .35);
-  color: #f1dda2;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(242, 222, 156, .78);
   flex: 0 0 auto;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle:hover {
-  border-color: rgba(255, 232, 166, .9);
-  background: linear-gradient(145deg, rgba(91, 72, 42, .98), rgba(48, 38, 26, .98));
-  box-shadow: inset 0 1px 0 rgba(255, 242, 190, .28), 0 0 8px rgba(255, 220, 120, .24);
+  background: rgba(242, 222, 156, .14);
+  color: #fff1bd;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle__arrow {
-  width: 7px;
-  height: 7px;
-  border-width: 2px;
+  width: 5px;
+  height: 5px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle[data-collapsed="1"] .xc-frame-toggle__arrow--bottom-left {
-  left: 5px;
-  bottom: 5px;
+  left: 4px;
+  bottom: 4px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-toggle[data-collapsed="1"] .xc-frame-toggle__arrow--top-right {
-  right: 5px;
-  top: 5px;
+  right: 4px;
+  top: 4px;
 }
 #createIframe.xiaochao-panel--collapsed .xc-frame-header__status {
   margin: 0;
@@ -190,6 +200,63 @@ html.xiaochao-game-viewport--docked #GameDiv {
 }
 #createIframe .xiaochao-reset-dialog__cancel:hover,
 #createIframe .xiaochao-reset-dialog__confirm:hover { filter: brightness(1.18); }
+#createIframe .xiaochao-author-tip-dialog__lead,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__lead {
+  margin: 0;
+  color: #d2c7b3;
+  font-size: 13px;
+  line-height: 1.55;
+}
+#createIframe .xiaochao-author-tip-dialog__tabs,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 3px;
+  border: 1px solid rgba(242, 222, 156, .22);
+  border-radius: 999px;
+  background: rgba(32, 26, 20, .72);
+}
+#createIframe .xiaochao-author-tip-dialog__tab,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #c8bba3;
+  font-size: 12px;
+  cursor: pointer;
+}
+#createIframe .xiaochao-author-tip-dialog__tab--active,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__tab--active {
+  background: rgba(242, 222, 156, .16);
+  color: #f2de9c;
+}
+#createIframe .xiaochao-author-tip-dialog__qr-wrap,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__qr-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid rgba(242, 222, 156, .2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .96);
+}
+#createIframe .xiaochao-author-tip-dialog__qr,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__qr {
+  display: block;
+  width: min(220px, 100%);
+  height: auto;
+}
+#createIframe .xiaochao-author-tip-dialog__hint,
+.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__hint {
+  margin: 10px 0 0;
+  text-align: center;
+  color: #b8ab92;
+  font-size: 12px;
+}
 #createIframe .xc-frame-toggle {
   position: relative;
   width: 26px;
@@ -1107,40 +1174,6 @@ html.xiaochao-game-viewport--docked #GameDiv {
   color: rgba(214, 197, 156, .7);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-}
-
-/* @property / conic 动画放到末尾：旧 Chromium 若解析失败，不影响上方开关等关键样式 */
-@property --xiaochao-border-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-#createIframe.xiaochao-panel--collapsed::before {
-  content: '';
-  position: absolute;
-  z-index: 5;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  padding: 2px;
-  border-radius: inherit;
-  pointer-events: none;
-  background: conic-gradient(
-    from var(--xiaochao-border-angle),
-    transparent 0deg 245deg,
-    rgba(210, 182, 111, .22) 270deg,
-    #fff4c2 305deg,
-    #d2b66f 330deg,
-    transparent 360deg
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: xiaochaoCollapsedBorderRun 2.2s linear infinite;
-}
-@keyframes xiaochaoCollapsedBorderRun {
-  to { --xiaochao-border-angle: 360deg; }
 }
 `;
 

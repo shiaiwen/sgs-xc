@@ -213,11 +213,20 @@ if (process.platform == 'win32') {
 
 function loadWindow() {
     if (global.platform == 0) {
-        createWindow();
+        createWindow().catch(handleStartupFailure);
     } else if (global.platform == 1) {
-        createWindow();
+        createWindow().catch(handleStartupFailure);
         setupPaymentCallback();
     }
+}
+
+/** 窗口没建出来就出错时，弹框说明后退出，不能让没有窗口的进程一直留在后台。 */
+function handleStartupFailure(error) {
+    const reason = error && error.message ? error.message : String(error);
+    logMessage(`startup failed: ${error && error.stack ? error.stack : reason}`);
+    if (mainWindow && !mainWindow.isDestroyed()) return;
+    dialog.showErrorBox('小抄微端启动失败', `启动时出错：${reason}\n\n出错记录在：${logFilePath}`);
+    app.quit();
 }
 
 
@@ -269,10 +278,11 @@ async function createWindow() {
         logMessage,
         getScriptPath: () => scriptPath,
         clearLocalScriptCache,
-        reloadScriptInjection: () => {
+        notifyScriptStaged: () => {
             if (!mainWindow || mainWindow.isDestroyed()) return;
-            mainWindow.webContents.send('xiaochao-script-hot-updated');
-        }
+            mainWindow.webContents.send('xiaochao-script-staged');
+        },
+        ipcMain
     });
     if (config.get('firstTime', true) === true || config.get('firstTimeAnnouncementSeen', false) !== true) {
         firstTimeAnnouncement(mainWindow);
@@ -724,7 +734,7 @@ ipcMain.handle('pc_2_flashWindow', (event, str) => {
 function getSharedConfig() {
     if (!sharedConfig) {
         const filePath = sharedConfigPath || path.join(instanceProfile.sharedUserData, 'xiaochao', 'shared.json');
-        sharedConfig = createSharedStore(filePath);
+        sharedConfig = createSharedStore(filePath, { onBrokenFile: logBrokenStoreFile });
         const stopWatching = sharedConfig.watchSettings(changes => {
             for (const contents of require('electron').webContents.getAllWebContents()) {
                 if (!contents.isDestroyed()) contents.send('xiaochao-settings-changed', changes);
@@ -928,6 +938,13 @@ function logMessage(message) {
     } catch (error) {
         console.error('log write failed:', error);
     }
+}
+
+function logBrokenStoreFile(filePath, backupPath, error) {
+    const name = path.basename(filePath);
+    logMessage(backupPath
+        ? `unreadable ${name} backed up as ${path.basename(backupPath)}, continuing with empty data`
+        : `unreadable ${name} could not be backed up (${error && error.message}), continuing with empty data`);
 }
 
 function changePackage(window, isSave = false) {
@@ -1176,14 +1193,14 @@ async function syncBundledScriptIfNewer() {
 
 function initializeWritablePaths() {
     dataDirectory = path.join(instanceProfile.sharedUserData, 'xiaochao');
+    logFilePath = path.join(dataDirectory, 'app-log.txt');
     fs.mkdirSync(dataDirectory, { recursive: true });
     configPath = path.join(dataDirectory, 'config.json');
     sharedConfigPath = path.join(dataDirectory, 'shared.json');
     getSharedConfig();
     scriptPath = path.join(dataDirectory, 'xiaochao.js');
     tempScriptPath = path.join(dataDirectory, 'xiaochao.js.' + process.pid + '.tmp');
-    logFilePath = path.join(dataDirectory, 'app-log.txt');
-    config = createJsonConfig(configPath);
+    config = createJsonConfig(configPath, { onBrokenFile: logBrokenStoreFile });
     global.config = config;
     global.configPath = configPath;
     global.scriptPath = scriptPath;

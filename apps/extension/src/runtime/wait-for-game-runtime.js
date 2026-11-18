@@ -13,9 +13,11 @@ export function getMissingGameRuntimeDependencies({
 } = {}) {
   if (globalObject.PUERTS_JS_RESOURCES !== undefined) return [];
 
+  // 2026111702 起游戏不再把 SystemContext / GameContext 挂到 window，改用 Laya 全局
+  // 作为「已进游戏页」的信号：官网和登录页没有 Laya，游戏页才有。Laya 只是很便宜的
+  // 前置过滤，真正判断大厅/牌局是否就绪由 probeRuntimeReady 里的场景探测负责。
   const missing = [];
-  // 没有游戏运行时就先不挂面板，官网和登录页不该先出小抄。
-  if (globalObject.SystemContext === undefined) missing.push('SystemContext');
+  if (globalObject.Laya === undefined) missing.push('LayaRuntime');
   return missing;
 }
 

@@ -15,6 +15,7 @@ const snapshot = ref<UpdateNoticeSnapshot>(
     notes: '',
     pageUrl: XIAOCHAO_UPDATE_PAGE_URL,
     hasUpdate: false,
+    autoUpdate: 'idle',
     dialogOpen: false,
     failureMessage: ''
   }
@@ -36,15 +37,27 @@ const label = computed(() => {
 });
 
 const tooltip = computed(() => {
-  if (snapshot.value.hasUpdate && snapshot.value.latestVersion) {
-    return `线上 ${snapshot.value.latestVersion}，打开更新页`;
+  const latest = snapshot.value.latestVersion;
+  if (snapshot.value.hasUpdate && latest) return `线上 ${latest}，打开更新页`;
+  if (snapshot.value.autoUpdate === 'ready' && latest) {
+    return `新版 ${latest} 已下好，不打牌时会自动刷新换上，点这里现在就换`;
   }
-  if (snapshot.value.latestVersion) return `线上 ${snapshot.value.latestVersion}`;
+  if (snapshot.value.autoUpdate === 'staged' && latest) return `新版 ${latest} 已下好，刷新整个网页后换上`;
+  if (snapshot.value.autoUpdate === 'preparing' && latest) return `线上 ${latest}，正在后台下载`;
+  if (latest) return `线上 ${latest}`;
   return '检查门户上的版本';
 });
 
 async function onVersionClick(): Promise<void> {
   if (checking.value) return;
+  if (snapshot.value.autoUpdate === 'ready' && !snapshot.value.hasUpdate) {
+    if (!props.updateNoticeController?.applyUpdateNow()) hint.value = '现在不能刷新，回到首页或大厅再点';
+    return;
+  }
+  if (snapshot.value.autoUpdate === 'staged' && !snapshot.value.hasUpdate) {
+    hint.value = '新版已下好，刷新网页后换上';
+    return;
+  }
   checking.value = true;
   hint.value = '';
   try {
@@ -53,6 +66,18 @@ async function onVersionClick(): Promise<void> {
       await props.updateNoticeController?.openUpdatePage();
       if (props.updateNoticeController?.getSnapshot().hasUpdate) return;
       hint.value = '已是最新';
+      return;
+    }
+    if (next?.autoUpdate === 'preparing') {
+      hint.value = '新版正在后台下载';
+      return;
+    }
+    if (next?.autoUpdate === 'ready') {
+      hint.value = '新版已下好，不打牌时自动换上';
+      return;
+    }
+    if (next?.autoUpdate === 'staged') {
+      hint.value = '新版已下好，刷新网页后换上';
       return;
     }
     hint.value = next?.latestVersion ? '已是最新' : (next?.failureMessage || '检查失败');

@@ -1,5 +1,8 @@
-/** 停靠后折叠成右上角小条时，游戏让出的宽度。 */
-export const DOCK_COLLAPSED_PANEL_WIDTH = 96;
+/** 折叠成胶囊时的宽度。停靠后折叠成右上角小条时，游戏也让出这么宽。 */
+export const DOCK_COLLAPSED_PANEL_WIDTH = 72;
+
+/** 折叠成胶囊时的高度，悬浮和停靠都用这个。 */
+export const DOCK_COLLAPSED_PANEL_HEIGHT = 26;
 
 /** 贴边展开的侧栏至少这么宽，才拿来让出游戏区域。更窄的是折叠过渡帧。 */
 export const DOCK_EXPANDED_RESERVE_MIN_WIDTH = 160;
