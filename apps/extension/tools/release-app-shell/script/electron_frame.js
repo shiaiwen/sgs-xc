@@ -457,10 +457,12 @@ function getLocalScriptInjection(data) {
 
 
 async function loadScript(webview) {
+    const pageUrl = webview.getURL();
     const response = await readLocalScriptCompat();
     // const videoPath = remote.getGlobal('videoPath'); // 你的视频文件路径
 
     if (response.success) {
+        if (!webview.isConnected || webview.getURL() !== pageUrl) return;
         // const videoFilePath = 'myprotocol:/3.mp4'; // 替换为你实际的3.mp4路径
 
 
@@ -685,7 +687,6 @@ function initElectronFrame() {
         developmentWebviewReady = true;
         developmentReloadQueued = false;
         installReportWindowPageBridge(webview);
-        execute(webview);
         loadScript(webview);
     })
 }

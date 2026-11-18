@@ -481,10 +481,13 @@ function getLocalScriptInjection(data) {
 
 /** 读本地小抄脚本并注入当前游戏 webview；失败只打日志，不挡登录。 */
 async function loadScript(webview) {
+    const pageUrl = webview.getURL();
     const response = await readLocalScriptCompat();
     // const videoPath = remote.getGlobal('videoPath'); // 你的视频文件路径
 
     if (response.success) {
+        // 首次登录会连续跳转；读取脚本期间页面变了就交给下一次 dom-ready 注入。
+        if (!webview.isConnected || webview.getURL() !== pageUrl) return;
         // const videoFilePath = 'myprotocol:/3.mp4'; // 替换为你实际的3.mp4路径
 
 
@@ -725,7 +728,6 @@ function initElectronFrame() {
         developmentWebviewReady = true;
         developmentReloadQueued = false;
         installReportWindowPageBridge(webview);
-        execute(webview);
         loadScript(webview);
     })
 }

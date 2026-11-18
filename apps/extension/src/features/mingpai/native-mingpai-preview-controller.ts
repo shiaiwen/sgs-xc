@@ -934,6 +934,7 @@ export function installNativeMingpaiPreviewController(
 
   /** 心幽、椒遇，以及还在手里的来源短名，写进游戏绘制用的数组。 */
   function stampPersistentCardTags(cardUi: UnknownRecord): void {
+    if (!configStore.get('display.cardLabelsEnabled')) return;
     const card = asRecord(cardUi.Card) ?? asRecord(cardUi.card);
     if (!card) return;
     const cardId = Number(card.cardId ?? card.cardID ?? card.CardId ?? card.CardID ?? card.id ?? card.ID ?? card.key);

@@ -11,6 +11,7 @@ type UnknownRecord = Record<string, unknown>;
 
 interface PatchedCardPrototype {
   prototype: UnknownRecord;
+  methodName: 'AddCardTag' | 'UpdateTag';
   originalDescriptor: PropertyDescriptor;
   patchedMethod: (...args: unknown[]) => unknown;
 }
@@ -29,6 +30,7 @@ export function installCardLabelController(
   const refresh = () => {
     const cardUIs = findSelfHandCardUIs(globalObject);
     cardUIs.forEach(installPrototypePatch);
+    cardUIs.forEach(installUpdateTagPatch);
     cardUIs.forEach(refreshCardTag);
   };
   const unsubscribe = configStore.subscribe('display.cardLabelsEnabled', ({ value }) => {
@@ -42,9 +44,9 @@ export function installCardLabelController(
     unsubscribe();
     stopRefreshing();
     for (const patch of patches) {
-      const current = Object.getOwnPropertyDescriptor(patch.prototype, 'AddCardTag');
+      const current = Object.getOwnPropertyDescriptor(patch.prototype, patch.methodName);
       if (current?.value !== patch.patchedMethod) continue;
-      try { Object.defineProperty(patch.prototype, 'AddCardTag', patch.originalDescriptor); } catch { /* 游戏退出时对象可能已冻结。 */ }
+      try { Object.defineProperty(patch.prototype, patch.methodName, patch.originalDescriptor); } catch { /* 游戏退出时对象可能已冻结。 */ }
     }
     patches.clear();
   };
@@ -54,12 +56,13 @@ export function installCardLabelController(
     while (prototype && !Object.prototype.hasOwnProperty.call(prototype, 'AddCardTag')) {
       prototype = Object.getPrototypeOf(prototype) as UnknownRecord | null;
     }
-    if (!prototype || patchesHasPrototype(patches, prototype)) return;
+    if (!prototype || patchesHasPrototype(patches, prototype, 'AddCardTag')) return;
     const descriptor = Object.getOwnPropertyDescriptor(prototype, 'AddCardTag');
     if (!descriptor || typeof descriptor.value !== 'function') return;
     const patchedMethod = function (this: UnknownRecord, ...args: unknown[]) {
+      if (!enabled) return withoutCardTags(this, () => descriptor.value.apply(this, args));
       const label = String(args[0] ?? '');
-      const methodName = enabled && label === '炁' ? 'AddCardTag2' : '__AddCardTag';
+      const methodName = label === '炁' ? 'AddCardTag2' : '__AddCardTag';
       const method = this[methodName];
       return typeof method === 'function'
         ? method.apply(this, args)
@@ -67,10 +70,37 @@ export function installCardLabelController(
     };
     try {
       Object.defineProperty(prototype, 'AddCardTag', { ...descriptor, value: patchedMethod });
-      patches.add({ prototype, originalDescriptor: descriptor, patchedMethod });
+      patches.add({ prototype, methodName: 'AddCardTag', originalDescriptor: descriptor, patchedMethod });
     } catch {
       // 不可写版本保持游戏默认行为，不影响其他模块启动。
     }
+  }
+
+  function installUpdateTagPatch(cardUI: UnknownRecord): void {
+    let prototype = Object.getPrototypeOf(cardUI) as UnknownRecord | null;
+    while (prototype && !Object.prototype.hasOwnProperty.call(prototype, 'UpdateTag')) prototype = Object.getPrototypeOf(prototype) as UnknownRecord | null;
+    if (!prototype || patchesHasPrototype(patches, prototype, 'UpdateTag')) return;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'UpdateTag');
+    if (!descriptor || typeof descriptor.value !== 'function') return;
+    const patchedMethod = function (this: UnknownRecord, ...args: unknown[]) {
+      return enabled ? descriptor.value.apply(this, args) : withoutCardTags(this, () => descriptor.value.apply(this, args));
+    };
+    try {
+      Object.defineProperty(prototype, 'UpdateTag', { ...descriptor, value: patchedMethod });
+      patches.add({ prototype, methodName: 'UpdateTag', originalDescriptor: descriptor, patchedMethod });
+    } catch { /* 游戏版本可能不允许修改原型。 */ }
+  }
+}
+
+function withoutCardTags(cardUI: UnknownRecord, render: () => unknown): unknown {
+  const card = asRecord(cardUI.Card) ?? asRecord(cardUI.card);
+  if (!card) return render();
+  const saved = ['tagArr1', 'TagArr1'].filter((key) => Object.prototype.hasOwnProperty.call(card, key)).map((key) => [key, card[key]] as const);
+  try {
+    for (const [key] of saved) card[key] = [];
+    return render();
+  } finally {
+    for (const [key, value] of saved) card[key] = value;
   }
 }
 
@@ -94,8 +124,8 @@ function refreshCardTag(cardUI: UnknownRecord): void {
   }
 }
 
-function patchesHasPrototype(patches: Set<PatchedCardPrototype>, prototype: UnknownRecord): boolean {
-  for (const patch of patches) if (patch.prototype === prototype) return true;
+function patchesHasPrototype(patches: Set<PatchedCardPrototype>, prototype: UnknownRecord, methodName: PatchedCardPrototype['methodName']): boolean {
+  for (const patch of patches) if (patch.prototype === prototype && patch.methodName === methodName) return true;
   return false;
 }
 

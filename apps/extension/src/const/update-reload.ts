@@ -1,7 +1,7 @@
 /** 新版下好以后，等玩家不在打牌时刷新游戏页用到的页面名和时间。 */
 
-/** 只在这两个页面刷新：登录后的首页和大厅房间列表。 */
-export const UPDATE_RELOAD_SCENE_NAMES: readonly string[] = ['ModeScene', 'HallScene'];
+/** 只在大厅房间列表刷新，避开首次登录刚进入模式首页的过渡。 */
+export const UPDATE_RELOAD_SCENE_NAMES: readonly string[] = ['HallScene'];
 
 /** 新版下好以后，多久看一次现在能不能刷新，单位毫秒。 */
 export const UPDATE_RELOAD_CHECK_MS = 5000;
