@@ -14,3 +14,5 @@ apps/server/.env
 # 开发过程中的本地调试摘录，以后同类文件一律用 .tmp- 开头
 .tmp-*
 tests/
+!apps/extension/tests/
+!apps/extension/tests/**

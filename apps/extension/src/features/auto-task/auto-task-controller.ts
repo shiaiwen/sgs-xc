@@ -133,6 +133,7 @@ export function installAutoTaskController(
     tasks,
     enabled: () => configStore.get(AUTO_TASK_ENABLED_KEY),
     options: readOptions,
+    account: () => resolveGameAccountId(globalObject, locator),
     configData: () => options.cardConfigSource?.getAutoTaskData() ?? null
   });
 

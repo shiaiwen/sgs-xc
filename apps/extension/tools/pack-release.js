@@ -1,6 +1,8 @@
 /** 组装发布目录并计算校验。 */
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import {
   copyFileSync,
@@ -23,6 +25,8 @@ const viteBin = path.join(path.dirname(vitePackageJson), 'bin', 'vite.js');
 const assetsDir = path.join(root, 'tools', 'release-assets');
 /** 已验证可启动的微端壳（不含 xiaochao.js）；打包时只替换脚本。 */
 const shellDir = path.join(root, 'tools', 'release-app-shell');
+const repoRoot = path.resolve(root, '..', '..');
+const shellRepoPath = 'apps/extension/tools/release-app-shell';
 const releaseDir = path.join(root, 'release');
 const stagingRoot = path.join(releaseDir, '.staging');
 const appDir = path.join(stagingRoot, 'app');
@@ -97,7 +101,7 @@ function resolveVersion() {
 }
 
 /** 外壳指纹：发布壳里除小抄脚本和说明文档以外每个文件的路径和内容，和组装 app 时去掉的文件一致。 */
-function hashShellDirectory() {
+function hashShellDirectory(rootDir = shellDir) {
   const hash = createHash('sha256');
   const walk = (directory) => {
     const entries = readdirSync(directory, { withFileTypes: true })
@@ -108,15 +112,15 @@ function hashShellDirectory() {
         walk(fullPath);
         continue;
       }
-      const relativePath = path.relative(shellDir, fullPath).split(path.sep).join('/');
-      if (relativePath === 'xiaochao.js' || (directory === shellDir && entry.name.endsWith('.md'))) continue;
+      const relativePath = path.relative(rootDir, fullPath).split(path.sep).join('/');
+      if (relativePath === 'xiaochao.js' || (directory === rootDir && entry.name.endsWith('.md'))) continue;
       hash.update(relativePath);
       hash.update('\0');
       hash.update(readFileSync(fullPath));
       hash.update('\0');
     }
   };
-  walk(shellDir);
+  walk(rootDir);
   return hash.digest('hex');
 }
 
@@ -134,8 +138,8 @@ function readShellVersionRecord() {
  * 外壳没变就沿用记录里的版本号；变了就加 1，正式发版时写回记录。
  * 微端拿清单里的外壳版本和自己 package.json 里的 xiaochaoShellVersion 比，落后才提示装整包。
  */
-function resolveShellVersion() {
-  const shellHash = hashShellDirectory();
+function resolveShellVersion(rootDir = shellDir) {
+  const shellHash = hashShellDirectory(rootDir);
   const record = readShellVersionRecord();
   if (record && record.shellHash === shellHash) return record.shellVersion;
   const nextVersion = (record ? record.shellVersion : 0) + 1;
@@ -146,6 +150,56 @@ function resolveShellVersion() {
     console.log(`[pack] 微端外壳有未发布的改动，本次按外壳版本 ${nextVersion} 打包，不写记录`);
   }
   return nextVersion;
+}
+
+
+function isGitRepo() {
+  const result = spawnSync('git', ['-C', repoRoot, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
+  return result.status === 0 && String(result.stdout).trim() === 'true';
+}
+
+/**
+ * 正式发版时把 HEAD 中的发行壳检出到临时目录，不改工作区源文件。
+ * 这样未提交的开发态壳改动不会打进发行包，也不会无故升高外壳版本。
+ */
+function checkoutCommittedShell() {
+  const temp = mkdtempSync(path.join(tmpdir(), 'sgs-xc-shell-head-'));
+  const dest = path.join(temp, 'shell');
+  mkdirSync(dest, { recursive: true });
+  const listed = spawnSync('git', ['-C', repoRoot, 'ls-tree', '-r', '--name-only', '-z', 'HEAD', shellRepoPath], {
+    encoding: 'buffer'
+  });
+  if (listed.status !== 0) {
+    throw new Error(`列出 HEAD 中的发行壳失败: ${listed.stderr?.toString() || listed.status}`);
+  }
+  const files = listed.stdout.toString('utf8').split('\0').filter(Boolean);
+  if (!files.length) {
+    throw new Error('HEAD 中没有发行壳文件');
+  }
+  for (const repoFile of files) {
+    if (!repoFile.startsWith(`${shellRepoPath}/`)) continue;
+    const relative = repoFile.slice(shellRepoPath.length + 1);
+    const out = path.join(dest, ...relative.split('/'));
+    mkdirSync(path.dirname(out), { recursive: true });
+    const shown = spawnSync('git', ['-C', repoRoot, 'show', `HEAD:${repoFile}`], { encoding: 'buffer' });
+    if (shown.status !== 0) {
+      throw new Error(`读取 HEAD:${repoFile} 失败: ${shown.stderr?.toString() || shown.status}`);
+    }
+    writeFileSync(out, shown.stdout);
+  }
+  return { dir: dest, cleanup: () => rmSync(temp, { recursive: true, force: true }) };
+}
+
+function resolveReleaseShell() {
+  if (process.env.RELEASE_BUILD === '1') {
+    if (!isGitRepo()) {
+      throw new Error('正式发版需要在 git 仓库中检出已提交的发行壳，避免把工作区开发态改动打进包里');
+    }
+    const snapshot = checkoutCommittedShell();
+    console.log('[pack] 正式发版使用 HEAD 中的发行壳，工作区未提交壳改动不进入包内');
+    return snapshot;
+  }
+  return { dir: shellDir, cleanup: () => {} };
 }
 
 function writeBundledScript(version) {
@@ -184,7 +238,8 @@ async function main() {
   }
 
   const bumpedVersion = resolveVersion();
-  const shellVersion = resolveShellVersion();
+  const releaseShell = resolveReleaseShell();
+  const shellVersion = resolveShellVersion(releaseShell.dir);
 
   console.log('[pack] 构建小抄脚本…');
   await run(process.execPath, [
@@ -209,7 +264,11 @@ async function main() {
   console.log('[pack] 组装 app 目录（正式微端壳 + 当前脚本）…');
   rmSync(stagingRoot, { recursive: true, force: true });
   mkdirSync(packDir, { recursive: true });
-  cpSync(shellDir, appDir, { recursive: true });
+  try {
+    cpSync(releaseShell.dir, appDir, { recursive: true });
+  } finally {
+    releaseShell.cleanup();
+  }
   // 壳里不应残留旧脚本或说明文档；始终用本次构建产物覆盖。
   if (existsSync(path.join(appDir, 'xiaochao.js'))) rmSync(path.join(appDir, 'xiaochao.js'));
   for (const name of readdirSync(appDir)) {

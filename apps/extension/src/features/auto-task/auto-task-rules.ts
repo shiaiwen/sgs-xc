@@ -255,18 +255,19 @@ export function collectTasks(access: TaskManagerAccess, context: TaskRuleContext
   return [...tasks.values()];
 }
 
-/** 可领取：兼容 CanAward 为 0/1 或 taskState=2。 */
+/** 仅按游戏明确给出的可领取标志发起领奖。 */
 export function taskCanAward(task: unknown): boolean {
   const record = asRecord(task);
   if (!record) return false;
   try {
+    if (record.HasAward === true || record.hasAward === true) return false;
     const flag = record.CanAward ?? record.canAward;
-    if (flag === true || flag === 1 || flag === '1') return true;
+    return flag === true || flag === 1 || flag === '1';
   } catch {
-    // 访问器抛错时继续看状态字段。
+    // 读取领取标志失败时不发送请求，等下一轮数据就绪。
+    return false;
   }
-  const state = Number(record.taskState ?? record.TaskState ?? record.state ?? record.State);
-  return state === 2;
+  return false;
 }
 
 function isExpired(task: UnknownRecord): boolean {
@@ -426,6 +427,8 @@ export function isTaskExcluded(task: unknown, context: TaskRuleContext, id: unkn
   const record = asRecord(task);
   if (!record) return true;
   const numericId = Number(id);
+  if (EXCLUDED_TASK_IDS.has(numericId)) return true;
+  if (record.TaskCompeleMax === true && asRecord(record.baseVo)?.IsRepect !== true) return true;
   if (Number.isFinite(numericId) && TAVERN_TASK_IDS.includes(numericId) && context.skipTavern) return true;
   if (bypassHiddenTaskRules(record, context, id)) {
     const blockCost = !skipCostOrRepeatForForced(record, context, id) && isCostOrRepeatTask(record);
@@ -461,16 +464,42 @@ function canRewardCount(task: unknown): number {
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
+/** 连锁任务须先领完前置任务，不能仅凭当前任务的本地进度发领奖请求。 */
+export function taskPrerequisiteMet(access: TaskManagerAccess, task: unknown): boolean {
+  const record = asRecord(task);
+  const base = asRecord(record?.baseVo);
+  const id = Number(base?.prevTask ?? base?.PrevTask ?? record?.prevTask ?? record?.PrevTask ?? 0);
+  if (!Number.isFinite(id) || id <= 0) return true;
+  const previous = asRecord(lookupTask(access, id));
+  return previous?.HasAward === true || previous?.hasAward === true;
+}
+
+/** 被拒绝的任务只有在服务器状态或进度发生变化后才允许重试。 */
+export function taskClaimState(task: unknown): string {
+  const row = asRecord(task) ?? {};
+  const conditions = row.condition_data ?? row._condition_data ?? row.task_condition
+    ?? row.TaskConditions ?? row.taskConditions;
+  const progress = (Array.isArray(conditions) ? conditions : []).map((item) => {
+    const condition = asRecord(item) ?? {};
+    return [condition.condition_id ?? condition.reqId ?? condition._reqId,
+      condition.condition_cnt ?? condition.NowCount ?? condition.progress ?? condition._nowCount,
+      condition.Completed];
+  });
+  return JSON.stringify([row.Status ?? row.status ?? row.taskState ?? row.task_state,
+    row.IsFromServer ?? row.isFromServer, row.HasTake, row.HasAward,
+    row.completeTimes ?? row.complete_cnt, row.ExpiredTime, canRewardCount(task), progress]);
+}
+
 /** 节流键：未接取的任务先接取，否则领取奖励。 */
 export function taskClaimKey(access: TaskManagerAccess, id: unknown, task: unknown): string {
-  const accepting = isUnacceptedTask(access, id, task) && access.has('et');
+  const accepting = isUnacceptedTask(access, id, task) && access.has('RequestAcceptTask');
   return `${accepting ? 'taskAccept:' : 'task:'}${String(id)}`;
 }
 
 /** 接取或领取单个任务；返回 false 表示没有发出请求。 */
 export function claimTask(access: TaskManagerAccess, id: unknown, task: unknown, context: TaskRuleContext): unknown {
   const current = access.call('GetServerTaskDataByTaskID', id) || access.call('GetAllTaskDataByTaskID', id) || task;
-  if (isTaskExcluded(current, context, id)) return false;
+  if (isTaskExcluded(current, context, id) || !taskPrerequisiteMet(access, current)) return false;
   if (isUnacceptedTask(access, id, current) && access.has('RequestAcceptTask')) {
     return access.call('RequestAcceptTask', id, id, 0);
   }

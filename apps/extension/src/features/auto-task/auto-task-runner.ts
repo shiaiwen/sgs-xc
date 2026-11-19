@@ -17,6 +17,7 @@ import {
   flattenGameCollection,
   isHuanLeDouItem,
   isTaskExcluded,
+  isUnacceptedTask,
   rewardLooksLikeGeneral,
   rewardsBlocked,
   rewardsContainDiJiaQuan,
@@ -26,7 +27,9 @@ import {
   shouldSkipFreeShopGoodForHuanLeDou,
   shouldClaimDdztllReward,
   taskClaimKey,
+  taskClaimState,
   taskIdOf,
+  taskPrerequisiteMet,
   taskLikelyGrantsHuanLeDou,
   taskRewards,
   type TaskManagerAccess,
@@ -56,6 +59,7 @@ export interface AutoTaskRunnerDeps {
   enabled(): boolean;
   options(): AutoTaskOptions;
   configData(): AutoTaskConfigData | null;
+  account?(): string;
 }
 
 export interface AutoTaskRunner {
@@ -124,6 +128,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   const newPrivilegeBound = new WeakSet<object>();
   let newPrivilegeRetryScheduled = false;
   const freeBlessBound = new WeakSet<object>();
+  const rejectedTasks = new WeakMap<object, Map<string, string>>();
+  const pendingTaskClaims = new Set<string>();
   let mailRunning = false;
   let generalBagTimerArmed = false;
   let goodsConfigLookup: ((id: unknown) => unknown) | null | undefined;
@@ -246,11 +252,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     return rewardsBlocked(rewards, ruleContext());
   }
 
-  function waitForEvent(target: UnknownRecord, eventName: unknown, action: () => unknown, timeout = 5000): Promise<boolean> {
-    if (!eventName || typeof target.once !== 'function') {
-      action();
-      return Promise.resolve(true);
-    }
+  function waitForEvent(
+    target: UnknownRecord, eventName: unknown, action: () => unknown,
+    timeout = 5000, ready: () => boolean = () => true
+  ): Promise<boolean> {
+    if (!eventName || !has(target, 'on') || !has(target, 'off')) return Promise.resolve(false);
     return new Promise((resolve, reject) => {
       const caller = {};
       let settled = false;
@@ -261,11 +267,17 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         call(target, 'off', eventName, caller, onEvent);
         resolve(value);
       };
-      const onEvent = () => finish(true);
+      const onEvent = () => {
+        try {
+          if (active() && ready()) finish(true);
+        } catch {
+          finish(false);
+        }
+      };
       const timer = setTimeout(() => finish(false), timeout);
-      call(target, 'once', eventName, caller, onEvent);
+      call(target, 'on', eventName, caller, onEvent);
       try {
-        action();
+        if (action() === false) finish(false);
       } catch (error) {
         clearTimeout(timer);
         call(target, 'off', eventName, caller, onEvent);
@@ -280,75 +292,153 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   // ---------- 任务 ----------
 
-  async function refreshTaskListFromServer(taskManager: UnknownRecord): Promise<void> {
+  async function requestTaskClaim(access: TaskManagerAccess, id: unknown, task: unknown, context: TaskRuleContext): Promise<boolean> {
+    const proxy = manager('ServerProxy');
+    const replyManager = manager('TaskManager');
+    if (!proxy || !has(proxy, 'on') || !has(proxy, 'off')) return false;
+    const key = `${deps.account?.() ?? ''}:${String(id)}`;
+    if (pendingTaskClaims.has(key) || !taskPrerequisiteMet(access, task)) return false;
+    let rejected = rejectedTasks.get(access.manager);
+    if (!rejected) rejectedTasks.set(access.manager, rejected = new Map());
+    const state = taskClaimState(task);
+    const accepting = isUnacceptedTask(access, id, task);
+    if (rejected.get(key) === state) return false;
+    if (!claims.acquire(taskClaimKey(access, id, task))) return false;
+    pendingTaskClaims.add(key);
+    return new Promise<boolean>((resolve) => {
+      const caller = {};
+      const bindings: Array<[UnknownRecord, string, (...args: unknown[]) => void]> = [];
+      let settled = false;
+      const finish = (success: boolean, remember = true) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        bindings.forEach(([target, event, fn]) => call(target, 'off', event, caller, fn));
+        pendingTaskClaims.delete(key);
+        if (remember) {
+          if (success) rejected!.delete(key);
+          else rejected!.set(key, state);
+        }
+        resolve(success);
+      };
+      const bind = (target: UnknownRecord, event: string, fn: (...args: unknown[]) => void) => {
+        bindings.push([target, event, fn]);
+        call(target, 'on', event, caller, fn);
+      };
+      const matches = (value: unknown) => String(value) === String(id);
+      const timer = setTimeout(() => finish(false), 15000);
+      try {
+        bind(proxy, 'SmsgTaskFailed', (payload) => {
+          const protocol = asRecord(asRecord(payload)?.Protocol);
+          if (matches(protocol?.TaskID)) finish(false);
+        });
+        bind(proxy, 'decodeUserQuestOpRep', (payload) => {
+          const protocol = asRecord(asRecord(payload)?.Protocol);
+          const data = asRecord(asRecord(protocol?.Data)?.ProtoObj);
+          if (data && matches(data.quest_id) && Number(data.result ?? 0) > 0) finish(false);
+        });
+        const replyTarget = has(access.manager, 'on') && has(access.manager, 'off')
+          ? access.manager
+          : replyManager;
+        if (replyTarget && has(replyTarget, 'on') && has(replyTarget, 'off')) {
+          for (const event of accepting ? ['TASK_ACCEPTED'] : ['REWARD_REP', 'TASK_HAS_AWARD']) {
+            bind(replyTarget, event, (taskId) => { if (matches(taskId)) finish(true); });
+          }
+        }
+        if (claimTask(access, id, task, context) === false) finish(false, false);
+      } catch (error) {
+        console.warn('[自动领取] 任务领取失败:', id, error);
+        finish(false);
+      }
+    });
+  }
+
+  async function refreshTaskListFromServer(taskManager: UnknownRecord, owner: string): Promise<void> {
     try {
-      await Promise.resolve(invoke(taskManager, 'TaskManager', 'getTaskListFromServer'));
+      const refresh = resolveMethod(taskManager, owner, 'getTaskListFromServer')
+        ?? taskManager.GetTaskListFromServer;
+      if (typeof refresh === 'function') await Promise.resolve(refresh.call(taskManager));
     } catch {
       // 同步失败时用本地已有任务。
     }
-    const direct = taskManager.getTaskListFromServer ?? taskManager.GetTaskListFromServer;
-    if (typeof direct === 'function') {
-      try {
-        await Promise.resolve(direct.call(taskManager));
-      } catch {
-        // 忽略单次同步失败。
-      }
-    }
+  }
+
+  function findQuestTaskManager(): UnknownRecord | null {
+    const classic = manager('TaskManager');
+    return locator.findManagerByPredicate((item) => {
+      if (item === classic) return false;
+      const hasList = typeof (item.getTaskListFromServer ?? item.GetTaskListFromServer) === 'function';
+      return hasList && item.allTasks != null;
+    });
+  }
+
+  function taskSources(): Array<{ manager: UnknownRecord; owner: string }> {
+    const sources: Array<{ manager: UnknownRecord; owner: string }> = [];
+    const classic = manager('TaskManager');
+    if (classic) sources.push({ manager: classic, owner: 'TaskManager' });
+    const quest = findQuestTaskManager();
+    if (quest) sources.push({ manager: quest, owner: 'QuestTaskManager' });
+    return sources;
   }
 
   function reqTaskProgress(taskManager: UnknownRecord, ids: readonly number[]): void {
     if (!ids.length) return;
-    invoke(taskManager, 'TaskManager', 'reqTaskProgressByIds', [...ids]);
-    const direct = taskManager.reqTaskProgressByIds ?? taskManager.ReqTaskProgressByIds;
+    const direct = resolveMethod(taskManager, 'TaskManager', 'reqTaskProgressByIds')
+      ?? taskManager.ReqTaskProgressByIds;
     if (typeof direct === 'function') direct.call(taskManager, [...ids]);
   }
 
   async function claimTasks(): Promise<void> {
-    const taskManager = manager('TaskManager');
-    if (!active() || !taskManager) return;
-    await refreshTaskListFromServer(taskManager);
+    const sources = taskSources();
+    const taskManager = sources.find((source) => source.owner === 'TaskManager')?.manager ?? null;
+    if (!active() || sources.length === 0) return;
+    for (const source of sources) {
+      await refreshTaskListFromServer(source.manager, source.owner);
+    }
     const options = deps.options();
-    if (!options.skipTavern) {
+    if (taskManager && !options.skipTavern) {
       claims.throttled('tavern:sync', () => reqTaskProgress(taskManager, TAVERN_TASK_IDS));
     }
     const progressIds = [
       ...(deps.configData()?.newFuliTaskIds ?? []),
       ...(deps.configData()?.returnUnlockTaskIds ?? [])
     ];
-    if (progressIds.length) {
+    if (taskManager && progressIds.length) {
       claims.throttled('welfare:sync', () => reqTaskProgress(taskManager, progressIds));
     }
     await delay(progressIds.length ? 1200 : 500);
     if (!active()) return;
-    const access: TaskManagerAccess = {
-      manager: taskManager,
-      has: (method) => resolveMethod(taskManager, 'TaskManager', method) !== null,
-      call: (method, ...args) => invoke(taskManager, 'TaskManager', method, ...args)
-    };
     const context = ruleContext();
-    for (const task of collectTasks(access, context).filter((item) => !isTaskExcluded(item, context))) {
-      const id = taskIdOf(task);
-      if (id === undefined || id === null) continue;
-      const rewards = taskRewards(task);
-      if (options.skipDiJiaQuan && rewardsContainDiJiaQuan(rewards, context)) continue;
-      if (options.skipHuanLeDou && (rewardsContainHuanLeDou(rewards, context) || taskLikelyGrantsHuanLeDou(task, context))) continue;
-      if (!claims.acquire(taskClaimKey(access, id, task))) continue;
-      let result: unknown = false;
-      try {
-        result = claimTask(access, id, task, context);
-      } catch (error) {
-        console.warn('[自动领取] 任务领取失败:', id, error);
-        continue;
+    for (const source of sources) {
+      const access: TaskManagerAccess = {
+        manager: source.manager,
+        has: (method) => resolveMethod(source.manager, source.owner, method) !== null,
+        call: (method, ...args) => invoke(source.manager, source.owner, method, ...args)
+      };
+      for (const task of collectTasks(access, context).filter((item) => !isTaskExcluded(item, context))) {
+        if (!active()) return;
+        const id = taskIdOf(task);
+        if (id === undefined || id === null) continue;
+        const rewards = taskRewards(task);
+        if (options.skipDiJiaQuan && rewardsContainDiJiaQuan(rewards, context)) continue;
+        if (options.skipHuanLeDou && (rewardsContainHuanLeDou(rewards, context) || taskLikelyGrantsHuanLeDou(task, context))) continue;
+        if (await requestTaskClaim(access, id, task, context)) await delay(600);
       }
-      if (result !== false) await delay(600);
     }
   }
 
   // ---------- 活动 ----------
 
   async function syncNewJunDian(activity: UnknownRecord): Promise<boolean> {
-    if (!has(activity, 'SendGetNewJDInfoReq')) return true;
-    return waitForEvent(activity, eventConstant(activity, 'NEW_JD_INFO_SUC'), () => call(activity, 'SendGetNewJDInfoReq'));
+    if (!has(activity, 'SendGetNewJDInfoReq')) return false;
+    const free = activity.NewJDHaveRewardList;
+    const paid = activity.NewJDHaveRewardList_bp;
+    return waitForEvent(activity, eventConstant(activity, 'NEW_JD_INFO_SUC'),
+      () => call(activity, 'SendGetNewJDInfoReq'), 5000,
+      () => Array.isArray(activity.NewJDHaveRewardList) && activity.NewJDHaveRewardList !== free
+        && (Number(activity.NewJDLevel) === 0 || (
+          Array.isArray(activity.NewJDHaveRewardList_bp) && activity.NewJDHaveRewardList_bp !== paid
+        )));
   }
 
   async function claimNewJunDianOnce(activity: UnknownRecord): Promise<boolean> {
@@ -385,8 +475,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       if (!claims.acquire(`activity:newJD:${String(id)}:${String(isBp)}`)) continue;
       try {
         const replied = await waitForEvent(activity, rewardEvent, () => call(activity, 'SendGetNewJDRewardReq', id, isBp, false));
-        claimedAny = true;
         if (!replied) break;
+        claimedAny = true;
       } catch (error) {
         console.warn('[自动领取] 节钺令领取失败:', id, isBp, error);
         break;
@@ -577,12 +667,12 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   async function claimActivities(): Promise<void> {
     const activity = manager('ActivityManager');
     const taskManager = manager('TaskManager');
-    if (!active() || !activity || !taskManager) return;
+    if (!active() || !activity) return;
     call(activity, 'SendDDZTLLInfoReq');
     call(activity, 'SendGetJDInfoReq');
     await claimNewJunDian(activity);
     if (!active()) return;
-    claimWyqjTrialCard(activity, taskManager);
+    if (taskManager) claimWyqjTrialCard(activity, taskManager);
     claimInviteLogin(activity);
     claimLowBeanFree(manager('ActivityGameDataManager'));
     if (shouldClaimDdztllReward({
@@ -599,10 +689,12 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     ) {
       claims.throttled('activity:JD:all', () => call(activity, 'ReqDrawAllJDRwd'));
     }
-    const calcCount = Math.min(Math.floor(Number(taskManager.jdTaskRewardNum ?? taskManager.JdTaskRewardNum ?? 0) / 3), 3);
-    for (let index = 1; index <= calcCount; index += 1) {
-      if (!call(taskManager, 'HasRewardQuest', index)) {
-        claims.throttled(`task:JDCalcQuest:${index}`, () => call(taskManager, 'SendGetJdCalcQuestRewardReq', index));
+    if (taskManager) {
+      const calcCount = Math.min(Math.floor(Number(taskManager.jdTaskRewardNum ?? taskManager.JdTaskRewardNum ?? 0) / 3), 3);
+      for (let index = 1; index <= calcCount; index += 1) {
+        if (!call(taskManager, 'HasRewardQuest', index)) {
+          claims.throttled(`task:JDCalcQuest:${index}`, () => call(taskManager, 'SendGetJdCalcQuestRewardReq', index));
+        }
       }
     }
     const fuli = newFuLiManager();
@@ -736,13 +828,24 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     }
   }
 
-  function refreshTreeOnAward(welfare: UnknownRecord): (() => void) | null {
+  function refreshTreeOnAward(welfare: UnknownRecord): { promise: Promise<boolean>; detach: () => void } | null {
     const eventName = asRecord(welfare.constructor)?.KANSHU_GET_AWARD;
     if (!eventName || !has(welfare, 'once')) return null;
     const caller = {};
-    const handler = () => refreshTree(welfare);
+    let finish!: (awarded: boolean) => void;
+    const promise = new Promise<boolean>((resolve) => { finish = resolve; });
+    const handler = () => {
+      refreshTree(welfare);
+      finish(true);
+    };
     call(welfare, 'once', eventName, caller, handler);
-    return () => call(welfare, 'off', eventName, caller, handler);
+    return {
+      promise,
+      detach: () => {
+        call(welfare, 'off', eventName, caller, handler);
+        finish(false);
+      }
+    };
   }
 
   async function claimBlessingTree(welfare: UnknownRecord): Promise<boolean> {
@@ -775,30 +878,49 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       }, 12, 500);
     }
     const waterItemId = treeItemId(welfare.JbpUserData);
-    if (!waterItemId || claims.claimedToday(`kanshu:${waterItemId}`) || !freeBlessItemEnough()) return false;
-    let detach: (() => void) | null = null;
+    if (!waterItemId || claims.claimedToday(`kanshu:${waterItemId}`)) return false;
+    let award: ReturnType<typeof refreshTreeOnAward> = null;
     try {
-      const shop = manager('GameShopManager');
-      if (!resolveMethod(shop, 'GameShopManager', 'BuySingleItem')) return false;
-      const bought = invoke(shop, 'GameShopManager', 'BuySingleItem', waterItemId);
-      if (bought === false || (typeof bought === 'number' && bought !== 0)) return false;
       const goodsManager = manager('GameGoodsManager');
-      const arrived = await poll(() => has(goodsManager, 'GetGoodsByBaseID') && call(goodsManager, 'GetGoodsByBaseID', waterItemId), 20, 500);
-      if (!arrived) {
-        console.warn('[自动领取] 浇树道具未到账，稍后重试:', waterItemId);
+      const hasItem = () => Boolean(call(goodsManager, 'GetGoodsByBaseID', waterItemId));
+      const canCheckItem = has(goodsManager, 'GetGoodsByBaseID');
+      const ownsItem = canCheckItem && hasItem();
+      if (!ownsItem && freeBlessItemEnough()) {
+        const shop = manager('GameShopManager');
+        if (!resolveMethod(shop, 'GameShopManager', 'BuySingleItem')) return false;
+        const bought = invoke(shop, 'GameShopManager', 'BuySingleItem', waterItemId);
+        if (bought === false || (typeof bought === 'number' && bought !== 0)) return false;
+        if (canCheckItem) {
+          const arrived = await poll(hasItem, 20, 500);
+          if (!arrived) {
+            console.warn('[自动领取] 浇树道具未到账，稍后重试:', waterItemId);
+            return false;
+          }
+        } else {
+          // 部分游戏版本不暴露背包查询方法；购买后仍应发送领奖请求。
+          await delay(1000);
+        }
+      } else if (!ownsItem && canCheckItem) {
         return false;
       }
       if (!has(welfare, 'ReqJbpAwd')) return false;
-      detach = refreshTreeOnAward(welfare);
+      award = refreshTreeOnAward(welfare);
       if (call(welfare, 'ReqJbpAwd', waterItemId) === false) {
-        detach?.();
+        award?.detach();
+        return false;
+      }
+      const awarded = award
+        ? await Promise.race([award.promise, delay(8000).then(() => false)])
+        : Boolean(await poll(() => Number(asRecord(welfare.JbpUserData)?.Status) === 2, 16, 500));
+      if (!awarded) {
+        award?.detach();
         return false;
       }
       claims.markClaimedToday(`kanshu:${waterItemId}`);
-      if (!detach) refreshTree(welfare);
+      if (!award) refreshTree(welfare);
       return true;
     } catch (error) {
-      detach?.();
+      award?.detach();
       console.warn('[自动领取] 浇树领取失败:', error);
       return false;
     }
@@ -951,10 +1073,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   function claimMonthCards(welfare: UnknownRecord): void {
     for (const type of MONTH_CARD_TYPES) {
       const card = asRecord(call(welfare, 'GetCardDataByType', type));
-      if (card?.bActive && card.bReward) {
+      if (!card?.bActive) continue;
+      if (card.bReward) {
         claims.throttled(`yueka:reward:${type}:${String(card.rewardDays)}`, () => call(welfare, 'SendClientPrivilegeRewardReq', card.rewardDays, type));
       }
-      if (card?.bActive && type === 3) {
+      if (type === 3) {
         tasks.later(() => {
           const list = call(card, 'AddAwardsCanAwardList');
           if (!Array.isArray(list)) return;

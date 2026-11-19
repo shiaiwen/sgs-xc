@@ -58,9 +58,16 @@ const METHOD_SIGNATURES: Record<string, Record<string, string | readonly string[
   GameShopManager: { BuySingleItem: ['triggerTask', 'extraOperate', 'DealPassId'] },
   TaskManager: {
     RequestTaskAward: 'TaskRewardSelectWindow',
-    GetAllTaskDataByTaskID: 'GetNoGetTaskDataByTaskID',
-    RequestAcceptTask: 'RequestAcceptTask',
+    GetAllTaskDataByTaskID: ['allTasks.get(', '||'],
+    GetNoGetTaskDataByTaskID: ['IsFromServer', 'encode', '!1'],
+    RequestAcceptTask: ['needAutoCompeleTaskId', 'needAutoCompeleSelectTaskId'],
     reqTaskProgressByIds: 'reqTaskProgressByIds'
+  },
+  QuestTaskManager: {
+    RequestTaskAward: ['quest_id', 'op_type', 'reward_idx'],
+    GetAllTaskDataByTaskID: ['allTasks.get(', '||'],
+    GetNoGetTaskDataByTaskID: ['IsFromServer', 'encode', '!1'],
+    RequestAcceptTask: ['quest_id', 'op_type', 'kOpAccept']
   }
 };
 
