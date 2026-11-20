@@ -549,6 +549,7 @@ export function buildShanhetuMapConfigData(
     Rchoose,
     text,
     Rplot,
+    RspellNames: Object.fromEntries(Array.from(names.spells ?? []).map(([id, spell]) => [String(id), spell.name])),
     Rreward,
     Rgrow: buildRgrow(root),
     RnumGrow: buildRnumGrow(root),

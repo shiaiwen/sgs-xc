@@ -611,20 +611,17 @@ function initElectronFrame() {
     }
     if (!webview.__sgsolLoginHelperBound) {
         webview.__sgsolLoginHelperBound = true;
-        webview.addEventListener('did-finish-load', () => {
+        const mountLoginHelper = () => {
             try {
                 if (isLikelyLoginPageUrl(webview.getURL())) execute(webview);
             } catch (error) {
                 console.warn('[xiaochao] 登录页密码助手注入跳过', error);
             }
-        });
-        webview.addEventListener('did-navigate-in-page', (event) => {
-            try {
-                if (isLikelyLoginPageUrl(event.url)) execute(webview);
-            } catch (error) {
-                console.warn('[xiaochao] 登录页密码助手注入跳过', error);
-            }
-        });
+        };
+        // 登录表单可在视频等资源加载完前使用，先尝试挂载，保留完整加载后的补试。
+        webview.addEventListener('dom-ready', mountLoginHelper);
+        webview.addEventListener('did-finish-load', mountLoginHelper);
+        webview.addEventListener('did-navigate-in-page', mountLoginHelper);
     }
     webview.addEventListener("dom-ready", function () {
         developmentWebviewReady = true;
@@ -1385,6 +1382,7 @@ function execute(webview) {
   }
 
   stopPasswordManagerWatch();
+  if (tryMountPasswordManager()) return;
   const watchStartedAt = Date.now();
   const watchUntil = watchStartedAt + 30_000;
   const rafTick = () => {
@@ -1392,7 +1390,6 @@ function execute(webview) {
     if (Date.now() < watchUntil) window.__sgsolPasswordManagerRaf = requestAnimationFrame(rafTick);
   };
   window.__sgsolPasswordManagerRaf = requestAnimationFrame(rafTick);
-  tryMountPasswordManager();
 
   const observeRoots = getAccessibleDocuments().map((doc) => doc.documentElement || doc.body).filter(Boolean);
   if (!observeRoots.length && (document.documentElement || document.body)) {

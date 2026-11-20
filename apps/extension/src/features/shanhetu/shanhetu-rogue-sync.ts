@@ -83,12 +83,30 @@ export function extractRogueMapRuntime(payload: UnknownRecord, previous: RogueMa
     : Array.isArray(gameData.seedItem)
       ? gameData.seedItem
       : previous.seedItem;
+  const itemIds = Array.isArray(gameData.itemId) ? gameData.itemId : previous.itemIds;
+  const eventData = asRecord(chapterData.curEventData) ?? asRecord(chapterData.CurEventData);
+  const loseData = eventData?.loseData ?? eventData?.LoseData;
+  const hasChapterData = allData.chapterData !== undefined || allData.ChapterData !== undefined;
+  const choiceLostResult = hasChapterData
+    ? Array.isArray(loseData) && loseData.length > 0
+      ? {
+          cityId: Number(chapterData.curLocation ?? chapterData.CurLocation),
+          effectId: Number(eventData?.eventId ?? eventData?.EventId),
+          itemIds: loseData.map((entry) => {
+            const item = asRecord(entry);
+            return item?.id ?? item?.Id;
+          }).filter((id): id is string | number => typeof id === 'string' || typeof id === 'number')
+        }
+      : null
+    : previous.choiceLostResult;
   return {
     difficulty: Number.isFinite(difficulty) ? difficulty : previous.difficulty,
     seasonId: Number.isFinite(seasonId) && seasonId > 0 ? seasonId : previous.seasonId,
     accday: Number.isFinite(accday) ? accday : previous.accday,
     passChapter: Number.isFinite(passChapter) ? passChapter : previous.passChapter,
     chapterId: Number.isFinite(chapterId) ? chapterId : previous.chapterId,
-    seedItem
+    seedItem,
+    itemIds,
+    choiceLostResult
   };
 }

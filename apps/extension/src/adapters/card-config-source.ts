@@ -39,6 +39,8 @@ export interface CardConfigSource {
   findSpellIdsByName(name: string): number[];
   /** 自动任务用的任务 id、武将灯系列与物品名；配置未就绪时返回 null。 */
   getAutoTaskData(): AutoTaskConfigData | null;
+  /** 斗地主/单骑无双商店货币四位 ID；配置未就绪时返回 null。 */
+  getDdzShopCurrencyGoodsId(): number | null;
   /** 山河地图透视表（hd_roguelike.sgs）；配置未就绪时返回 null。 */
   getShanhetuMapData(): ShanhetuMapConfigData | null;
   /** 进阶辅助用的南华/许劭表（cha_spellextend.sgs）；配置未就绪时返回 null。 */
@@ -65,6 +67,8 @@ const CONFIG_PATH = '/220/h5_2/res/config/Config_w.sgs';
 const CONFIG_ORIGIN = 'https://web.sanguosha.com';
 const TEST_CONFIG_URL = 'https://test.sanguosha.com/h5/res/config//Config_w.sgs';
 const ROGUE_MAP_CONFIG_FILE = 'hd_roguelike.sgs';
+const DDZ_SHOP_CONFIG_FILE = 'hd_fight_lord_config.sgs';
+const DEFAULT_DDZ_SHOP_CURRENCY = 9020101;
 const POLL_INTERVAL_MS = 1000;
 const DOWNLOAD_TIMEOUT_MS = 20000;
 const DOWNLOAD_ATTEMPTS = 3;
@@ -77,6 +81,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
   let dictionary: CardConfigDictionary | null = null;
   let spellIdsByName = new Map<string, number[]>();
   let autoTaskData: AutoTaskConfigData | null = null;
+  let ddzShopCurrencyGoodsId: number | null = null;
   let shanhetuMapData: ShanhetuMapConfigData | null = null;
   let extraAssistData: ExtraAssistConfigData | null = null;
   let spellExtendRaw: unknown = null;
@@ -106,6 +111,7 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
         dictionary = result.cards;
         spellIdsByName = result.spellIdsByName;
         autoTaskData = result.autoTaskData;
+        ddzShopCurrencyGoodsId = result.ddzShopCurrencyGoodsId;
         if (result.autoTaskData) {
           try {
             globalObject.dispatchEvent(new CustomEvent('xiaochao-autotask-config'));
@@ -140,6 +146,9 @@ export function installCardConfigSource(globalObject: Window = window): CardConf
     },
     getAutoTaskData() {
       return autoTaskData;
+    },
+    getDdzShopCurrencyGoodsId() {
+      return ddzShopCurrencyGoodsId;
     },
     getShanhetuMapData() {
       return shanhetuMapData;
@@ -178,16 +187,18 @@ async function loadCardDictionary(
   spellIdsByName: Map<string, number[]>;
   spellNamesById: Map<number, string>;
   autoTaskData: AutoTaskConfigData | null;
+  ddzShopCurrencyGoodsId: number | null;
   shanhetuMapData: ShanhetuMapConfigData | null;
   extraAssistData: ExtraAssistConfigData | null;
   spellExtendRaw: unknown;
   generalNames: Map<number, string>;
 }> {
   const archive = await codecs.loadZip(await downloadArchive(resolveConfigUrl(globalObject)));
-  const [playCards, spells, autoTaskData, shanhetuRaw, spellExtendRaw, characterRaw] = await Promise.all([
+  const [playCards, spells, autoTaskData, ddzShopRaw, shanhetuRaw, spellExtendRaw, characterRaw] = await Promise.all([
     readConfigFile(archive, codecs, 'sys_playcard.sgs'),
     readConfigFile(archive, codecs, 'cha_spell.sgs'),
     loadAutoTaskData(archive, codecs),
+    readConfigFile(archive, codecs, DDZ_SHOP_CONFIG_FILE).catch(() => null),
     readConfigFile(archive, codecs, ROGUE_MAP_CONFIG_FILE).catch((error) => {
       console.warn(`[xiaochao] 山河配置读取失败: ${ROGUE_MAP_CONFIG_FILE}`, error);
       return null;
@@ -227,11 +238,21 @@ async function loadCardDictionary(
     spellIdsByName: buildSpellIdsByName(spells),
     spellNamesById: buildSpellNamesById(spells),
     autoTaskData,
+    ddzShopCurrencyGoodsId: readDdzShopCurrencyGoodsId(ddzShopRaw),
     shanhetuMapData,
     extraAssistData,
     spellExtendRaw,
     generalNames: buildGeneralNameDict(characterRaw)
   };
+}
+
+/** 参考脚本按 hd_fight_lord_config.par[0] 选择货币，再转为道具四位 ID。 */
+function readDdzShopCurrencyGoodsId(raw: unknown): number {
+  const par = asRecord(asRecord(raw)?.Root)?.par;
+  const currency = asRecord(Array.isArray(par) ? par[0] : null);
+  const rawId = Number(currency?.VicBean) === 1 ? Number(currency?.BeanChange) : DEFAULT_DDZ_SHOP_CURRENCY;
+  const goodsId = Math.floor(rawId / 100);
+  return Number.isSafeInteger(goodsId) && goodsId > 0 ? goodsId : Math.floor(DEFAULT_DDZ_SHOP_CURRENCY / 100);
 }
 
 /** 自动任务配置缺失或损坏不影响卡牌字典。 */

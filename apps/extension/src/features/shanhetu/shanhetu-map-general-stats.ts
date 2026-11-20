@@ -199,3 +199,38 @@ export function formatGeneralName(general: UnknownRecord): string {
   const name = String(general.generalname ?? '');
   return general.start ? `[先手]${name}` : name;
 }
+
+/** 逆向版本只将这组需要特别留意的敌方技能标红。 */
+const WARNING_SPELLS = new Set([
+  '巳蛇', '灵动', '八门', '智迟', '持盈', '卫主', '不死', '刚烈', '觉醒', '悲鸣',
+  '断肠', '节命', '先机', '忘魂', '雅士', '挥泪', '不屈', '封冻', '灵躯', '武魂',
+  '已蛇', '邪徒', '魅步', '雷击', '恢拓', '夺炁', '恩怨', '鸡肋', '反击'
+]);
+
+export function formatGeneralWarningSkills(
+  general: UnknownRecord,
+  config: ShanhetuMapConfigData,
+  runtime: RogueMapRuntime
+): string[] {
+  const seasonId = String(runtime.seasonId || config.RcurSeason || 1);
+  const diff = config.Rdiff[seasonId]?.[String(runtime.difficulty)];
+  const bigDif = Math.max(1, num(diff?.bdif, 1));
+  const fields = ['getspell', 'getspell_ZD', 'getspell_KN', 'getspell_EM', 'getspell_LY'];
+  let ids: string[] = [];
+  const apply = (value: string): void => {
+    for (const id of value.split(';').filter(Boolean)) {
+      if (id.startsWith('_')) ids = ids.filter((existing) => existing !== id.slice(1));
+      else ids.push(id);
+    }
+  };
+  for (const field of fields.slice(0, bigDif)) apply(String(general[field] ?? ''));
+  if (runtime.difficulty > 100) {
+    const field = hardExtraField(runtime.difficulty, 'getspell_JJ');
+    for (const part of String(field ? general[field] ?? '' : '').split(';')) {
+      const [minimum, ...changes] = part.split(',');
+      if (num(minimum) > runtime.difficulty) continue;
+      for (const change of changes) apply(change);
+    }
+  }
+  return ids.map((id) => config.RspellNames?.[id] ?? '').filter((name) => WARNING_SPELLS.has(name));
+}

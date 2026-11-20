@@ -42,7 +42,7 @@ import {
   replaceBlockedEffectUrl,
   type EffectResourceFlags
 } from './effect-resource-filter.ts';
-import { classifyPlayback, kindFromCard, type PlaybackKind } from './effect-playback.ts';
+import { classifyPlayback, kindFromCard, WUZHONG_SKILL_ID, type PlaybackKind } from './effect-playback.ts';
 import { createProbWindowBlock } from './prob-window-block.ts';
 import {
   PROB_WINDOW_INSTALL_INTERVAL_MS,
@@ -66,10 +66,9 @@ import {
 type UnknownRecord = Record<string, unknown>;
 
 /** 锦囊技能动画与特效 ID（原版 y0/y1/y2）。 */
-const JINNANG_SKILL_IDS = new Set([4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 83, 84, 85]);
+const JINNANG_SKILL_IDS = new Set([4, 5, 6, 8, 9, 10, 12, 13, 14, 15, 83, 84, 85]);
 const JINNANG_EFFECT_NAMES = new Set(['tiesuo', 'huogong', 'wuxie']);
 const JINNANG_PLAY_METHODS = [
-  'PlayWuzhongshengyouEffect',
   'PlayTiesuoEffect',
   'PlayHuoGongEffect',
   'PlayWuxieEffect',
@@ -1127,13 +1126,14 @@ export function installBlockEffectsController(
           patcher.wrap(effectPlayer, method, (original) => function (this: unknown, ...args) {
             if (locator.gameScene()) {
               const data = asRecord(args[0]);
-              const kind = data ? classifyPlayback(data.EffectPath, args[1] ?? data.AniName) : '';
+              const kind = data ? classifyPlayback(data.EffectPath, args[1] ?? data.AniName, () => '', data.Sound) : '';
               if (kindOn(kind)) {
                 triggerHit(asRecord(args[2]));
                 return null;
               }
             }
-            if (!isOn('block.jinnangEffect') || !JINNANG_SKILL_IDS.has(Number(args[0]))) {
+            if (!isOn('block.jinnangEffect') || Number(args[0]) === WUZHONG_SKILL_ID
+              || !JINNANG_SKILL_IDS.has(Number(args[0]))) {
               return original.apply(this, args);
             }
             return undefined;
@@ -1146,11 +1146,6 @@ export function installBlockEffectsController(
           });
         }
       }
-
-      patcher.wrap(asRecord(asRecord(locator.gameScene()?.SelfSeatUi)?.seat) && Object.getPrototypeOf(asRecord(locator.gameScene()?.SelfSeatUi)?.seat as object), 'DrawCards', (original) => function (this: unknown, ...args) {
-        if (locator.gameScene() && isOn('block.jinnangEffect') && asRecord(args[5])?.SpellID === 7) args[6] = null;
-        return original.apply(this, args);
-      });
 
       wrapPlaybackMethods(patcher, effectPlayer, EFFECT_PLAYER_ARGS);
       const playerEffectCtrl = asRecord(effectPlayer?.effectCtrl);

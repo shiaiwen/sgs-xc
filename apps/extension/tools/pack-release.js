@@ -91,6 +91,11 @@ function clearPreviousReleaseOutput() {
 
 function resolveVersion() {
   if (process.env.RELEASE_BUILD === '1') {
+    if (process.env.RELEASE_NO_BUMP === '1') {
+      const current = readProjectVersion();
+      console.log(`[pack] 沿用当前版本 v${current}`);
+      return current;
+    }
     const bumped = bumpProjectVersion();
     console.log(`[pack] release 版本号 +1 → v${bumped}`);
     return bumped;

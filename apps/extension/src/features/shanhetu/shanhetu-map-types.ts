@@ -54,6 +54,8 @@ export interface RogueMapRuntime {
   passChapter: number;
   chapterId: number;
   seedItem: unknown[];
+  itemIds?: Array<string | number>;
+  choiceLostResult?: { cityId: number; effectId: number; itemIds: Array<string | number> } | null;
 }
 
 export interface ShanhetuMapConfigData {
@@ -65,6 +67,7 @@ export interface ShanhetuMapConfigData {
   text: Record<string, string>;
   /** 战法、技能、卡牌合并表。 */
   Rplot: Record<string, RoguePlotMeta>;
+  RspellNames?: Record<string, string>;
   /** RewardGroup 与 Other 合并后的奖励表。 */
   Rreward: Record<string, string>;
   /** EnemyGrowth：`moon_diffnum` */

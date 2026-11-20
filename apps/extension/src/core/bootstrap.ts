@@ -75,6 +75,7 @@ import {
 import { installSkinChangeController } from '../features/skin-background/skin-change-controller';
 import { installSkinPaperController } from '../features/skin-background/skin-paper-controller';
 import { installAutoTaskController } from '../features/auto-task';
+import { installDdzShopAutoExchange } from '../features/ddz-shop/ddz-shop-auto-exchange';
 import { installShanhetuController } from '../features/shanhetu';
 import { createPeixiuRouteStore, installExtraAssistController } from '../features/extra-assist';
 import { installAutoHgController } from '../features/auto-hg';
@@ -401,6 +402,7 @@ function startXiaochaoCore(
     };
   }
   lifecycle.register(autoTask.dispose);
+  lifecycle.register(installDdzShopAutoExchange({ cardConfigSource }));
   lifecycle.register(installGiftCodeController({ configStore }));
   lifecycle.register(installRuntimeSearchController());
   const extraAssist = installExtraAssistController(configStore, {

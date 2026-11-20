@@ -14,10 +14,42 @@ import {
 } from './shanhetu-map-types.ts';
 import {
   formatGeneralName,
+  formatGeneralWarningSkills,
   formatGeneralStatsLine
 } from './shanhetu-map-general-stats.ts';
 
 type UnknownRecord = Record<string, unknown>;
+
+function lostItemNames(
+  config: ShanhetuMapConfigData,
+  lost: string,
+  runtime: RogueMapRuntime,
+  cityId: string | number | undefined,
+  choiceId: string | number
+): string {
+  const match = /^失去 (普通|稀有|史诗|传说)(战法|技能|手牌|装备)$/.exec(lost);
+  if (!match) return '';
+  const actual = runtime.choiceLostResult;
+  if (actual && actual.cityId === Number(cityId) && actual.effectId === Number(choiceId)) {
+    return actual.itemIds.map((id) => config.Rplot[String(id)]?.name ?? '').filter(Boolean).join('、');
+  }
+  const types: Record<string, number[]> = { 战法: [2], 技能: [3], 手牌: [4], 装备: [5, 6, 7] };
+  const level: Record<string, number> = { 普通: 1, 稀有: 2, 史诗: 3, 传说: 4 };
+  for (const id of runtime.itemIds ?? []) {
+    const item = config.Rplot[String(id)];
+    if (item && types[match[2]].includes(Number(item.type)) && Number(item.level) === level[match[1]]) {
+      return item.name || '';
+    }
+  }
+  return '';
+}
+
+function generalLine(general: UnknownRecord, config: ShanhetuMapConfigData, runtime: RogueMapRuntime): RoguePanelLine | null {
+  const name = formatGeneralName(general);
+  if (!name) return null;
+  const warningSkills = formatGeneralWarningSkills(general, config, runtime);
+  return { kind: 'general', text: warningSkills.length ? `${name} ${warningSkills.join(' ')}` : name, warning: warningSkills.length > 0 };
+}
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
@@ -127,8 +159,8 @@ export function buildEventLines(
         for (const entry of choice.generals) {
           const general = asRecord(entry);
           if (!general) continue;
-          const name = formatGeneralName(general);
-          if (name) lines.push({ kind: 'general', text: name });
+          const heading = generalLine(general, config, runtime);
+          if (heading) lines.push(heading);
           const stats = formatGeneralStatsLine(
             general,
             config,
@@ -140,7 +172,11 @@ export function buildEventLines(
         }
       }
       const chunk: string[] = [];
-      if (!choice.generals?.length && choice.lost) chunk.push(String(choice.lost));
+      if (!choice.generals?.length && choice.lost) {
+        const lost = String(choice.lost);
+        const name = lostItemNames(config, lost, runtime, cityId, choiceId);
+        chunk.push(name ? `${lost} ${name}` : lost);
+      }
       if (choice.get) chunk.push(String(choice.get));
       if (chunk.length) lines.push({ kind: 'reward', text: chunk.join(ROGUE_LINE_BREAK) });
     }
@@ -154,8 +190,8 @@ export function buildEventLines(
   for (const entry of generals) {
     const general = asRecord(entry);
     if (!general) continue;
-    const name = formatGeneralName(general);
-    if (name) lines.push({ kind: 'general', text: name });
+    const heading = generalLine(general, config, runtime);
+    if (heading) lines.push(heading);
     const stats = formatGeneralStatsLine(general, config, runtime, fight as UnknownRecord, cityId);
     if (stats) lines.push({ kind: 'stats', text: stats });
   }

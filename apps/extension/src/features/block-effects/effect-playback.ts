@@ -4,6 +4,9 @@
 
 export type PlaybackKind = 'sha' | 'shan' | 'heal' | 'trick' | 'equip' | 'skill';
 
+/** 无中生有的技能号；其特效负责推进摸牌和录像播放。 */
+export const WUZHONG_SKILL_ID = 7;
+
 const PRESERVE_ANIMATION = /^(?:tiesuo0[1-5](?:Back|[HLB])?|jiu(?:0[12]|2)?|FX_PaiJu_card_fengyao)$/;
 const PRESERVE_PATH = /^(?:EFF_jiu|EFF_hejiu)$/;
 const TRICK_ANIMATIONS = new Set([
@@ -43,6 +46,7 @@ export interface PlaybackCard {
 export function kindFromCard(card: PlaybackCard | Record<string, unknown> | null | undefined): PlaybackKind | '' {
   if (!card) return '';
   const record = card as PlaybackCard;
+  if (Number(record.ID ?? record.SkillId) === WUZHONG_SKILL_ID) return '';
   if (record.IsEquip) return 'equip';
   if (record.IsJinNang) return 'trick';
   if (record.IsSkill || record.IsGeneral) return 'skill';
@@ -65,6 +69,8 @@ export function classifyPlayback(
 ): PlaybackKind | '' {
   const path = String(effectPath || '');
   const name = String(animationName || '');
+  const effectSound = String(sound || '');
+  if (/wuzhong(?:shengyou)?/i.test(`${path} ${name}`) || /^3d_7_/i.test(effectSound)) return '';
   if (PRESERVE_ANIMATION.test(name) || PRESERVE_PATH.test(path) || path === 'SkillEffect/FX_PaiJu_card_fengyao') return '';
   if (path === 'Plot_tiesuolianhuan' && name !== '' && name !== 'play') return '';
   if (path.includes('EF_Basic_Sha_') || path.startsWith('EF_Basic_Sha_')) return 'sha';
