@@ -8,7 +8,13 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
+import {
+  SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS,
+  SHANHETU_SHOP_SYNC_MS
+} from '../../const/poll-intervals.ts';
+import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
+import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { RoguePlotMeta } from './shanhetu-map-types.ts';
 
@@ -79,6 +85,47 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/** 当前游戏的 ShopData 缓存将协议 itemId 转成按类别分组的 goodList。 */
+function shopItemIds(shopData: UnknownRecord): unknown[] {
+  const direct = asArray(shopData.itemId ?? shopData.ItemId);
+  if (direct.length) return direct;
+  return asArray(shopData.goodList ?? shopData.GoodList)
+    .flatMap((group) => asArray(group))
+    .map((item) => asRecord(item)?.goodId ?? asRecord(item)?.GoodId)
+    .filter((id) => id !== undefined && id !== null);
+}
+
+function shopItemIdsFromWindow(win: UnknownRecord): unknown[] {
+  const nested = asRecord(win.shopData) ?? asRecord(win.ShopData);
+  const fromNested = nested ? shopItemIds(nested) : [];
+  if (fromNested.length) return fromNested;
+  const ids: unknown[] = [];
+  for (const key of ['ShowItemList', 'showItemList', 'goodList', 'GoodList', 'itemList', 'ItemList']) {
+    for (const item of asArray(win[key])) {
+      const record = asRecord(item);
+      const id = record?.goodId ?? record?.GoodId ?? record?.plotId ?? record?.PlotId
+        ?? record?.id ?? record?.ID;
+      if (id !== undefined && id !== null && id !== '') ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function mergeUniqueItemIds(sources: unknown[][]): unknown[] {
+  const seen = new Set<string>();
+  const result: unknown[] = [];
+  for (const list of sources) {
+    for (const rawId of list) {
+      if (rawId == null || rawId === '') continue;
+      const key = String(rawId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(rawId);
+    }
+  }
+  return result;
+}
+
 import { readRogueLikeAllData, resolveRogueLikeSyncBody } from './shanhetu-rogue-sync.ts';
 
 export { resolveRogueLikeSyncBody } from './shanhetu-rogue-sync.ts';
@@ -145,7 +192,15 @@ export function buildShanhetuShopPreviewItems(
     if (rawId == null || rawId === '') continue;
     const id = String(rawId);
     const meta = table[id];
-    if (!meta) continue;
+    if (!meta) {
+      goods.push({
+        id,
+        label: `商品 ${id}`,
+        title: '配置表暂无名称，同步后会补全',
+        level: 0
+      });
+      continue;
+    }
     const moneyText = meta.money != null && String(meta.money) !== ''
       ? ` ${String(meta.money)}铜`
       : '';
@@ -178,9 +233,14 @@ export function installShanhetuShopController(
   let disposed = false;
   /** 同步包里原始 bShow；为 false 时购买提示改为“月份未到”。 */
   let originalShopVisible: boolean | null = null;
-  /** 避免重复发送 RogueLikeDataReq。 */
-  let shopDataRequested = false;
+  let lastShopDataRequestAt = 0;
+  let requestedInCurrentScene = false;
+  let wasInShanheScene = false;
+  let stopShopSync: (() => void) | null = null;
+  let openWindowDispatcher: UnknownRecord | null = null;
+  let openWindowHandler: ((event: unknown) => void) | null = null;
   let previewItems: ShanhetuShopPreviewItem[] = [];
+  let syncedShopItemIds: unknown[] = [];
   /**
    * 同步包先于 Rplot 到达时暂存 itemId；Rplot 还是空对象时
    * 为 0 时解析不出商品——我们不展示占位方案，因此等配置就绪后再刷一次。
@@ -240,19 +300,58 @@ export function installShanhetuShopController(
     });
   }
 
-  function refreshPreviewFromShopData(shopData: UnknownRecord): void {
-    const itemIds = shopData.itemId ?? shopData.ItemId;
-    const ids = asArray(itemIds);
+  function readShopWindow(): UnknownRecord | null {
+    return asRecord(locator.window(ROGUE_SHOP_WINDOW))
+      ?? asRecord(locator.findWindows(ROGUE_SHOP_WINDOW)[0]);
+  }
+
+  function gatherShopItemIds(): unknown[] {
+    const managerData = readShopDataFromManager();
+    const sources: unknown[][] = [syncedShopItemIds];
+    if (managerData) sources.push(shopItemIds(managerData));
+    const win = readShopWindow();
+    if (win) sources.push(shopItemIdsFromWindow(win));
+    return mergeUniqueItemIds(sources);
+  }
+
+  function refreshPreviewFromItemIds(ids: unknown[]): void {
     const rplot = cardConfigSource?.getShanhetuMapData()?.Rplot ?? null;
-    // 有商品 id 但 Rplot 尚未加载：空列表不推占位，等配置就绪后再解析。
     if (ids.length && !isRplotReady(rplot)) {
       pendingShopItemIds = ids;
-      if (!previewItems.length) publishPreview([]);
       ensureRplotThenRefresh();
+      if (!previewItems.length) {
+        publishPreview(buildShanhetuShopPreviewItems(ids, {}));
+      }
       return;
     }
     pendingShopItemIds = null;
-    publishPreview(buildShanhetuShopPreviewItems(itemIds, rplot));
+    publishPreview(buildShanhetuShopPreviewItems(ids, rplot));
+  }
+
+  function refreshPreviewFromShopData(shopData: UnknownRecord): void {
+    refreshPreviewFromItemIds(shopItemIds(shopData));
+  }
+
+  /** 从 manager、已打开的集市窗汇总商品，并视情况请求同步。 */
+  function syncShopPreviewFromSources(allowRequest = false): void {
+    if (disposed) return;
+    if (!isShanHeTuMode(locator, globalObject)) {
+      if (wasInShanheScene) requestedInCurrentScene = false;
+      wasInShanheScene = false;
+      return;
+    }
+    wasInShanheScene = true;
+    const managerData = readShopDataFromManager();
+    if (managerData) forceShopVisible(managerData, originalShopVisible === null);
+    const ids = gatherShopItemIds();
+    if (ids.length) {
+      refreshPreviewFromItemIds(ids);
+      return;
+    }
+    // 参考脚本缺集市数据时请求一次完整山河同步；进入总地图也执行一次。
+    if ((allowRequest || !requestedInCurrentScene) && requestShopData()) {
+      requestedInCurrentScene = true;
+    }
   }
 
   /** 强制可见，并记下协议里的原始 bShow。 */
@@ -274,38 +373,64 @@ export function installShanhetuShopController(
 
   /** 缺 shopData 时向 RogueLikePveManager 要一次完整同步。 */
   function requestShopData(mark = ROGUE_SHOP_DATA_REQ_MARK): boolean {
-    if (shopDataRequested) {
-      console.warn('[山河图] 集市数据已请求过，跳过重复请求, dm=', mark);
-      return true;
-    }
+    const now = Date.now();
+    if (now - lastShopDataRequestAt < SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS) return false;
     const manager = asRecord(locator.manager('RogueLikePveManager'));
     const method = manager?.RogueLikeDataReq;
     if (typeof method !== 'function') return false;
     try {
-      shopDataRequested = true;
+      lastShopDataRequestAt = now;
       method.call(manager, mark);
       return true;
     } catch (error) {
-      shopDataRequested = false;
       console.warn('[山河图] 请求集市数据失败', error);
       return false;
     }
   }
 
-  function resetShopDataRequest(): void {
-    shopDataRequested = false;
+  function resolveOpenWindowName(event: unknown): string {
+    if (typeof event === 'string') return event;
+    const record = asRecord(event);
+    if (typeof record?.WindowName === 'string') return record.WindowName;
+    if (typeof record?.windowName === 'string') return record.windowName;
+    return '';
+  }
+
+  function unbindOpenWindowListener(): void {
+    if (!openWindowDispatcher || !openWindowHandler) return;
+    try {
+      (openWindowDispatcher.off as (...args: unknown[]) => void)
+        .call(openWindowDispatcher, OPEN_WINDOW_EVENT, null, openWindowHandler);
+    } catch {
+      // 分发器已销毁时忽略。
+    }
+    openWindowDispatcher = null;
+    openWindowHandler = null;
+  }
+
+  function ensureOpenWindowListener(): void {
+    const dispatcher = locator.dispatcher();
+    if (!dispatcher || typeof dispatcher.on !== 'function') return;
+    if (openWindowDispatcher === dispatcher && openWindowHandler) return;
+    unbindOpenWindowListener();
+    openWindowHandler = (event: unknown) => {
+      const windowName = resolveOpenWindowName(event);
+      if (windowName !== ROGUE_SHOP_WINDOW) return;
+      later(() => syncShopPreviewFromSources(), 200);
+      later(() => syncShopPreviewFromSources(), 800);
+    };
+    try {
+      (dispatcher.on as (...args: unknown[]) => void)
+        .call(dispatcher, OPEN_WINDOW_EVENT, null, openWindowHandler);
+      openWindowDispatcher = dispatcher;
+    } catch {
+      unbindOpenWindowListener();
+    }
   }
 
   /** 打开集市时启用透视：强制当前缓存可见并刷新预览。 */
   function enablePerspectiveFromManager(): void {
-    const shopData = readShopDataFromManager();
-    if (!shopData) {
-      requestShopData();
-      return;
-    }
-    forceShopVisible(shopData, originalShopVisible === null);
-    const ids = asArray(shopData.itemId ?? shopData.ItemId);
-    if (ids.length) refreshPreviewFromShopData(shopData);
+    syncShopPreviewFromSources(true);
   }
 
   function openShop(): boolean {
@@ -345,21 +470,28 @@ export function installShanhetuShopController(
 
     // dataMark bit4 且无 shopData 时发 RogueLikeDataReq 后返回。
     if (shopFlag && !shopData) {
-      requestShopData();
+      if (!requestedInCurrentScene && requestShopData()) requestedInCurrentScene = true;
       return;
     }
 
     if (!shopData) return;
+    requestedInCurrentScene = true;
+
+    const syncedIds = shopItemIds(shopData);
+    if (syncedIds.length) syncedShopItemIds = syncedIds;
 
     // bit4 时记下原始 bShow 并强制可见，同时复位数据请求锁。
     if (shopFlag) {
-      resetShopDataRequest();
       forceShopVisible(shopData, true);
     }
 
-    // 只要有 shopData 就刷新透视列表，不依赖 bit4。
-    refreshPreviewFromShopData(shopData);
+    refreshPreviewFromItemIds(syncedShopItemIds.length ? syncedShopItemIds : syncedIds);
+    later(() => syncShopPreviewFromSources(), 0);
   }
+
+  ensureOpenWindowListener();
+  stopShopSync = everyInterval('山河集市透视', SHANHETU_SHOP_SYNC_MS, () => syncShopPreviewFromSources());
+  syncShopPreviewFromSources();
 
   // 购买成功提示在集市提前显示且原 bShow=false 时改写文案。
   void poll(() => {
@@ -388,9 +520,13 @@ export function installShanhetuShopController(
 
   return {
     openShop,
-    getPreview: () => previewItems,
+    getPreview: () => {
+      syncShopPreviewFromSources();
+      return previewItems;
+    },
     subscribePreview(listener) {
       previewListeners.add(listener);
+      syncShopPreviewFromSources();
       try {
         listener(previewItems);
       } catch {
@@ -403,15 +539,20 @@ export function installShanhetuShopController(
     filterMessage,
     dispose() {
       disposed = true;
+      stopShopSync?.();
+      stopShopSync = null;
+      unbindOpenWindowListener();
       timers.forEach((timer) => clearTimeout(timer));
       timers.clear();
       previewListeners.clear();
       patcher.restoreAll();
       originalShopVisible = null;
-      shopDataRequested = false;
+      lastShopDataRequestAt = 0;
+      requestedInCurrentScene = false;
       pendingShopItemIds = null;
       rplotWait = null;
       previewItems = [];
+      syncedShopItemIds = [];
     }
   };
 }

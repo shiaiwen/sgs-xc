@@ -3,7 +3,7 @@
  * 本地小抄脚本注入，以及登录页密码管理助手。
  *
  * 主要块：
- * 1. 开发态热重载（源码变更 → 合并 reload webview）
+ * 1. 开发态构建后清脚本缓存，玩家主动刷新时再注入新版
  * 2. 运行时全局兼容层（remote.getGlobal / getPath 的 IPC 降级）
  * 3. 读取并注入本地小抄脚本（userData 或主进程 read-local-script）
  * 4. 壳层 UI：最大化/最小化/关闭、全屏、更新进度、大区切换
@@ -26,80 +26,15 @@ let runtimeGlobalsLoaded = false;
 let localScriptResponseCache = null;
 /** 已转义可 executeJavaScript 的注入代码缓存（与原文成对）。 */
 let localScriptInjectCache = null;
-/** 开发态：一次只允许一个 webview.reload 在途，其余变更合并排队。 */
-let developmentReloadInProgress = false;
-let developmentReloadQueued = false;
 let developmentWebviewReady = false;
 
-// ---------- 开发态：源码变更 → 清缓存并重载游戏 webview ----------
+// 构建和登录可能同时发生；刷新游戏页会使刚拿到的登录凭证失效。
+// 只清注入缓存，下一次主动打开/刷新游戏页时使用新脚本。
 ipcRenderer.on('xiaochao-dev-script-changed', () => {
     localScriptResponseCache = null;
     localScriptInjectCache = null;
-    requestDevelopmentWebviewReload();
+    console.info('[xiaochao-dev] source changed; refresh the game manually to apply it');
 });
-
-/** WebView 挂进页面并完成一次 dom-ready 之后，reload 才可用。 */
-function whenDevelopmentWebviewReady(webview) {
-    if (developmentWebviewReady || webview.__xcDevReloadReadyBound) return;
-    webview.__xcDevReloadReadyBound = true;
-    webview.addEventListener('dom-ready', () => {
-        webview.__xcDevReloadReadyBound = false;
-        developmentWebviewReady = true;
-        // 第一次就绪时 loadScript 会读取刚清掉缓存的脚本，这时 reload 会把登录页刷成空白。
-        developmentReloadQueued = false;
-    }, { once: true });
-}
-
-function webviewHasLoadedPage(webview) {
-    if (!developmentWebviewReady) return false;
-    try {
-        return /^https?:/i.test(String(webview.getURL() || ''));
-    } catch {
-        return false;
-    }
-}
-
-/**
- * 构建器可能在一次页面加载期间连续产出多个变更。只允许一个 reload 在途，
- * 其余变更合并为下一次 reload，避免 Electron 为同一 WebContents 堆积加载监听器。
- * 元素还没挂上、或第一次 dom-ready 还没到时只排队，不调用 reload。
- */
-function requestDevelopmentWebviewReload() {
-    const webview = document.getElementById('wb');
-    if (!webview || typeof webview.reload !== 'function' || !webview.isConnected) {
-        developmentReloadQueued = true;
-        return;
-    }
-    if (!developmentWebviewReady || !webviewHasLoadedPage(webview)) {
-        developmentReloadQueued = true;
-        whenDevelopmentWebviewReady(webview);
-        return;
-    }
-    if (developmentReloadInProgress) {
-        developmentReloadQueued = true;
-        return;
-    }
-
-    developmentReloadInProgress = true;
-    const handleReloadFinished = () => {
-        developmentReloadInProgress = false;
-        if (!developmentReloadQueued) return;
-        developmentReloadQueued = false;
-        requestDevelopmentWebviewReload();
-    };
-    webview.addEventListener('did-stop-loading', handleReloadFinished, { once: true });
-    console.info('[xiaochao-dev] source changed, reloading game webview');
-    try {
-        webview.reload();
-    } catch (error) {
-        developmentReloadInProgress = false;
-        developmentWebviewReady = false;
-        developmentReloadQueued = true;
-        webview.__xcDevReloadReadyBound = false;
-        whenDevelopmentWebviewReady(webview);
-        console.warn('[xiaochao-dev] webview 尚未就绪，已推迟重载', error);
-    }
-}
 
 /**
  * 在游戏页内安装 postMessage 桥：页面请求打开小抄原生报告窗口时，
@@ -726,7 +661,6 @@ function initElectronFrame() {
     }
     webview.addEventListener("dom-ready", function () {
         developmentWebviewReady = true;
-        developmentReloadQueued = false;
         installReportWindowPageBridge(webview);
         loadScript(webview);
     })

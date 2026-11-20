@@ -57,6 +57,11 @@ import {
   HALL_TOOLBAR_WAIT_INTERVAL_MS,
   HALL_TOOLBAR_WAIT_RETRIES
 } from '../../const/hall-toolbar-red-dot.ts';
+import { isMvpBlockWindowName, MVP_BLOCK_WINDOW_NAMES } from '../../const/block-mvp-window.ts';
+import {
+  createMvpWindowBlock,
+  scheduleMvpPrototypePatchInstall
+} from './mvp-window-block.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -96,6 +101,10 @@ const SHOWN_WINDOW_SWITCHES: Record<string, BlockSettingKey> = {
   OldbackOneClickDrawAwdWin: 'block.packageWindow',
   SelectSkinWindow: 'block.packageWindow'
 };
+
+for (const mvpWindowName of MVP_BLOCK_WINDOW_NAMES) {
+  SHOWN_WINDOW_SWITCHES[mvpWindowName] = 'block.mvpWindow';
+}
 
 for (const adWindowName of LOBBY_AD_PUSH_WINDOW_NAMES) {
   SHOWN_WINDOW_SWITCHES[adWindowName] = 'block.adWindow';
@@ -145,12 +154,37 @@ export function installBlockEffectsController(
   const seatEffectControllers = new Set<UnknownRecord>();
   const seatNamePatcher = createMethodPatcher();
   let seatPatchScene: UnknownRecord | null = null;
+  let manualRecordView = false;
   let disposed = false;
   let hallToolbarWaitToken = 0;
 
+  const mvpWindowBlock = createMvpWindowBlock({
+    locator,
+    patcher,
+    globalObject,
+    enabled: () => isOn('block.mvpWindow'),
+    isDisposed: () => disposed,
+    later,
+    poll,
+    consumeManualRecordView: () => {
+      if (!manualRecordView) return false;
+      manualRecordView = false;
+      return true;
+    },
+    onOpenWindow: (windowName) => mvpWindowBlock.dismissSettlementWindow(windowName)
+  });
+  cleanups.push(() => mvpWindowBlock.dispose());
+
   if (options.gameEvents) {
     unsubscribes.push(options.gameEvents.subscribe((event) => {
-      if (event.type === 'game-ended') skillEffects.clear();
+      if (event.type === 'game-ended') {
+        skillEffects.clear();
+        if (isOn('block.mvpWindow')) {
+          for (const name of MVP_BLOCK_WINDOW_NAMES) {
+            mvpWindowBlock.dismissSettlementWindow(name);
+          }
+        }
+      }
       if (isOn('block.noticeWindow') && (event.type === 'game-started' || event.type === 'game-reconnected')) {
         applyNoticeBlockState();
       }
@@ -416,10 +450,18 @@ export function installBlockEffectsController(
     return hidden;
   }
 
+  function resolveOpenWindowName(event: unknown): string {
+    if (typeof event === 'string') return event;
+    const record = asRecord(event);
+    if (typeof record?.WindowName === 'string') return record.WindowName;
+    if (typeof record?.windowName === 'string') return record.windowName;
+    return '';
+  }
+
   async function handleShownWindow(name: string): Promise<void> {
     const key = SHOWN_WINDOW_SWITCHES[name];
     if (!key || !isOn(key)) return;
-    const win = await poll(() => locator.window(name));
+    const win = await poll(() => locator.window(name) ?? locator.findWindows(name)[0]);
     if (!win) return;
     await poll(() => !win.isShowWait);
     if (win.destroyed || disposed) return;
@@ -430,12 +472,6 @@ export function installBlockEffectsController(
     switch (name) {
       case 'VersionNoticeWindow':
         callMethod(win, 'Close');
-        break;
-      case 'GameMvpWindow':
-        later(() => {
-          if (win.destroyed || disposed) return;
-          callMethod(win, 'laterClose');
-        }, 400);
         break;
       case 'GeneralOpenResultWindow':
       case 'SkinOpenResultWindowNew':
@@ -449,23 +485,23 @@ export function installBlockEffectsController(
   }
 
   async function installWindowBlocks(): Promise<void> {
-    patcher.wrap(locator.classPrototype('GameMvpWindow'), 'updateBg', (original) => function (this: UnknownRecord, ...args) {
-      if (isOn('block.mvpWindow') && typeof this.SetSkin === 'function') return this.SetSkin(args[0]);
-      return original.apply(this, args);
-    });
+    scheduleMvpPrototypePatchInstall(mvpWindowBlock, poll, later, () => disposed);
+    mvpWindowBlock.ensureOpenWindowListener();
+    mvpWindowBlock.ensureShowWindowHook();
 
     void poll(() => probWindowBlock.install() === 0, PROB_WINDOW_INSTALL_RETRIES, PROB_WINDOW_INSTALL_INTERVAL_MS);
 
     const dispatcher = await poll(() => locator.dispatcher());
     if (disposed || typeof dispatcher?.on !== 'function') return;
-    // 打开窗口的方法会被多个功能各自包装，后包的会顶掉先包的，所以这里只监听开窗事件。
+
     const onOpenWindow = (event: unknown) => {
-      const windowName = asRecord(event)?.WindowName;
-      if (typeof windowName !== 'string') return;
+      const windowName = resolveOpenWindowName(event);
+      if (!windowName) return;
       if (probWindowBlock.isProbWindow(windowName)) probWindowBlock.install();
       if (isOn('block.adWindow') && isLobbyAdPushWindowName(windowName)) {
         later(() => closeBySwitch('block.adWindow'));
       }
+      if (isMvpBlockWindowName(windowName)) return;
       if (SHOWN_WINDOW_SWITCHES[windowName]) later(() => void handleShownWindow(windowName));
     };
     try {
@@ -1374,6 +1410,14 @@ export function installBlockEffectsController(
     });
   }
 
+  function installRecordViewTracker(): void {
+    const scene = locator.scene();
+    patcher.wrap(scene ? Object.getPrototypeOf(scene) : null, 'showRecordWindow', (original) => function (this: unknown, ...args) {
+      manualRecordView = Boolean(args[0]);
+      return original.apply(this, args);
+    });
+  }
+
   // ---------- 场景切换 ----------
 
   async function installSceneSwitchHook(): Promise<void> {
@@ -1387,8 +1431,12 @@ export function installBlockEffectsController(
           patchSceneSeats(locator.gameScene());
           armHallToolbarRedDots();
           if (!isBlockUiReady()) return;
+          if (sceneName === 'TableScene') installRecordViewTracker();
           installSceneEffectPatches();
           refreshMarqueeBlock();
+          mvpWindowBlock.ensureOpenWindowListener();
+          mvpWindowBlock.ensureShowWindowHook();
+          mvpWindowBlock.installPrototypePatches();
         });
       }
       return result;

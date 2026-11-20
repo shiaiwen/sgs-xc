@@ -72,6 +72,7 @@ export interface XiaochaoConfig {
   'autoTask.skipFreeTreasureFlip': boolean;
   'shanhetu.mapEnabled': boolean;
   'shanhetu.hideStory': boolean;
+  'shanhetu.autoCancelWuxie': boolean;
   'assist.extraEnabled': boolean;
   'assist.sunquanEnabled': boolean;
   'assist.peixiuEnabled': boolean;
@@ -139,7 +140,7 @@ export const CONFIG_SCHEMA: {
     previousStorageKey: 'XC::mainPanelActiveTab',
     parse: (value) => typeof value === 'string' ? PANEL_TAB_LABELS[value] : undefined
   },
-  'panel.collapsed': booleanDefinition(false, 'XC::mainPanelCollapsed'),
+  'panel.collapsed': booleanDefinition(true, 'XC::mainPanelCollapsed'),
   'panel.dockedRight': booleanDefinition(true, 'XC::mainPanelDockedRight'),
   // null = 未自由拖拽，走默认 dock 布局
   'panel.position': {
@@ -252,6 +253,7 @@ export const CONFIG_SCHEMA: {
   // —— 山河图（旧键名 rogue.*，存储层会改名迁移）——
   'shanhetu.mapEnabled': booleanDefinition(true, 'ROGUE_CITY_SWITCH'),
   'shanhetu.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
+  'shanhetu.autoCancelWuxie': booleanDefinition(false),
   // —— 技能 / 挂机辅助 ——
   'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),
   'assist.sunquanEnabled': booleanDefinition(true),

@@ -856,7 +856,7 @@ function readLocalScriptCached() {
     }
 }
 
-/** 监视开发产物 xiaochao.js，变更后清缓存并通知渲染进程重载。 */
+/** 监视开发产物 xiaochao.js，变更后清缓存；游戏页由玩家主动刷新。 */
 function startDevelopmentScriptWatcher() {
     if (developmentScriptWatcher) return;
     if (!fs.existsSync(developmentScriptPath)) return;
@@ -866,9 +866,6 @@ function startDevelopmentScriptWatcher() {
             clearTimeout(developmentReloadTimer);
             developmentReloadTimer = setTimeout(() => {
                 clearLocalScriptCache();
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('xiaochao-dev-script-changed');
-                }
                 logMessage(`development script changed (${eventType})`);
             }, 300);
         });

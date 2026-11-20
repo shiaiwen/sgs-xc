@@ -793,6 +793,19 @@ export class CardZone {
     if (!isCardGraphReady()) return cards;
     const moved = (moveSlots(cards, this.zoneID) as CardSlot[]).slice();
     const incoming = moved.filter((slot, index) => moved.indexOf(slot) === index);
+    if (this.zoneID === DRAW_PILE_ZONE_ID) {
+      const discard = getMutableZoneCards(DISCARD_ZONE_ID);
+      const incomingIds = new Set(incoming.map((slot) => Number(slot.id)).filter((id) => id > 0));
+      let changed = false;
+      for (let index = discard.length - 1; index >= 0; index -= 1) {
+        const old = discard[index];
+        if (!incomingIds.has(Number(old.id))) continue;
+        discard.splice(index, 1);
+        if (!incoming.includes(old)) old.key = 0;
+        changed = true;
+      }
+      if (changed) drawZone(DISCARD_ZONE_ID);
+    }
     for (const slot of incoming) {
       const cardId = Number(slot.id);
       if (!(cardId > 0)) continue;

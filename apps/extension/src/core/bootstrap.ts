@@ -401,7 +401,7 @@ function startXiaochaoCore(
     };
   }
   lifecycle.register(autoTask.dispose);
-  lifecycle.register(installGiftCodeController());
+  lifecycle.register(installGiftCodeController({ configStore }));
   lifecycle.register(installRuntimeSearchController());
   const extraAssist = installExtraAssistController(configStore, {
     getExtraAssistData: () => cardConfigSource.getExtraAssistData(),

@@ -25,6 +25,8 @@ import {
 } from './shanhetu-story-controller.ts';
 import { installShanhetuZhanfaCount } from './shanhetu-zhanfa-controller.ts';
 import { installShanhetuChangeGeneral } from './shanhetu-change-general-controller.ts';
+// 功能尚未开发完成，暂不接入自动取消无懈。
+// import { installShanhetuWuxieController } from './shanhetu-wuxie-controller.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -75,6 +77,11 @@ export function installShanhetuController(
       names
     })
     : null;
+  // const stopAutoCancelWuxie = installShanhetuWuxieController(configStore, {
+  //   globalObject,
+  //   locator,
+  //   gameEvents: options.gameEvents
+  // });
   const stopZhanfa = options.gameEvents
     ? installShanhetuZhanfaCount({
       locator,
@@ -93,6 +100,7 @@ export function installShanhetuController(
       changeGeneral?.filterMessage(payload, className);
     },
     dispose() {
+      // stopAutoCancelWuxie();
       stopZhanfa();
       changeGeneral?.dispose();
       map.dispose();

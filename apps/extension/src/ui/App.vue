@@ -157,14 +157,12 @@ onMounted(() => {
   expandedHeight = `${initialHeight}px`;
   expandedWidth = props.layout.width;
   if (isDockedRight.value) {
-    // isDockPending 初始即为 true（默认 dockedRight）；applyRightDock → reveal 就绪后揭开
-    applyRightDock(shell);
+    applyRightDock(shell, { respectCollapsed: true });
     requestAnimationFrame(() => syncDockedGameLayout(shell));
     for (const delay of [320, 1200, 3000]) {
       window.setTimeout(() => syncDockedGameLayout(shell), delay);
     }
   } else restoreSavedPosition(shell);
-  // 仅非停靠时保留折叠胶囊；停靠路径已在 applyRightDock 里强制展开
   if (panel.isCollapsed.value && !isDockedRight.value) applyCollapsedDimensions(shell);
   window.addEventListener('resize', keepPanelInsideViewport);
 });
@@ -412,8 +410,35 @@ function expandCollapsedForDock(shell: HTMLElement): void {
   persistCollapsedState(false);
 }
 
-function applyRightDock(shell: HTMLElement): void {
-  // 拖到右边固定：折叠态先展开，再铺满侧栏（停靠=展开侧栏，不保留胶囊贴边）。
+function applyDockedCollapsedLayout(shell: HTMLElement): void {
+  isDockedRight.value = true;
+  props.configStore.set('panel.dockedRight', true);
+  applyCollapsedDimensions(shell);
+  setOwnedPanelLayout(shell, {
+    left: 'auto',
+    right: '0px',
+    top: '8px',
+    height: COLLAPSED_PANEL_HEIGHT,
+    minHeight: COLLAPSED_PANEL_HEIGHT,
+    maxHeight: COLLAPSED_PANEL_HEIGHT,
+    width: COLLAPSED_PANEL_WIDTH,
+    minWidth: COLLAPSED_PANEL_WIDTH,
+    maxWidth: COLLAPSED_PANEL_WIDTH
+  });
+  isDockPending.value = false;
+  syncDockedGameLayout(shell);
+  revealDockedPanelWhenGameReady(shell);
+}
+
+function applyRightDock(
+  shell: HTMLElement,
+  options: { respectCollapsed?: boolean } = {}
+): void {
+  if (options.respectCollapsed && panel.isCollapsed.value) {
+    applyDockedCollapsedLayout(shell);
+    return;
+  }
+  // 手动拖到右边时仍展开侧栏；不把折叠胶囊拉成整栏高度。
   expandCollapsedForDock(shell);
   isDockedRight.value = true;
   setOwnedPanelLayout(shell, {
@@ -427,10 +452,8 @@ function applyRightDock(shell: HTMLElement): void {
     minHeight: undefined,
     maxHeight: undefined
   });
-  // 先写入展开宽度再 reserve，避免折叠过渡帧把游戏只让出小条的宽度。
   reserveGameAreaForDockedPanel(resolveDockReserveWidth(shell));
   props.configStore.set('panel.dockedRight', true);
-  // 用展开宽度再 reserve 一次，并在下一帧复同步（防同帧 rect 仍是胶囊宽）。
   syncDockedGameLayout(shell);
   scheduleDockLayoutSync(shell);
   revealDockedPanelWhenGameReady(shell);

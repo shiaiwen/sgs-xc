@@ -424,6 +424,15 @@ html.xiaochao-game-viewport--docked #GameDiv {
   letter-spacing: 0.04em;
   line-height: 1.2;
 }
+#createIframe .xiaochao-shanhetu-shop-preview__empty {
+  margin: 0 2px 6px;
+  padding: 6px 8px;
+  color: #9a8f7c;
+  font-size: 11px;
+  line-height: 1.45;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18);
+}
 /*
  * 接缝：只用 grid gap 露一次底色，禁止每格四边 border（会双线）。
  * 等级辨识：左侧色条 + 同色浅底 + 文字色（1 灰、2 蓝、3 紫、4 橙）。

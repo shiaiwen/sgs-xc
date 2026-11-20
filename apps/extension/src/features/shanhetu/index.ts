@@ -36,6 +36,8 @@ export {
   type ShanhetuShopPreviewListener
 } from './shanhetu-shop-controller.ts';
 export {
+  SHANHETU_AUTO_CANCEL_WUXIE_KEY,
+  SHANHETU_AUTO_CANCEL_WUXIE_SETTING,
   SHANHETU_HIDE_STORY_KEY,
   SHANHETU_HIDE_STORY_SETTING,
   SHANHETU_MAP_KEY,

@@ -54,8 +54,8 @@ const MANAGER_LOOKUPS: Record<string, readonly [string, string?, string?]> = {
 /** 混淆后的方法名按函数源码中的特征文本恢复；数组表示需同时包含。 */
 const METHOD_SIGNATURES: Record<string, Record<string, string | readonly string[]>> = {
   ActivityManager: { SendGetWyqjTiyanCardReq: 'CLIENT_NEWBIE_WANT_STRONG_GENERAL_EXPERIENCE_CARD_REQ' },
-  GameEventDispatcher: { ShowWindow: '弹窗被功能关闭拦截' },
-  GameShopManager: { BuySingleItem: ['triggerTask', 'extraOperate', 'DealPassId'] },
+  GameEventDispatcher: { ShowWindow: 'windowNameList.unshift(' },
+  GameShopManager: { BuySingleItem: ['triggerTask', 'extraOperate', 'GoodsList'] },
   TaskManager: {
     RequestTaskAward: 'TaskRewardSelectWindow',
     GetAllTaskDataByTaskID: ['allTasks.get(', '||'],
@@ -374,9 +374,9 @@ export function createLayaObjectLocator(
     const record = asRecord(target);
     if (!record) return [];
     const resolved = obfuscatedMethodName(record, 'GameEventDispatcher', 'ShowWindow');
-    // '_' = 当前游戏包混淆名（见 sgsGame_inner ShowWindow）；正式路径优先信 resolved。
+    // 游戏包的开窗方法可能混淆为 A 或 _；优先使用源码特征定位的结果。
     const names: string[] = [];
-    for (const name of [resolved, '_', 'ShowWindow']) {
+    for (const name of [resolved, 'A', '_', 'ShowWindow']) {
       if (name && typeof record[name] === 'function' && !names.includes(name)) names.push(name);
     }
     return names;

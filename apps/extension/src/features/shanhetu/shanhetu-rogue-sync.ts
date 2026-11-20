@@ -17,12 +17,20 @@ function asRecord(value: unknown): UnknownRecord | null {
  *（`allData` / `dataMark` / `shopData`），外层可能再套一层 data。
  */
 export function resolveRogueLikeSyncBody(payload: UnknownRecord): UnknownRecord {
-  const nestedData = asRecord(payload.data) ?? asRecord(payload.Data);
-  return asRecord(payload.ProtoObj)
-    ?? asRecord(payload.protoObj)
-    ?? asRecord(nestedData?.ProtoObj)
-    ?? asRecord(nestedData?.protoObj)
-    ?? payload;
+  const protocol = asRecord(payload.Protocol) ?? asRecord(payload.protocol);
+  const data = asRecord(protocol?.Data) ?? asRecord(protocol?.data);
+  const outerData = asRecord(payload.data) ?? asRecord(payload.Data);
+  const candidates = [
+    payload, asRecord(payload.ProtoObj), asRecord(payload.protoObj),
+    protocol, data, asRecord(data?.ProtoObj), asRecord(data?.protoObj),
+    outerData, asRecord(outerData?.ProtoObj), asRecord(outerData?.protoObj),
+    asRecord(protocol?.ProtoObj), asRecord(protocol?.protoObj)
+  ];
+  return candidates.find((item) => item && (
+    item.allData !== undefined || item.AllData !== undefined
+    || item.dataMark !== undefined || item.DataMark !== undefined
+    || item.shopData !== undefined || item.ShopData !== undefined
+  )) ?? payload;
 }
 
 /** 从同步包或 manager 缓存对象上取出 allData。 */

@@ -9,70 +9,13 @@ const appPathCache = {};
 let runtimeGlobalsLoaded = false;
 let localScriptResponseCache = null;
 let localScriptInjectCache = null;
-let developmentReloadInProgress = false;
-let developmentReloadQueued = false;
 let developmentWebviewReady = false;
 
 ipcRenderer.on('xiaochao-dev-script-changed', () => {
     localScriptResponseCache = null;
     localScriptInjectCache = null;
-    requestDevelopmentWebviewReload();
+    console.info('[xiaochao-dev] source changed; refresh the game manually to apply it');
 });
-
-function whenDevelopmentWebviewReady(webview) {
-    if (developmentWebviewReady || webview.__xcDevReloadReadyBound) return;
-    webview.__xcDevReloadReadyBound = true;
-    webview.addEventListener('dom-ready', () => {
-        webview.__xcDevReloadReadyBound = false;
-        developmentWebviewReady = true;
-        developmentReloadQueued = false;
-    }, { once: true });
-}
-
-function webviewHasLoadedPage(webview) {
-    if (!developmentWebviewReady) return false;
-    try {
-        return /^https?:/i.test(String(webview.getURL() || ''));
-    } catch {
-        return false;
-    }
-}
-
-function requestDevelopmentWebviewReload() {
-    const webview = document.getElementById('wb');
-    if (!webview || typeof webview.reload !== 'function' || !webview.isConnected) {
-        developmentReloadQueued = true;
-        return;
-    }
-    if (!developmentWebviewReady || !webviewHasLoadedPage(webview)) {
-        developmentReloadQueued = true;
-        whenDevelopmentWebviewReady(webview);
-        return;
-    }
-    if (developmentReloadInProgress) {
-        developmentReloadQueued = true;
-        return;
-    }
-    developmentReloadInProgress = true;
-    const handleReloadFinished = () => {
-        developmentReloadInProgress = false;
-        if (!developmentReloadQueued) return;
-        developmentReloadQueued = false;
-        requestDevelopmentWebviewReload();
-    };
-    webview.addEventListener('did-stop-loading', handleReloadFinished, { once: true });
-    console.info('[xiaochao-dev] source changed, reloading game webview');
-    try {
-        webview.reload();
-    } catch (error) {
-        developmentReloadInProgress = false;
-        developmentWebviewReady = false;
-        developmentReloadQueued = true;
-        webview.__xcDevReloadReadyBound = false;
-        whenDevelopmentWebviewReady(webview);
-        console.warn('[xiaochao-dev] webview 尚未就绪，已推迟重载', error);
-    }
-}
 
 function getReportWindowPageBridgeScript() {
     return `(() => {
@@ -685,7 +628,6 @@ function initElectronFrame() {
     }
     webview.addEventListener("dom-ready", function () {
         developmentWebviewReady = true;
-        developmentReloadQueued = false;
         installReportWindowPageBridge(webview);
         loadScript(webview);
     })

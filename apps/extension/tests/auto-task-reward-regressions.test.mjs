@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createAutoTaskRunner } from '../src/features/auto-task/auto-task-runner.ts';
 import { createAutoTaskClaims } from '../src/features/auto-task/auto-task-claims.ts';
 import { claimTask, isTaskExcluded, taskClaimState } from '../src/features/auto-task/auto-task-rules.ts';
+import { createMethodPatcher } from '../src/runtime/method-patch.ts';
 
 function emitter(values = {}) {
   const listeners = new Map();
@@ -180,3 +181,50 @@ test('ids without an established exclusion remain eligible for the claim path', 
     assert.equal(isTaskExcluded({ id, CanAward: true }, context, id), false);
   }
 });
+
+test('auto-claim suppresses the 107014 popup for its own quest only', async () => {
+  const patcher = createMethodPatcher();
+  const calls = [];
+  const dispatcher = {
+    ShowProtocolError(protocolId, code, suffix) { calls.push([protocolId, code, suffix]); }
+  };
+  const proxy = emitter();
+  const task = { id: 200041, CanAward: true, IsFromServer: true, Status: 2,
+    condition_data: [{ condition_id: 0, condition_cnt: 1 }],
+    baseVo: { prevTask: 200040, TaskRewardItem: [{ ItemID: 100 }] } };
+  const previous = { id: 200040, HasAward: true };
+  const data = { 200041: task, 200040: previous };
+  const quest = {
+    UpTaskState() {}, clientQusetInfoRep() {}, getTaskListFromServer() {},
+    allTasks: { _maps: data }, GetServerTaskDataByTaskID: id => data[id],
+    RequestTaskAward() {}
+  };
+  const runner = createAutoTaskRunner({
+    locator: {
+      manager: name => ({ ServerProxy: proxy, TaskManager: quest })[name] ?? null,
+      findManagerByPredicate: () => null,
+      obfuscatedMethodName: () => null,
+      dispatcher: () => dispatcher
+    },
+    windows: { get: () => null, release() {}, opened: () => null, closeOpened() {} },
+    claims: createAutoTaskClaims(undefined, () => 'account-a', () => Date.now()),
+    tasks: { disposed: false, later(fn, ms) { if (ms <= 1200) queueMicrotask(fn); } },
+    patcher,
+    enabled: () => true,
+    options: () => ({ skipTavern: false, skipMail: true, skipDailyGeneralBag: true,
+      skipSignTrialCard: true, skipDiJiaQuan: false, skipHuanLeDou: true,
+      skipFreeBless: true, skipFreeTreasureFlip: true }),
+    configData: () => null,
+    account: () => 'account-a'
+  });
+  runner.runClaimForSkipKey('autoTask.skipTavern');
+  await flush();
+  dispatcher.ShowProtocolError(107014, 203, '200041');
+  dispatcher.ShowProtocolError(107014, 203, '999999');
+  dispatcher.ShowProtocolError(12345, 203, '200041');
+  assert.deepEqual(calls, [[107014, 203, '999999'], [12345, 203, '200041']]);
+  patcher.restoreAll();
+  dispatcher.ShowProtocolError(107014, 203, '200041');
+  assert.deepEqual(calls, [[107014, 203, '999999'], [12345, 203, '200041'], [107014, 203, '200041']]);
+});
+

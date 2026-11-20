@@ -7,6 +7,7 @@
  */
 
 import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
+import type { MethodPatcher } from '../../runtime/method-patch.ts';
 import type { TaskScope } from '../skin-background/skin-runtime.ts';
 import { beijingDate, type AutoTaskClaims } from './auto-task-claims.ts';
 import type { AutoTaskConfigData } from './auto-task-config-data.ts';
@@ -56,6 +57,8 @@ export interface AutoTaskRunnerDeps {
   windows: AutoTaskWindows;
   claims: AutoTaskClaims;
   tasks: TaskScope;
+  /** 用于在 GameEventDispatcher 上挂可撤销的错误弹窗抑制钩子。 */
+  patcher?: MethodPatcher;
   enabled(): boolean;
   options(): AutoTaskOptions;
   configData(): AutoTaskConfigData | null;
@@ -90,6 +93,7 @@ const MONTH_CARD_SYNC_METHODS = [
   'SendPrivilegeCardInfoReq'
 ];
 const TREE_USING_KEY = 'kanshu:treeUsing';
+const TREE_USING_REQUEST_KEY = 'kanshu:treeUsing:request';
 const TREE_ITEM_BASE = 12130001;
 /** 见 auto-task-rules EXCLUDED_AUTO_SHOP_GOODS_IDS；仅遍历可能存在的其它免费商品。 */
 const FREE_SHOP_GOODS = [13360001, 11578201];
@@ -120,9 +124,14 @@ const ACCUMULATED_REWARD_METHODS = [
   'SendAccumSignGetRewardReq'
 ];
 
+/** 任务操作回复协议号（CLIENT_QUEST_OP_REP）。服务器拒绝领取时游戏会弹「未知错误107014_…」。 */
+const CLIENT_QUEST_OP_REP = 107014;
+/** 自动领取发出的任务操作，回复前保留多久用于抑制对应任务的错误弹窗。 */
+const QUEST_OP_CLAIM_TTL_MS = 20_000;
+
 /** 创建自动领取执行器，串起窗口、任务和领取记录。 */
 export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
-  const { locator, windows, claims, tasks } = deps;
+  const { locator, windows, claims, tasks, patcher } = deps;
   const newJunDianRuns = new WeakMap<object, Promise<boolean>>();
   const newPrivilegePending = new WeakMap<object, Map<number, string>>();
   const newPrivilegeBound = new WeakSet<object>();
@@ -130,6 +139,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   const freeBlessBound = new WeakSet<object>();
   const rejectedTasks = new WeakMap<object, Map<string, string>>();
   const pendingTaskClaims = new Set<string>();
+  /** 已发出任务操作的任务 id → 过期时间；用于吞掉这些任务触发的 107014 错误弹窗。 */
+  const autoClaimedQuestIds = new Map<number, number>();
   let mailRunning = false;
   let generalBagTimerArmed = false;
   let goodsConfigLookup: ((id: unknown) => unknown) | null | undefined;
@@ -292,6 +303,37 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   // ---------- 任务 ----------
 
+  /** 记一条已发出的任务操作，供错误弹窗抑制钩子查询。 */
+  function markQuestOpSent(id: unknown): void {
+    const questId = Number(id);
+    if (!Number.isFinite(questId)) return;
+    const expiry = Date.now() + QUEST_OP_CLAIM_TTL_MS;
+    for (const [key, time] of autoClaimedQuestIds) {
+      if (time <= Date.now()) autoClaimedQuestIds.delete(key);
+    }
+    autoClaimedQuestIds.set(questId, expiry);
+  }
+
+  /**
+   * 挂 GameEventDispatcher.ShowProtocolError 的抑制钩子：协议号 107014（任务操作回复）
+   * 且任务是我们刚自动领取触发的，就吞掉「未知错误107014_…」弹窗。手动领任务报错不受影响。
+   */
+  function ensureQuestOpErrorHook(): void {
+    if (!patcher) return;
+    const ged = typeof locator.dispatcher === 'function' ? locator.dispatcher() : null;
+    if (!ged || patcher.isWrapped(ged, 'ShowProtocolError')) return;
+    patcher.wrap(ged, 'ShowProtocolError', (original) => (protocolId, errorCode, suffix) => {
+      if (protocolId === CLIENT_QUEST_OP_REP) {
+        const questId = Number(suffix);
+        if (Number.isFinite(questId) && (autoClaimedQuestIds.get(questId) ?? 0) > Date.now()) {
+          console.warn('[自动领取] 已吞掉任务领取失败弹窗:', questId, errorCode);
+          return undefined;
+        }
+      }
+      return original(protocolId, errorCode, suffix);
+    });
+  }
+
   async function requestTaskClaim(access: TaskManagerAccess, id: unknown, task: unknown, context: TaskRuleContext): Promise<boolean> {
     const proxy = manager('ServerProxy');
     const replyManager = manager('TaskManager');
@@ -345,7 +387,9 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
             bind(replyTarget, event, (taskId) => { if (matches(taskId)) finish(true); });
           }
         }
+        ensureQuestOpErrorHook();
         if (claimTask(access, id, task, context) === false) finish(false, false);
+        else markQuestOpSent(id);
       } catch (error) {
         console.warn('[自动领取] 任务领取失败:', id, error);
         finish(false);
@@ -771,6 +815,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   // ---------- 福利：砍树、月卡 ----------
 
+  const blessingTreeRuns = new WeakMap<UnknownRecord, Promise<boolean>>();
+
   function syncWelfare(welfare: UnknownRecord): boolean {
     let synced = false;
     for (const method of MONTH_CARD_SYNC_METHODS) {
@@ -822,6 +868,13 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       // 忽略。
     }
     try {
+      // 游戏的发财树红点带「首次提示」标记，只有这个方法会清掉；它只读写单例，不依赖窗口实例。
+      const kanShuProto = locator.classPrototype('KanShuWindow');
+      if (typeof kanShuProto?.checkKanShuRed === 'function') kanShuProto.checkKanShuRed();
+    } catch {
+      // 忽略。
+    }
+    try {
       call(welfare, 'ReqJbpInfo');
     } catch {
       // 忽略。
@@ -848,7 +901,16 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     };
   }
 
-  async function claimBlessingTree(welfare: UnknownRecord): Promise<boolean> {
+  /** 同一时间只跑一轮砍树；多轮重叠会重复砍树、重复买道具，互相打乱等待结果。 */
+  function claimBlessingTree(welfare: UnknownRecord): Promise<boolean> {
+    const running = blessingTreeRuns.get(welfare);
+    if (running) return running;
+    const run = claimBlessingTreeOnce(welfare).finally(() => blessingTreeRuns.delete(welfare));
+    blessingTreeRuns.set(welfare, run);
+    return run;
+  }
+
+  async function claimBlessingTreeOnce(welfare: UnknownRecord): Promise<boolean> {
     const itemId = treeItemId(welfare.JbpUserData);
     if (itemId && claims.claimedToday(`kanshu:${itemId}`)) {
       refreshTree(welfare);
@@ -860,11 +922,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         if (status === 2) refreshTree(welfare);
         return false;
       }
-      if (!claims.claimedToday(TREE_USING_KEY)) {
+      // 树还没砍时，即使今天记过「已砍」也重新请求；每天的发送次数由 acquire 限制，服务器拒绝时不会反复弹错。
+      if (claims.acquire(TREE_USING_REQUEST_KEY)) {
         if (!has(welfare, 'ReqJbpTreeUsing')) return false;
         try {
           if (call(welfare, 'ReqJbpTreeUsing') === false) return false;
-          claims.markClaimedToday(TREE_USING_KEY);
         } catch (error) {
           console.warn('[自动领取] 砍树请求失败:', error);
           return false;
@@ -876,6 +938,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         call(welfare, 'ReqJbpInfo');
         return treeItemId(welfare.JbpUserData) || false;
       }, 12, 500);
+      const statusAfterCut = Number(asRecord(welfare.JbpUserData)?.Status);
+      if (statusAfterCut === 1 || statusAfterCut === 2) {
+        claims.markClaimedToday(TREE_USING_KEY);
+        refreshTree(welfare);
+      }
     }
     const waterItemId = treeItemId(welfare.JbpUserData);
     if (!waterItemId || claims.claimedToday(`kanshu:${waterItemId}`)) return false;

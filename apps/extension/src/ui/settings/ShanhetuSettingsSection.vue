@@ -4,6 +4,7 @@ import { onBeforeUnmount, reactive, ref } from "vue";
 import {
   SHANHETU_OPEN_SHOP_LABEL,
   SHANHETU_OPEN_SHOP_TOOLTIP,
+  SHANHETU_SHOP_PREVIEW_EMPTY_HINT,
   SHANHETU_SHOP_PREVIEW_LABEL,
   SHANHETU_SHOP_PREVIEW_TOOLTIP,
   SHANHETU_SWITCH_SETTINGS,
@@ -70,9 +71,6 @@ function handleOpenShop() {
   >
     <header class="xiaochao-settings-section__header">
       <h4 class="xiaochao-settings-section__title">山河图辅助</h4>
-      <span class="xiaochao-settings-section__summary"
-        >地图透视 · 对白 · 集市 · 换将</span
-      >
     </header>
     <div class="xiaochao-settings-section__body">
       <div class="xiaochao-settings-grid xiaochao-shanhetu-switch-grid">
@@ -100,7 +98,6 @@ function handleOpenShop() {
         </div>
       </div>
       <div
-        v-if="previewItems.length"
         class="xiaochao-shanhetu-shop-preview"
         :data-tooltip="SHANHETU_SHOP_PREVIEW_TOOLTIP"
         aria-label="集市透视"
@@ -108,7 +105,17 @@ function handleOpenShop() {
         <div class="xiaochao-shanhetu-shop-preview__title">
           {{ SHANHETU_SHOP_PREVIEW_LABEL }}
         </div>
-        <div class="xiaochao-shanhetu-shop-preview__list" role="list">
+        <p
+          v-if="!previewItems.length"
+          class="xiaochao-shanhetu-shop-preview__empty"
+        >
+          {{ SHANHETU_SHOP_PREVIEW_EMPTY_HINT }}
+        </p>
+        <div
+          v-else
+          class="xiaochao-shanhetu-shop-preview__list"
+          role="list"
+        >
           <button
             v-for="item in previewItems"
             :key="item.id"

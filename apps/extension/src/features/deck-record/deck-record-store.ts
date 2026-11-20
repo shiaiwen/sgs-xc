@@ -120,9 +120,17 @@ export function createDeckRecordStore(
     deckTopCardIds?: number[];
     deckBottomCardIds?: number[];
   } = {}) => {
+    const pile = sourcedDrawPile();
+    const pileIds = new Set([
+      ...(pile.deckTopCardIds ?? parts.deckTopCardIds ?? snapshot.deckTopCardIds),
+      ...(pile.deckBottomCardIds ?? parts.deckBottomCardIds ?? snapshot.deckBottomCardIds)
+    ].filter((id) => id > 0));
+    if (pileIds.size) {
+      taggedCurrentTurnDiscards = taggedCurrentTurnDiscards.filter((card) => !pileIds.has(card.cardId));
+    }
     snapshot = freezeSnapshot({
       movements: parts.movements ?? [...snapshot.movements],
-      discardCardIds: parts.discardCardIds ?? [...snapshot.discardCardIds],
+      discardCardIds: (parts.discardCardIds ?? snapshot.discardCardIds).filter((id) => !pileIds.has(id)),
       hiddenDiscardCount: parts.hiddenDiscardCount ?? snapshot.hiddenDiscardCount,
       currentTurnDiscardCardIds: taggedCurrentTurnDiscards
         .filter((card) => card.turnCount === turnCount && card.round === round)
@@ -132,7 +140,7 @@ export function createDeckRecordStore(
       currentRound: round,
       deckTopCardIds: parts.deckTopCardIds ?? [...snapshot.deckTopCardIds],
       deckBottomCardIds: parts.deckBottomCardIds ?? [...snapshot.deckBottomCardIds],
-      ...sourcedDrawPile()
+      ...pile
     });
     queuePersistSnapshot();
     listeners.forEach((listener) => listener(snapshot));

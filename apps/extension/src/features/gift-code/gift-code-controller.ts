@@ -1,6 +1,6 @@
 /**
- * 礼包码自动兑换：登录后拉取线上码列表，对本账号尚未尝试过的码逐个填入游戏兑换窗。
- * 不读自动领取开关。尝试记录按游戏账号编号写入 localStorage，避免重复兑换。
+ * 礼包码自动兑换：在「自动领取」总开关打开时，登录后拉取线上码列表并填入游戏兑换窗。
+ * 尝试记录按游戏账号编号写入 localStorage，避免重复兑换。
  */
 
 import {
@@ -8,7 +8,9 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
+import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
+import { AUTO_TASK_ENABLED_KEY } from '../auto-task/auto-task-settings.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { createTaskScope } from '../skin-background/skin-runtime.ts';
 import { createAutoTaskWindows } from '../auto-task/auto-task-windows.ts';
@@ -20,6 +22,7 @@ export interface GiftCodeControllerOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
   storage?: Pick<Storage, 'getItem' | 'setItem'>;
+  configStore?: XiaochaoConfigStore;
   endpoint?: string;
   fetcher?: typeof fetch;
   loginDelayMs?: number;
@@ -141,14 +144,19 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
   const loginDelayMs = options.loginDelayMs ?? LOGIN_DELAY_MS;
   const exchangeIntervalMs = options.exchangeIntervalMs ?? EXCHANGE_INTERVAL_MS;
+  const configStore = options.configStore;
   const tasks = createTaskScope('礼包码');
   const windows = createAutoTaskWindows(globalObject, locator, tasks);
   const seenAt = new Map<string, number>();
   const finished = new Set<string>();
   const startedAt = Date.now();
   let stopPolling: (() => void) | null = null;
+  let stopConfig: (() => void) | null = null;
   let runningId = '';
   let missingAccountLogged = false;
+
+  const autoTaskEnabled = () => configStore?.get(AUTO_TASK_ENABLED_KEY) === true;
+
   // 每次都重新读。换号登录后要立刻换成新账号的兑换记录。
   function currentAccountId(): string {
     return resolveGameAccountId(globalObject, locator);
@@ -175,7 +183,7 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
    * 返回 done 表示列表已全部尝试过；retry 表示窗口或网络还没好，下次轮询再试。
    */
   async function redeemAccount(id: string): Promise<'done' | 'retry'> {
-    if (!id || currentAccountId() !== id || tasks.disposed) return 'retry';
+    if (!autoTaskEnabled() || !id || currentAccountId() !== id || tasks.disposed) return 'retry';
     let codes: string[];
     try {
       codes = await fetchCodes();
@@ -191,7 +199,7 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
     const notice = `发现 ${pending.length} 个新礼包码，开始自动兑换`;
     showToast(notice);
     for (const code of pending) {
-      if (tasks.disposed || currentAccountId() !== id) return 'retry';
+      if (!autoTaskEnabled() || tasks.disposed || currentAccountId() !== id) return 'retry';
       const exchange = windows.get('GiftExchangeWindow');
       const controls = exchange ? findExchangeControls(exchange) : null;
       if (!exchange || !controls) {
@@ -224,7 +232,7 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
 
   /** 登录满延迟再兑换；窗口未就绪不记完成，下一轮继续。 */
   function scheduleCurrentAccount(): void {
-    if (runningId || tasks.disposed) return;
+    if (!autoTaskEnabled() || runningId || tasks.disposed) return;
     const id = currentAccountId();
     if (!id) {
       if (!missingAccountLogged && Date.now() - startedAt > 8_000) {
@@ -253,10 +261,17 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
 
   scheduleCurrentAccount();
   stopPolling = everyInterval(tasks.label, ACCOUNT_POLL_MS * 2, scheduleCurrentAccount);
+  if (configStore) {
+    stopConfig = configStore.subscribe(AUTO_TASK_ENABLED_KEY, () => {
+      if (autoTaskEnabled()) scheduleCurrentAccount();
+    });
+  }
 
   return () => {
     stopPolling?.();
     stopPolling = null;
+    stopConfig?.();
+    stopConfig = null;
     windows.dispose();
     tasks.dispose();
   };

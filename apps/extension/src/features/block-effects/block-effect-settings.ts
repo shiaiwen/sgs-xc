@@ -84,7 +84,7 @@ export const BLOCK_EFFECT_SETTINGS: readonly BlockSetting[] = [
   {
     key: 'block.mvpWindow',
     label: 'MVP结算',
-    tooltip: '跳过牌局结束后的MVP展示'
+    tooltip: '跳过牌局结束后的MVP展示与对局结果页'
   }
 ];
 

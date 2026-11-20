@@ -3,6 +3,11 @@
  */
 
 const DAILY_RECORD_SUFFIX = '::XC_DAILY_AUTO_CLAIM_RECORD';
+const DAILY_ATTEMPT_SUFFIX = '::XC_DAILY_AUTO_CLAIM_ATTEMPTS';
+/** 同一领奖键每天最多发送的次数；服务器拒绝时不再无限重发，否则游戏会反复弹「未知错误」。 */
+export const CLAIM_DAILY_ATTEMPT_LIMIT = 3;
+/** 只拉数据、不领奖的请求键，可以反复发送。 */
+const SYNC_KEY_PATTERN = /:sync(?::|$)/;
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** 同一个请求键 15 秒内不重复发送。 */
@@ -76,10 +81,44 @@ export function createAutoTaskClaims(
     }
   }
 
+  function attemptKey(): string {
+    return `${account()}${DAILY_ATTEMPT_SUFFIX}`;
+  }
+
+  function readAttempts(): { day: string; counts: Record<string, number> } {
+    const day = beijingDate(now());
+    try {
+      const parsed = JSON.parse(storage?.getItem(attemptKey()) || 'null') as
+        { day?: string; counts?: Record<string, number> } | null;
+      if (parsed?.day === day && parsed.counts && typeof parsed.counts === 'object') {
+        return { day, counts: parsed.counts };
+      }
+    } catch {
+      // 记录损坏时从零计数。
+    }
+    return { day, counts: {} };
+  }
+
+  /** 记一次发送；当天已到上限时返回 false。 */
+  function consumeDailyAttempt(key: string): boolean {
+    if (SYNC_KEY_PATTERN.test(key)) return true;
+    const record = readAttempts();
+    const used = Number(record.counts[key]) || 0;
+    if (used >= CLAIM_DAILY_ATTEMPT_LIMIT) return false;
+    record.counts[key] = used + 1;
+    try {
+      storage?.setItem(attemptKey(), JSON.stringify(record));
+    } catch {
+      // 存储不可用时本次运行内仍靠节流防重复。
+    }
+    return true;
+  }
+
   function acquire(key: string, throttleMs = CLAIM_THROTTLE_MS): boolean {
     const time = now();
     const windowMs = Number.isFinite(throttleMs) && throttleMs > 0 ? throttleMs : CLAIM_THROTTLE_MS;
     if (time - (lastAttempt.get(key) ?? -Infinity) < windowMs) return false;
+    if (!consumeDailyAttempt(key)) return false;
     lastAttempt.set(key, time);
     return true;
   }

@@ -39,6 +39,12 @@ export const DECK_RECORD_SYNC_MS = 500;
 /** 身份锁定。 */
 export const CHOOSE_FIGURE_APPLY_MS = 1000;
 
+/** 山河图集市透视：在地图场景内轮询 manager / 集市窗。 */
+export const SHANHETU_SHOP_SYNC_MS = 2000;
+
+/** 山河集市缺少 shopData 时重复请求 RogueLikeDataReq 的最小间隔。 */
+export const SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS = 12_000;
+
 /** 铁索重铸：自己座位还没出来时。 */
 export const TIESUO_POLL_IDLE_MS = 500;
 

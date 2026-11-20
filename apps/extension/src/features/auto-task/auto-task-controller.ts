@@ -131,6 +131,7 @@ export function installAutoTaskController(
     windows,
     claims,
     tasks,
+    patcher,
     enabled: () => configStore.get(AUTO_TASK_ENABLED_KEY),
     options: readOptions,
     account: () => resolveGameAccountId(globalObject, locator),

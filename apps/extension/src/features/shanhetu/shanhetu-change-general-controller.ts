@@ -15,8 +15,7 @@ import {
   type ChangeGeneralNameSource,
   formatChangeGeneralToast,
   readGeneralChangeList,
-  ROGUE_SELECT_GENERAL_WINDOW,
-  scanObjectForGeneralChange
+  ROGUE_SELECT_GENERAL_WINDOW
 } from './shanhetu-change-general.ts';
 
 type UnknownRecord = Record<string, unknown>;
@@ -50,6 +49,7 @@ export function installShanhetuChangeGeneral(options: {
   let showWindowHooked = false;
   let openWindowListenerInstalled = false;
   let lastToastKey = '';
+  let lastToastAt = 0;
   let retryTimer: ReturnType<typeof setInterval> | null = null;
 
   function later(callback: () => void, delay = 0): void {
@@ -63,8 +63,10 @@ export function installShanhetuChangeGeneral(options: {
 
   function announceList(generalChange: unknown[]): void {
     const key = generalChange.map(String).join(',');
-    if (!key || key === lastToastKey) return;
+    const now = Date.now();
+    if (!key || (key === lastToastKey && now - lastToastAt < 1000)) return;
     lastToastKey = key;
+    lastToastAt = now;
     const text = formatChangeGeneralToast(generalChange, (id) => options.names.getGeneralName(id));
     if (text) showToast(text, 'warning', CHANGE_GENERAL_TOAST_MS);
   }
@@ -83,18 +85,9 @@ export function installShanhetuChangeGeneral(options: {
     announceList(generalChange);
   }
 
-  function scrapeOpenWindow(): void {
-    const win = locator.window(ROGUE_SELECT_GENERAL_WINDOW)
-      ?? locator.findWindows(ROGUE_SELECT_GENERAL_WINDOW)[0];
-    const list = scanObjectForGeneralChange(win);
-    if (list?.length) announceList(list);
-  }
-
   function announceFromOpenWindow(windowName: unknown, ...rest: unknown[]): void {
     if (!matchesRogueSelectWindow(windowName)) return;
     for (const arg of rest) announceFromPayload(arg);
-    later(scrapeOpenWindow, 0);
-    later(scrapeOpenWindow, 150);
   }
 
   function wrapShowWindowTarget(target: UnknownRecord): boolean {
