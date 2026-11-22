@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 常规页牌局记录区块：本回合弃牌列表与排序。 */
+/** 常规页牌局记录区块：本回合弃牌与牌堆两端的已知牌。 */
 import { computed, onBeforeUnmount, ref } from 'vue';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { DeckRecordStore } from '../../features/deck-record/deck-record-store.ts';
@@ -39,6 +39,10 @@ onBeforeUnmount(() => {
 const currentTurnDiscardCards = computed(() =>
   sortCards(snapshot.value.currentTurnDiscardCardIds)
 );
+const pileGroups = computed(() => [
+  { id: 'top', title: '牌堆顶', cardIds: knownPileCards(snapshot.value.deckTopCardIds) },
+  { id: 'bottom', title: '牌堆底', cardIds: knownPileCards(snapshot.value.deckBottomCardIds) },
+]);
 const discardTitle = computed(() =>
   `本回合弃牌 · ${sortModeLabels[sortMode.value] ?? sortModeLabels[sortModes[0]]}`
 );
@@ -57,6 +61,10 @@ function cycleSortMode(): void {
     'display.discardSortMode',
     sortModes[(currentIndex + 1) % sortModes.length]
   );
+}
+
+function knownPileCards(cardIds: readonly number[]): number[] {
+  return cardIds.filter((cardId) => cardId > 0 && !isDianweiArmCardName(props.gameCardCatalog.resolve(cardId).name));
 }
 
 function sortCards(cardIds: readonly number[]) {
@@ -106,10 +114,10 @@ function rankOrder(rank: string): number {
 
 <template>
   <section v-if="enabled" class="xc-deck-record" aria-label="牌堆记录">
-    <div class="xc-deck-record__group xc-deck-record__group--discard">
+    <div class="xc-deck-record__group">
       <button
         type="button"
-        class="xc-deck-record__discard-title"
+        class="xc-deck-record__title xc-deck-record__title--sortable"
         :title="`点击切换弃牌排序（当前：${sortModeLabels[sortMode] ?? sortModeLabels[sortModes[0]]}）`"
         @click="cycleSortMode"
       >
@@ -128,6 +136,17 @@ function rankOrder(rank: string): number {
         <span v-if="snapshot.currentTurnHiddenDiscardCount" class="xc-deck-record__unknown">
           未知牌 × {{ snapshot.currentTurnHiddenDiscardCount }}
         </span>
+      </div>
+    </div>
+    <div v-for="pile in pileGroups" :key="pile.id" class="xc-deck-record__group">
+      <h3 class="xc-deck-record__title">{{ pile.title }}</h3>
+      <div class="xc-deck-record__cards" :data-empty="pile.cardIds.length ? undefined : '暂无已知牌'">
+        <ShoupaiCardFace
+          v-for="cardId in pile.cardIds"
+          :key="cardId"
+          :card-id="cardId"
+          :game-card-catalog="gameCardCatalog"
+        />
       </div>
     </div>
   </section>
@@ -150,21 +169,7 @@ function rankOrder(rank: string): number {
   border: 0;
 }
 .xc-deck-record__group:last-child { margin-bottom: 0; }
-.xc-deck-record__group-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 0 6px 2px;
-  min-height: 0;
-  color: #f2de9c;
-  font: 700 12px/1.4 SimSun, serif;
-}
-.xc-deck-record__group-title span {
-  color: #b7aa8b;
-  font: 400 10px/1.4 SimSun, serif;
-}
-.xc-deck-record__discard-title {
+.xc-deck-record__title {
   display: block;
   overflow: hidden;
   white-space: nowrap;
@@ -177,9 +182,11 @@ function rankOrder(rank: string): number {
   color: #e8d4a8;
   font: 700 12px/1.4 SimSun, serif;
   text-align: left;
+}
+.xc-deck-record__title--sortable {
   cursor: pointer;
 }
-.xc-deck-record__discard-title:hover {
+.xc-deck-record__title--sortable:hover {
   color: #fff3d0;
 }
 /* 卡牌页牌堆容器：无重框，左浮小牌。 */

@@ -497,3 +497,248 @@ body {
   border-left: 1px solid var(--line-strong);
   color: var(--muted);
 }
+
+/* 反馈工单 */
+
+.page-shell {
+  width: min(100%, 42rem);
+  margin-inline: auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+.page-shell--narrow {
+  width: min(100%, 36rem);
+}
+
+.page-shell__title {
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.page-shell__lead {
+  margin-top: 0.75rem;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.page-shell__header {
+  margin-bottom: 1.75rem;
+}
+
+.feedback-form__field + .feedback-form__field {
+  margin-top: 1.25rem;
+}
+
+.feedback-form__label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.feedback-form__input,
+.feedback-form__textarea {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.feedback-form__textarea {
+  resize: vertical;
+  min-height: 8rem;
+}
+
+.feedback-form__grid {
+  display: grid;
+  gap: 1.25rem;
+}
+
+@media (min-width: 640px) {
+  .feedback-form__grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.feedback-form__contact {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.feedback-form__checkbox {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-top: 0.65rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.feedback-form__honeypot {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.feedback-form__error {
+  margin-top: 1rem;
+  color: var(--accent);
+  font-size: 0.9375rem;
+}
+
+.feedback-form__submit {
+  width: 100%;
+  margin-top: 1.5rem;
+  border: 0;
+  cursor: pointer;
+}
+
+.feedback-form__submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.feedback-status__loading,
+.feedback-status__error {
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.feedback-status__error {
+  color: var(--accent);
+}
+
+.feedback-status__success {
+  margin-bottom: 1.25rem;
+  padding: 1.25rem 1.35rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--tint);
+}
+
+.feedback-status__success-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.feedback-status__success-lead {
+  margin-top: 0.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+.feedback-status__success .btn-primary {
+  margin-top: 1rem;
+}
+
+.feedback-status__card {
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.feedback-status__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+}
+
+.feedback-status__badge {
+  display: inline-flex;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.feedback-status__badge--received {
+  background: #f2eee7;
+  color: #5f5850;
+}
+
+.feedback-status__badge--processing {
+  background: #fff3db;
+  color: #8a5a00;
+}
+
+.feedback-status__badge--fixed {
+  background: #e8f5ee;
+  color: #256a3d;
+}
+
+.feedback-status__badge--rejected {
+  background: #f5e8e8;
+  color: #872821;
+}
+
+.feedback-status__type {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.feedback-status__meta {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  font-size: 0.875rem;
+}
+
+.feedback-status__meta dt {
+  color: var(--muted);
+}
+
+.feedback-status__meta dd {
+  margin-top: 0.15rem;
+  color: var(--ink);
+}
+
+.feedback-status__section {
+  margin-top: 1.35rem;
+  padding-top: 1.35rem;
+  border-top: 1px solid var(--line);
+}
+
+.feedback-status__section h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.feedback-status__body,
+.feedback-status__note {
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  color: #2e2a25;
+}
+
+.feedback-status__copy {
+  margin-top: 1.25rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.9375rem;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}

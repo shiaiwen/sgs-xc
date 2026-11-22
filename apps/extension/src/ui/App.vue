@@ -8,7 +8,7 @@
  */
 
 import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { DOCK_COLLAPSED_PANEL_HEIGHT, DOCK_COLLAPSED_PANEL_WIDTH, resolveDockedReserveWidth } from '../const/panel-dock';
+import { DOCK_COLLAPSED_PANEL_HEIGHT, DOCK_COLLAPSED_PANEL_WIDTH, EXPANDED_PANEL_MAX_WIDTH, EXPANDED_PANEL_MIN_WIDTH, resolveDockedReserveWidth } from '../const/panel-dock';
 // Vite 在构建时解析这些 Vue 单文件；类型检查缺少项目声明时会误报，这里压掉误报。
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import PanelHeader from './panel/PanelHeader.vue';
@@ -48,7 +48,6 @@ import type { GameCardCatalog } from '../features/cards/game-card-catalog';
 import type { DeckRecordStore } from '../features/deck-record/deck-record-store';
 import type { SkillAssistStore } from '../features/skill-assist/skill-assist-store';
 import type { PeixiuRouteStore } from '../features/extra-assist/peixiu-route-store';
-import type { AutoTaskController } from '../features/auto-task';
 import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
 import type { XiaochaoPanelLayout } from './mount-xiaochao-app';
@@ -63,7 +62,7 @@ import {
 } from '../const/reset-xiaochao';
 import { createElectronPlatform } from '../adapters/electron-platform';
 import { createUserscriptPlatform } from '../adapters/userscript-platform';
-import { constrainPanelPosition, hasExceededDragThreshold, shouldDockToRight } from './panel/panel-drag';
+import { constrainPanelPosition, FLOATING_PANEL_SAFE_MARGIN_PX, hasExceededDragThreshold, shouldSnapToRight } from './panel/panel-drag';
 import {
   getOwnedPanelLayoutValue,
   setOwnedPanelLayout
@@ -84,7 +83,6 @@ const props = defineProps<{
   skillAssistStore: SkillAssistStore;
   peixiuRouteStore: PeixiuRouteStore;
   turnStatusStore: TurnStatusStore;
-  autoTaskController: AutoTaskController | null;
   clearRedDots: () => { found: boolean; count: number };
   shanhetuController: ShanhetuController | null;
   updateNoticeController: UpdateNoticeController | null;
@@ -111,8 +109,6 @@ const panelElement = ref<HTMLElement>();
 const isDockedRight = ref(props.configStore.get('panel.dockedRight'));
 /** 停靠初始化未让出游戏视口前为 true，避免首帧不透明侧栏盖住画面。 */
 const isDockPending = ref(isDockedRight.value === true);
-const isDockPreviewVisible = ref(false);
-const isDockPreviewActive = ref(false);
 const othersHasUpdate = ref(props.updateNoticeController?.getSnapshot().hasUpdate ?? false);
 const stopUpdateNotice = props.updateNoticeController?.subscribe((snapshot) => {
   othersHasUpdate.value = snapshot.hasUpdate;
@@ -146,16 +142,19 @@ onMounted(() => {
   const shell = panelElement.value;
   if (!shell) return;
   const initialHeight = resolveExpandedHeight(props.configStore.get('panel.expandedHeight'));
+  const savedWidth = props.configStore.get('panel.expandedWidth');
+  expandedWidth = savedWidth > 0
+    ? `${Math.max(EXPANDED_PANEL_MIN_WIDTH, Math.min(savedWidth, window.innerWidth, EXPANDED_PANEL_MAX_WIDTH))}px`
+    : props.layout.width;
   setOwnedPanelLayout(shell, {
     top: `${props.layout.top}px`,
     right: `${props.layout.right}px`,
-    width: props.layout.width,
+    width: expandedWidth,
     height: `${initialHeight}px`,
     maxHeight: 'none'
   });
   shell.style.fontFamily = props.layout.fontFamily;
   expandedHeight = `${initialHeight}px`;
-  expandedWidth = props.layout.width;
   if (isDockedRight.value) {
     applyRightDock(shell, { respectCollapsed: true });
     requestAnimationFrame(() => syncDockedGameLayout(shell));
@@ -282,8 +281,6 @@ function handleDragStart(event: PointerEvent): void {
   const startBounds = shell.getBoundingClientRect();
   const startX = event.clientX;
   const startY = event.clientY;
-  const floatingStartLeft = startedDocked ? startX - startBounds.width / 2 : startBounds.left;
-  const floatingStartTop = startedDocked ? startY - 15 : startBounds.top;
   let dragStarted = false;
   let latestMoveEvent: PointerEvent | undefined;
   let animationFrameId = 0;
@@ -297,20 +294,14 @@ function handleDragStart(event: PointerEvent): void {
     if (!dragStarted && !hasExceededDragThreshold(deltaX, deltaY)) return;
     if (!dragStarted) {
       dragStarted = true;
-      if (startedDocked) {
-        // 先离开贴边再收成胶囊，避免折叠时又被拉回右边并套上整屏高度。
-        isDockedRight.value = false;
-        if (!panel.isCollapsed.value) toggleCollapsed();
-        detachFromRightDock(shell, moveEvent.clientX, moveEvent.clientY);
-      }
+      if (startedDocked) detachFromRightDock(shell);
       setOwnedPanelLayout(shell, { right: 'auto' });
       shell.classList.add('xiaochao-panel--dragging');
-      isDockPreviewVisible.value = true;
     }
     const position = constrainPanelPosition(
       {
-        left: floatingStartLeft + deltaX,
-        top: floatingStartTop + deltaY
+        left: startBounds.left + deltaX,
+        top: startBounds.top + deltaY
       },
       { width: shell.offsetWidth, height: shell.offsetHeight },
       { width: window.innerWidth, height: window.innerHeight }
@@ -319,11 +310,6 @@ function handleDragStart(event: PointerEvent): void {
       left: `${position.left}px`,
       top: `${position.top}px`
     });
-    isDockPreviewActive.value = shouldDockToRight(
-      moveEvent.clientX,
-      position.left + shell.offsetWidth,
-      window.innerWidth
-    );
   };
   const handleMove = (moveEvent: PointerEvent) => {
     latestMoveEvent = moveEvent;
@@ -342,11 +328,12 @@ function handleDragStart(event: PointerEvent): void {
       return stopDragging?.();
     }
     const bounds = shell.getBoundingClientRect();
-    if (shouldDockToRight(upEvent.clientX, bounds.right, window.innerWidth)) {
-      applyRightDock(shell);
-    } else {
-      finishAwayFromDock(shell, upEvent.clientX, upEvent.clientY);
+    if (shouldSnapToRight(bounds.right, window.innerWidth)) {
+      const margin = FLOATING_PANEL_SAFE_MARGIN_PX;
+      const left = Math.max(margin, window.innerWidth - bounds.width - margin);
+      setOwnedPanelLayout(shell, { left: `${left}px` });
     }
+    persistFloatingPosition(shell);
     stopDragging?.();
   };
   stopDragging = () => {
@@ -358,31 +345,11 @@ function handleDragStart(event: PointerEvent): void {
     header.removeEventListener('lostpointercapture', handleInterruptedDrag);
     if (header.hasPointerCapture?.(event.pointerId)) header.releasePointerCapture(event.pointerId);
     shell.classList.remove('xiaochao-panel--dragging');
-    isDockPreviewVisible.value = false;
-    isDockPreviewActive.value = false;
     stopDragging = undefined;
   };
   const handleInterruptedDrag = () => {
-    if (dragStarted) finishAwayFromDock(shell, latestMoveEvent?.clientX ?? startX, latestMoveEvent?.clientY ?? startY);
+    if (dragStarted) persistFloatingPosition(shell);
     stopDragging?.();
-  };
-  /** 从右侧拖开、没有再次吸附时，收成标题胶囊并停在指针附近。 */
-  const finishAwayFromDock = (target: HTMLElement, pointerX: number, pointerY: number) => {
-    if (startedDocked && !panel.isCollapsed.value) toggleCollapsed();
-    if (startedDocked && panel.isCollapsed.value) {
-      applyCollapsedDimensions(target);
-      const position = constrainPanelPosition(
-        { left: pointerX - target.offsetWidth / 2, top: pointerY - 15 },
-        { width: target.offsetWidth, height: target.offsetHeight },
-        { width: window.innerWidth, height: window.innerHeight }
-      );
-      setOwnedPanelLayout(target, {
-        left: `${position.left}px`,
-        top: `${position.top}px`
-      });
-    }
-    persistFloatingPosition(target);
-    if (panel.isCollapsed.value) applyCollapsedDimensions(target);
   };
   window.addEventListener('pointermove', handleMove);
   window.addEventListener('pointerup', handleUp, { once: true });
@@ -459,11 +426,10 @@ function applyRightDock(
   revealDockedPanelWhenGameReady(shell);
 }
 
-function detachFromRightDock(shell: HTMLElement, pointerX: number, pointerY: number): void {
+function detachFromRightDock(shell: HTMLElement): void {
   isDockedRight.value = false;
   clearDockRevealTimer();
   isDockPending.value = false;
-  const width = shell.offsetWidth;
   // 必须先归还游戏宽度，再把面板切回悬浮坐标。
   restoreFullGameArea();
   if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
@@ -476,12 +442,21 @@ function detachFromRightDock(shell: HTMLElement, pointerX: number, pointerY: num
       maxHeight: 'none'
     });
   }
-  setOwnedPanelLayout(shell, {
-    right: 'auto',
-    left: `${Math.max(0, pointerX - width / 2)}px`,
-    top: `${Math.max(0, pointerY - 15)}px`
-  });
   props.configStore.set('panel.dockedRight', false);
+}
+
+function toggleRightDock(): void {
+  const shell = panelElement.value;
+  if (!shell) return;
+  if (!isDockedRight.value) {
+    persistFloatingPosition(shell);
+    applyRightDock(shell);
+    return;
+  }
+  detachFromRightDock(shell);
+  restoreSavedPosition(shell);
+  keepPanelInsideViewport();
+  persistFloatingPosition(shell);
 }
 
 function persistFloatingPosition(shell: HTMLElement): void {
@@ -618,15 +593,66 @@ function resolveExpandedHeight(savedHeight: number): number {
 }
 
 /** 调整面板高度；限制在标题栏以下和当前窗口可见区域以内。 */
-function handleResizeStart(event: PointerEvent): void {
-  if (event.button !== 0 || !panelElement.value || isDockedRight.value) return;
+function handleWidthResizeStart(event: PointerEvent): void {
   const shell = panelElement.value;
+  if (event.button !== 0 || !shell || panel.isCollapsed.value) return;
+  event.preventDefault();
+  stopResizing?.();
+  const handle = event.currentTarget as HTMLElement;
+  const pointerId = event.pointerId;
+  handle.setPointerCapture(pointerId);
+  const start = shell.getBoundingClientRect();
+  const startX = event.clientX;
+  const docked = isDockedRight.value;
+  const right = Math.max(EXPANDED_PANEL_MIN_WIDTH, Math.min(start.right, window.innerWidth));
+  const availableWidth = docked ? Math.max(EXPANDED_PANEL_MIN_WIDTH, window.innerWidth - 320) : right;
+  const maximumWidth = Math.min(EXPANDED_PANEL_MAX_WIDTH, availableWidth);
+  let width: number | undefined;
+
+  const move = (next: PointerEvent) => {
+    if (next.pointerId !== pointerId) return;
+    width = Math.round(Math.min(maximumWidth, Math.max(EXPANDED_PANEL_MIN_WIDTH, start.width + startX - next.clientX)));
+    expandedWidth = `${width}px`;
+    setOwnedPanelLayout(shell, docked
+      ? { width: expandedWidth }
+      : { width: expandedWidth, left: `${right - width}px`, right: 'auto' });
+    if (docked) syncDockedGameLayout(shell);
+  };
+  const finish = (next: PointerEvent) => {
+    if (next.pointerId === pointerId) stopResizing?.();
+  };
+  stopResizing = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('lostpointercapture', finish);
+    stopResizing = undefined;
+    if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+    if (width === undefined) return;
+    props.configStore.set('panel.expandedWidth', width);
+    if (!docked) persistFloatingPosition(shell);
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('lostpointercapture', finish);
+}
+
+function handleResizeStart(event: PointerEvent): void {
+  if (event.button !== 0 || !panelElement.value || isDockedRight.value || panel.isCollapsed.value) return;
+  event.preventDefault();
+  stopResizing?.();
+  const shell = panelElement.value;
+  const handle = event.currentTarget as HTMLElement;
+  const pointerId = event.pointerId;
+  handle.setPointerCapture(pointerId);
   const startY = event.clientY;
   const startHeight = shell.offsetHeight;
   const maximumHeight = Math.max(EXPANDED_PANEL_MIN_HEIGHT, window.innerHeight - shell.offsetTop);
   let resizedHeight: number | undefined;
 
   const handleMove = (moveEvent: PointerEvent) => {
+    if (moveEvent.pointerId !== pointerId) return;
+    if ((moveEvent.buttons & 1) === 0) {
+      stopResizing?.();
+      return;
+    }
     resizedHeight = Math.min(
       maximumHeight,
       Math.max(EXPANDED_PANEL_MIN_HEIGHT, startHeight + moveEvent.clientY - startY)
@@ -634,16 +660,35 @@ function handleResizeStart(event: PointerEvent): void {
     expandedHeight = `${resizedHeight}px`;
     setOwnedPanelLayout(shell, { height: expandedHeight, maxHeight: 'none' });
   };
-  const handleUp = () => stopResizing?.();
+  const finish = () => stopResizing?.();
+  const handlePointerEnd = (endEvent: PointerEvent) => {
+    if (endEvent.pointerId === pointerId) finish();
+  };
+  const handleKeyDown = (keyEvent: KeyboardEvent) => {
+    if (keyEvent.key !== 'Escape') return;
+    expandedHeight = `${startHeight}px`;
+    setOwnedPanelLayout(shell, { height: expandedHeight, maxHeight: 'none' });
+    resizedHeight = undefined;
+    finish();
+  };
   stopResizing = () => {
-    window.removeEventListener('pointermove', handleMove);
-    window.removeEventListener('pointerup', handleUp);
+    handle.removeEventListener('pointermove', handleMove);
+    handle.removeEventListener('pointerup', handlePointerEnd);
+    handle.removeEventListener('pointercancel', handlePointerEnd);
+    handle.removeEventListener('lostpointercapture', handlePointerEnd);
+    window.removeEventListener('blur', finish);
+    window.removeEventListener('keydown', handleKeyDown, true);
     stopResizing = undefined;
+    if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
     // 松手才存，拖的时候每动一下都写一遍整份配置会卡。
     if (resizedHeight !== undefined) props.configStore.set('panel.expandedHeight', Math.round(resizedHeight));
   };
-  window.addEventListener('pointermove', handleMove);
-  window.addEventListener('pointerup', handleUp, { once: true });
+  handle.addEventListener('pointermove', handleMove);
+  handle.addEventListener('pointerup', handlePointerEnd);
+  handle.addEventListener('pointercancel', handlePointerEnd);
+  handle.addEventListener('lostpointercapture', handlePointerEnd);
+  window.addEventListener('blur', finish);
+  window.addEventListener('keydown', handleKeyDown, true);
 }
 </script>
 
@@ -662,6 +707,8 @@ function handleResizeStart(event: PointerEvent): void {
     <PanelHeader
       :collapsed="isCollapsed"
       @toggle="toggleCollapsed"
+      :docked-right="isDockedRight"
+      @toggle-dock="toggleRightDock"
       @drag-start="handleDragStart"
     >
       <TurnStatusBar
@@ -750,20 +797,18 @@ function handleResizeStart(event: PointerEvent): void {
       :style="{ display: isCollapsed || panel.activeTabId.value === 'cards' || panel.activeTabId.value === 'others' ? 'none' : '' }"
     />
     <div
+      v-show="!isCollapsed"
+      class="xiaochao-panel__width-handle"
+      title="拖动调整面板宽度"
+      @pointerdown.stop="handleWidthResizeStart"
+    />
+    <div
       v-show="!isCollapsed && !isDockedRight"
       id="frame-resize-handle"
       data-tooltip="拖动调整高度"
       @pointerdown.stop="handleResizeStart"
     />
   </section>
-  <div
-    v-show="isDockPreviewVisible"
-    class="xiaochao-dock-preview"
-    :class="{ 'xiaochao-dock-preview--active': isDockPreviewActive }"
-    aria-hidden="true"
-  >
-    <span>拖到这里固定</span>
-  </div>
   <TooltipLayer />
   <BaseDialog
     :open="isResetDialogOpen"

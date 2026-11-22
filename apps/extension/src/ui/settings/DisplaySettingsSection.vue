@@ -23,7 +23,7 @@ const settings = [
   {
     key: 'display.deckRecordEnabled',
     label: '牌堆记录',
-    tooltip: '在常规页显示本回合弃牌',
+    tooltip: '在常规页显示本回合弃牌、牌堆顶和牌堆底的已知牌',
   },
   {
     key: 'display.cardLabelsEnabled',
@@ -57,11 +57,7 @@ function updateSetting(key, event) {
 </script>
 
 <template>
-  <section class="xiaochao-settings-section" aria-labelledby="display-settings-title">
-    <header class="xiaochao-settings-section__header">
-      <h4 id="display-settings-title" class="xiaochao-settings-section__title">局内显示</h4>
-      <span class="xiaochao-settings-section__summary">对局界面辅助信息</span>
-    </header>
+  <section class="xiaochao-settings-section" aria-label="局内显示">
     <div class="xiaochao-settings-section__body">
       <div class="xiaochao-settings-grid xiaochao-display-switch-grid">
         <div

@@ -216,7 +216,7 @@ async function loadCardDictionary(
   let shanhetuMapData: ShanhetuMapConfigData | null = null;
   if (shanhetuRaw) {
     try {
-      shanhetuMapData = buildShanhetuMapConfigData(shanhetuRaw, buildShanhetuNameTables(playCards, spells));
+      shanhetuMapData = buildShanhetuMapConfigData(shanhetuRaw, buildShanhetuNameTables(playCards, spells), characterRaw);
       if (!Object.keys(shanhetuMapData.Rcity).length) {
         console.warn('[xiaochao] 山河配置解析后 Rcity 为空');
         shanhetuMapData = null;

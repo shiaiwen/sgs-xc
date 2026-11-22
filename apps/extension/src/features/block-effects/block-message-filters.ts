@@ -17,9 +17,7 @@ export interface BlockMessageFilterOptions {
   killEffect: boolean;
   otherSkinState: boolean;
   factionSlogan: boolean;
-  noticeWindow: boolean;
   chatEmotion: boolean;
-  inTableGame: boolean;
   /** 皮肤回包是不是别的玩家的。认不准时返回 false，不改。 */
   isOtherPlayerSkinMessage(message: UnknownRecord): boolean;
   /** 聊天消息是不是别的玩家的动画表情。认不准时返回 false，不改。 */
@@ -39,10 +37,6 @@ export function applyBlockMessageFilters(
 ): void {
   if (options.killEffect && isGameRewardPointMessage(className, payload)) {
     suppressGameRewardPointPayload(payload);
-    return;
-  }
-  if (options.noticeWindow && isMarqueeBroadcastMessage(className, payload, options.inTableGame)) {
-    suppressMarqueeBroadcastPayload(payload);
     return;
   }
   if (options.chatEmotion && isChatMessage(className)) {
@@ -94,8 +88,6 @@ function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null;
 }
 
-const MARQUEE_BROADCAST_CLASS = /marquee|chatsysnews|systemnotice|scrollnotice|luckdraw|lotterybroadcast/i;
-
 function isGameRewardPointMessage(className: string, payload: UnknownRecord): boolean {
   if (/GameRewardPoint/i.test(className)) return true;
   const nested = readClassName(payload);
@@ -127,123 +119,6 @@ function readClassName(payload: UnknownRecord): string {
   return typeof payload.ClassName === 'string'
     ? payload.ClassName
     : typeof payload.className === 'string' ? payload.className : '';
-}
-
-/** 协议分发前是否应整包丢弃，避免游戏在改写后仍读缓存字段。 */
-export function shouldDropNoticeProtocol(
-  className: string,
-  payload: UnknownRecord,
-  inTableGame = false
-): boolean {
-  return isMarqueeBroadcastMessage(className, payload, inTableGame);
-}
-
-function isMarqueeBroadcastMessage(
-  className: string,
-  payload: UnknownRecord,
-  inTableGame = false
-): boolean {
-  if (/marquee/i.test(className)) return true;
-  // 聊天道具协议也是互动道具（扔鸡蛋、送花）走的通道，只丢带出货广告文字的那种。
-  if (/chatgoods/i.test(className)) return containsDogTuoText(payload);
-  if (/chatmsg/i.test(className) && isMarqueeChatPayload(payload, inTableGame)) return true;
-  if (MARQUEE_BROADCAST_CLASS.test(className) && !/chatmsg/i.test(className)) return true;
-  return false;
-}
-
-/**
- * 聊天协议里系统跑马灯：狗托文案或系统频道字段。
- * 牌局内右侧聊天也走 chatmsg，不能仅凭频道号整包丢掉。
- */
-function isMarqueeChatPayload(payload: UnknownRecord, inTableGame = false): boolean {
-  if (containsDogTuoText(payload)) return true;
-  if (inTableGame) return false;
-  return readMarqueeChatChannel(payload) !== null;
-}
-
-function readMarqueeChatChannel(payload: UnknownRecord): number | null {
-  const stack: UnknownRecord[] = [payload];
-  const seen = new Set<UnknownRecord>();
-  while (stack.length > 0 && seen.size < 12) {
-    const record = stack.pop()!;
-    if (seen.has(record)) continue;
-    seen.add(record);
-    for (const key of ['channel', 'Channel', 'msgType', 'MsgType', 'chatType', 'ChatType']) {
-      const value = Number(record[key]);
-      if (MARQUEE_CHAT_CHANNELS.has(value)) return value;
-    }
-    for (const nested of Object.values(record)) {
-      if (nested && typeof nested === 'object' && !Array.isArray(nested)) stack.push(nested as UnknownRecord);
-    }
-  }
-  return null;
-}
-
-/** 系统滚动公告频道。7 是对局聊天，13 是阵营聊天，这两档要留在牌局里。 */
-const MARQUEE_CHAT_CHANNELS = new Set([6, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20]);
-
-function containsDogTuoText(payload: UnknownRecord): boolean {
-  return matchesDogTuoText(collectTextDeep(payload).join(' '));
-}
-
-function matchesDogTuoText(text: string): boolean {
-  const normalized = normalizeChatText(text);
-  if (!normalized) return false;
-  if (/祈愿台|琳琅绘卷|翻翻乐|天载阁|元藏/.test(normalized)) return true;
-  if (/恭喜/.test(normalized) && /(?:抽奖|祈愿台|琳琅绘卷|翻翻乐)/.test(normalized)) return true;
-  return /抽奖\d+次/.test(normalized);
-}
-
-function collectTextDeep(payload: UnknownRecord, depth = 0): string[] {
-  if (depth > 5) return [];
-  const texts: string[] = [];
-  const stack: unknown[] = [payload];
-  const seen = new Set<unknown>();
-  let steps = 0;
-  while (stack.length > 0 && steps < 120) {
-    const value = stack.pop();
-    steps += 1;
-    if (value == null) continue;
-    if (typeof value === 'string') {
-      if (value.trim()) texts.push(value);
-      continue;
-    }
-    if (typeof value !== 'object' || seen.has(value)) continue;
-    seen.add(value);
-    if (value instanceof Uint8Array) {
-      try {
-        texts.push(new TextDecoder('utf-8').decode(value));
-      } catch {
-        // 非 UTF-8 字节串跳过。
-      }
-      continue;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) stack.push(item);
-      continue;
-    }
-    const record = value as UnknownRecord;
-    for (const nested of Object.values(record)) stack.push(nested);
-  }
-  return texts;
-}
-
-function suppressMarqueeBroadcastPayload(payload: UnknownRecord): void {
-  payload.__xcNoticeBlocked = true;
-  for (const key of [
-    'ProtoObj', 'protoObj', 'proto', 'msg', 'content', 'text', 'Msg',
-    'goods', 'Goods', 'goodsList', 'GoodsList', 'chatMsg', 'ChatMsg', 'Data', 'data'
-  ]) {
-    hideProperty(payload, key);
-  }
-  for (const chat of chatRecords(payload)) {
-    for (const key of [
-      'ProtoObj', 'protoObj', 'proto', 'msg', 'content', 'text', 'Msg',
-      'goods', 'Goods', 'goodsList', 'GoodsList', 'chatMsg', 'ChatMsg'
-    ]) {
-      hideProperty(chat, key);
-    }
-  }
 }
 
 function containsFactionSlogan(payload: UnknownRecord): boolean {

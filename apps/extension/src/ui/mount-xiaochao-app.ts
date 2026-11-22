@@ -15,7 +15,6 @@ import type { DeckRecordStore } from '../features/deck-record/deck-record-store'
 import type { SkillAssistStore } from '../features/skill-assist/skill-assist-store';
 import type { PeixiuRouteStore } from '../features/extra-assist/peixiu-route-store';
 import type { TurnStatusStore } from '../features/turn-status/turn-status-store';
-import type { AutoTaskController } from '../features/auto-task';
 import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
 
@@ -45,7 +44,6 @@ export function mountXiaochaoApp(
   skillAssistStore: SkillAssistStore,
   peixiuRouteStore: PeixiuRouteStore,
   turnStatusStore: TurnStatusStore,
-  autoTaskController: AutoTaskController | null = null,
   clearRedDots: () => { found: boolean; count: number } = () => ({ found: false, count: 0 }),
   shanhetuController: ShanhetuController | null = null,
   updateNoticeController: UpdateNoticeController | null = null
@@ -70,7 +68,6 @@ export function mountXiaochaoApp(
     skillAssistStore,
     peixiuRouteStore,
     turnStatusStore,
-    autoTaskController,
     clearRedDots,
     shanhetuController,
     updateNoticeController

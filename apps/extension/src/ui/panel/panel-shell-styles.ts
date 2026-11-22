@@ -3,7 +3,7 @@
  * 样式需兼容偏旧 Chromium（避免 :is/:has 等导致整段失效）。
  */
 
-import { DOCK_COLLAPSED_PANEL_HEIGHT, DOCK_COLLAPSED_PANEL_WIDTH } from '../../const/panel-dock';
+import { DOCK_COLLAPSED_PANEL_HEIGHT, DOCK_COLLAPSED_PANEL_WIDTH, EXPANDED_PANEL_MAX_WIDTH, EXPANDED_PANEL_MIN_WIDTH } from '../../const/panel-dock';
 
 export const PANEL_SHELL_STYLE_ID = 'xiaochao-vue-panel-shell-style';
 
@@ -52,10 +52,10 @@ html.xiaochao-game-viewport--docked #GameDiv {
   left: var(--xc-panel-left, auto) !important;
   top: var(--xc-panel-top, auto) !important;
   right: var(--xc-panel-right, auto) !important;
-  width: var(--xc-panel-width, 340px) !important;
+  width: var(--xc-panel-width, ${EXPANDED_PANEL_MAX_WIDTH}px) !important;
   height: var(--xc-panel-height, 360px) !important;
-  min-width: var(--xc-panel-min-width, 0px) !important;
-  max-width: var(--xc-panel-max-width, none) !important;
+  min-width: var(--xc-panel-min-width, ${EXPANDED_PANEL_MIN_WIDTH}px) !important;
+  max-width: var(--xc-panel-max-width, ${EXPANDED_PANEL_MAX_WIDTH}px) !important;
   min-height: var(--xc-panel-min-height, 0px) !important;
   max-height: var(--xc-panel-max-height, none) !important;
   transform: none !important;
@@ -110,7 +110,7 @@ html.xiaochao-game-viewport--docked #GameDiv {
   opacity: .96;
 }
 #createIframe .xc-frame-header {
-  min-height: 34px;
+  min-height: 44px;
   margin: 0;
   display: flex;
   align-items: center;
@@ -394,10 +394,6 @@ html.xiaochao-game-viewport--docked #GameDiv {
   min-width: 0;
   pointer-events: auto;
 }
-#createIframe .xiaochao-game-assist-switch {
-  position: relative;
-  pointer-events: auto;
-}
 #createIframe .xiaochao-display-switch-grid .xiaochao-block-switch__label {
   margin: 0 0 2px;
   text-align: center;
@@ -502,6 +498,20 @@ html.xiaochao-game-viewport--docked #GameDiv {
   min-width: 0;
   max-width: calc(50% - 2px);
 }
+#createIframe .xiaochao-panel__width-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+#createIframe .xiaochao-panel__width-handle:hover,
+#createIframe .xiaochao-panel__width-handle:active {
+  background: rgba(242, 222, 156, .4);
+}
 #createIframe #frame-resize-handle {
   pointer-events: auto;
   flex: 0 0 10px;
@@ -510,37 +520,21 @@ html.xiaochao-game-viewport--docked #GameDiv {
   touch-action: none;
   background: linear-gradient(180deg, transparent 0 3px, rgba(242, 222, 156, .55) 4px 6px, transparent 7px);
 }
-.xiaochao-dock-preview {
-  position: fixed;
-  z-index: 2147483599;
-  top: 0;
-  right: 0;
-  width: 44px;
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  background: rgba(55, 40, 32, .8);
-  border-left: 1px solid rgba(242, 222, 156, .25);
-  transition: width .12s ease, background .12s ease, box-shadow .12s ease;
+#createIframe .xc-frame-dock-button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  margin: 0 3px;
+  padding: 0 6px;
+  white-space: nowrap;
+  border: 1px solid #8a7650;
+  border-radius: 4px;
+  background: #30271c;
+  color: #f2de9c;
+  font: 11px/1.2 var(--xc-font-ui);
+  cursor: pointer;
 }
-.xiaochao-dock-preview span {
-  writing-mode: vertical-rl;
-  color: #fff1b5;
-  font: 18px/1.2 var(--xc-font-ui, system-ui, sans-serif);
-  font-weight: 800;
-  letter-spacing: .16em;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, .95), 0 0 8px rgba(255, 220, 120, .55);
-}
-.xiaochao-dock-preview--active {
-  width: 60px;
-  background: rgba(201, 161, 93, .42);
-  box-shadow: -4px 0 14px rgba(242, 222, 156, .28);
-}
-.xiaochao-dock-preview--active span {
-  color: #fff8dc;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, .95), 0 0 12px rgba(255, 232, 160, .9);
+#createIframe .xc-frame-dock-button:hover {
+  background: #4a3b26;
 }
 .xiaochao-tooltip {
   position: fixed;

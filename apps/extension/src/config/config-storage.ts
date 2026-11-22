@@ -68,6 +68,14 @@ export function createPlatformConfigStorage(platform: PlatformAdapter): ConfigSt
         shouldPersist = true;
       }
 
+      const legacyAssist = source['assist.extraEnabled'];
+      if (typeof legacyAssist === 'boolean') {
+        for (const key of ['assist.sunquanEnabled', 'assist.peixiuEnabled', 'assist.xushaoEnabled']) {
+          source[key] = legacyAssist && source[key] !== false;
+        }
+        shouldPersist = true;
+      }
+
       for (const key of Object.keys(CONFIG_SCHEMA) as XiaochaoConfigKey[]) {
         const candidate: unknown = source[key as string];
         const parsed = CONFIG_SCHEMA[key].parse(candidate);

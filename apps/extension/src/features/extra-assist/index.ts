@@ -10,12 +10,8 @@ export {
 export {
   AUTO_BOT_ENABLED_KEY,
   AUTO_HG_ENABLED_KEY,
-  EXTRA_ASSIST_ENABLED_KEY,
-  EXTRA_ASSIST_TOOLTIP,
   AUTO_BOT_TOOLTIP,
   AUTO_HG_TOOLTIP,
-  GAME_ASSIST_SWITCH_SETTINGS,
-  type GameAssistSwitchSetting
 } from './extra-assist-settings.ts';
 export {
   buildExtraAssistConfigData,

@@ -97,7 +97,7 @@ export const BLOCK_OTHER_SETTINGS: readonly BlockSetting[] = [
   {
     key: 'block.noticeWindow',
     label: '狗托',
-    tooltip: '屏蔽顶部滚动的狗托弹幕，含琳琅绘卷、祈愿台等出货广播'
+    tooltip: '隐藏游戏顶部的跑马灯公告'
   },
   {
     key: 'block.factionSlogan',

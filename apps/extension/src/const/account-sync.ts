@@ -19,7 +19,7 @@ export const ACCOUNT_CONFIG_DOCUMENT_VERSION = 2;
 /** 开始和服务器同步之前本机就改过的项记成这个时间：比没改过的默认值新，比之后任何一次真正的改动旧。 */
 export const ACCOUNT_CONFIG_UNSYNCED_SAVED_AT = 1;
 
-/** 启动时等这个账号的配置从服务器读回来，最多等这么久再挂面板，单位毫秒。 */
+/** 启动自动操作前等待当前账号的云配置，超时回退到本地配置，单位毫秒。 */
 export const ACCOUNT_CONFIG_STARTUP_WAIT_MS = 3_000;
 
 /** 每个账号记录哪些项改过、什么时候改的，键后面接账号编号。 */

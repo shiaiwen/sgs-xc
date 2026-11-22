@@ -20,6 +20,7 @@ import type {
   DeckRecordListKind
 } from './deck-record-interaction.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
+import { getMingpaiCardTags } from '../mingpai/graph/card-graph.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { DECK_RECORD_SYNC_MS } from '../../const/poll-intervals.ts';
 import {
@@ -218,11 +219,13 @@ export function installNativeDeckRecordController(
     const cardIds = displayableCardIds(rawCardIds);
     const knownCount = cardIds.filter(Boolean).length;
     const title = `${LIST_TITLES[activeList]}${knownCount ? ` · ${knownCount}张` : ''}`;
-    const signature = `${activeList}:${sortMode}:${cardIds.join(',')}:${title}`;
+    const labelsEnabled = configStore.get('display.cardLabelsEnabled');
+    const labels = new Map(cardIds.map((id) => [id, labelsEnabled ? getMingpaiCardTags(id).filter((tag) => tag === '炁') : []]));
+    const signature = `${activeList}:${sortMode}:${cardIds.join(',')}:${title}:${labelsEnabled}:${[...labels].map(([id, tags]) => `${id}:${tags.join(',')}`).join(';')}`;
     if (popup && popupSignature === signature) return;
 
     destroyPopup();
-    const created = createCardListPopup(root, activeList, cardIds, title, {
+    const created = createCardListPopup(root, activeList, cardIds, title, labels, {
       onEnter: clearHideTimer,
       onLeave: scheduleHide
     });
@@ -302,6 +305,7 @@ export function installNativeDeckRecordController(
   const stopStore = deckRecordStore.subscribe(sync);
   const stopConfigEnabled = configStore.subscribe('display.deckHudEnabled', sync);
   const stopConfigSort = configStore.subscribe('display.discardSortMode', sync);
+  const stopCardLabels = configStore.subscribe('display.cardLabelsEnabled', sync);
   const stopInteraction = interaction.subscribe((snapshot) => {
     if (snapshot.activeList) clearHideTimer();
     syncPopup();
@@ -324,6 +328,7 @@ export function installNativeDeckRecordController(
     stopStore();
     stopConfigEnabled();
     stopConfigSort();
+    stopCardLabels();
     stopInteraction();
     destroyOverlay();
   };
@@ -334,6 +339,7 @@ function createCardListPopup(
   kind: DeckRecordListKind,
   cardIds: readonly number[],
   title: string,
+  labels: ReadonlyMap<number, readonly string[]>,
   handlers: { onEnter: () => void; onLeave: () => void }
 ): { popup: UnknownRecord; cards: OfficialCardView[]; width: number; buttonRowOffset: number } | null {
   const laya = asRecord((globalThis as UnknownRecord).Laya);
@@ -398,7 +404,9 @@ function createCardListPopup(
         {
           x: POPUP_PADDING + column * (cardWidth + POPUP_CARD_GAP),
           y: POPUP_TITLE_HEIGHT + row * (cardHeight + POPUP_CARD_GAP)
-        }
+        },
+        OFFICIAL_CARD_DETAIL_SCALE,
+        { tracked: labels.get(cardId) }
       );
       if (view) {
         view.ui.zOrder = 10 + index;

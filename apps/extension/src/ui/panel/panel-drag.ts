@@ -2,7 +2,7 @@
  * 面板拖拽几何：阈值、视口约束、右缘停靠判定。
  */
 
-export const RIGHT_DOCK_THRESHOLD_PX = 25;
+const RIGHT_SNAP_THRESHOLD_PX = 25;
 export const FLOATING_PANEL_SAFE_MARGIN_PX = 8;
 export const DRAG_START_THRESHOLD_PX = 5;
 
@@ -31,12 +31,11 @@ export function hasExceededDragThreshold(deltaX: number, deltaY: number): boolea
   return Math.hypot(deltaX, deltaY) > DRAG_START_THRESHOLD_PX;
 }
 
-/** 指针或面板进入右侧吸附范围时，切换为与游戏窗口等高的停靠模式。 */
-export function shouldDockToRight(
-  pointerX: number,
+/** 浮动面板靠近右缘时吸附。 */
+export function shouldSnapToRight(
   panelRight: number,
   viewportWidth: number,
-  threshold = RIGHT_DOCK_THRESHOLD_PX
+  threshold = RIGHT_SNAP_THRESHOLD_PX
 ): boolean {
-  return viewportWidth - pointerX <= threshold || viewportWidth - panelRight <= threshold;
+  return viewportWidth - panelRight <= threshold;
 }

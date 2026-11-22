@@ -68,6 +68,7 @@ export interface ShanhetuMapConfigData {
   /** 战法、技能、卡牌合并表。 */
   Rplot: Record<string, RoguePlotMeta>;
   RspellNames?: Record<string, string>;
+  RgeneralSpellIds?: Record<string, string[]>;
   /** RewardGroup 与 Other 合并后的奖励表。 */
   Rreward: Record<string, string>;
   /** EnemyGrowth：`moon_diffnum` */

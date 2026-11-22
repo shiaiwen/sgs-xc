@@ -8,7 +8,11 @@ cd apps/extension && node tools/refresh-reference-reverse.js
 
 默认 zip 见仓库规则 `reference-xiaochao-zip.mdc`。`REFERENCE_MANIFEST.json` 记录本次解包版本与 SHA256。
 
-行号以 **1.6.31** 的 `xiaochao-pretty.js` 为准；换 zip 后需重新跑刷新脚本并核对行号。
+微端包为 `.reference/xiaochao-weiduan-1.1.94.zip`。该包不含小抄脚本，当前分析使用按官网经典版清单下载并校验的 **1.6.84** 脚本；具体来源和哈希见 `REFERENCE_MANIFEST.json`。下列历史锚点可能属于旧版本，使用前应重新搜索核对。
+
+## 卡牌标签（1.6.84）
+
+行号指 `.dev-data/appbak/decoded-1684-pretty.js`：独立标签层约 34075–34166；来源生成与清除约 34168–34212；心幽和顺机约 34258–34302；捷悟窗口约 35630 和 35818；夺炁约 36239、40011；牌堆和明牌弹层约 41748；移牌标记约 54671、54948。解码文件及其来源需按脚本哈希重新核验。
 
 ## 自动领取
 

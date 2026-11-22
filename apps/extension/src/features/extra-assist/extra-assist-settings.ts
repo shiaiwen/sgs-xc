@@ -4,7 +4,6 @@
 
 import type { XiaochaoConfigKey } from '../../config/config-schema.ts';
 
-export const EXTRA_ASSIST_ENABLED_KEY = 'assist.extraEnabled' satisfies XiaochaoConfigKey;
 export const SUNQUAN_ASSIST_KEY = 'assist.sunquanEnabled' satisfies XiaochaoConfigKey;
 export const PEIXIU_ASSIST_KEY = 'assist.peixiuEnabled' satisfies XiaochaoConfigKey;
 export const XUSHAO_ASSIST_KEY = 'assist.xushaoEnabled' satisfies XiaochaoConfigKey;
@@ -12,9 +11,6 @@ export const AUTO_BOT_ENABLED_KEY = 'assist.autoBotEnabled' satisfies XiaochaoCo
 export const AUTO_HG_ENABLED_KEY = 'assist.autoHGEnabled' satisfies XiaochaoConfigKey;
 export const BAI_SHENG_ENABLED_KEY = 'assist.baiShengEnabled' satisfies XiaochaoConfigKey;
 export const AUTO_BOT_TAVERN_TARGET_KEY = 'assist.autoBotTavernTarget' satisfies XiaochaoConfigKey;
-
-/** 进阶辅助总开关的说明。具体武将在下一级里单独选。 */
-export const EXTRA_ASSIST_TOOLTIP = '打开后可以分别选择孙权、裴秀、许邵';
 
 export interface ExtraAssistCharacterSetting {
   key: typeof SUNQUAN_ASSIST_KEY | typeof PEIXIU_ASSIST_KEY | typeof XUSHAO_ASSIST_KEY;
@@ -46,22 +42,3 @@ export const AUTO_HG_TOOLTIP = [
   '4.保持两窗口在前台',
   '自动化操作存在账号风险，请自行斟酌'
 ].join('\n');
-
-export interface GameAssistSwitchSetting {
-  key: typeof EXTRA_ASSIST_ENABLED_KEY
-    | typeof AUTO_BOT_ENABLED_KEY
-    | typeof AUTO_HG_ENABLED_KEY
-    | typeof BAI_SHENG_ENABLED_KEY;
-  label: string;
-  tooltip: string;
-  /** 开关可改配置，但功能本体尚未接通时在面板上标明。 */
-  pending?: boolean;
-}
-
-export const GAME_ASSIST_SWITCH_SETTINGS: readonly GameAssistSwitchSetting[] = [
-  {
-    key: EXTRA_ASSIST_ENABLED_KEY,
-    label: '辅助功能',
-    tooltip: EXTRA_ASSIST_TOOLTIP
-  }
-];

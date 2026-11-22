@@ -43,6 +43,7 @@ const TARGET_SEAT_ID_KEYS = [
 ] as const;
 const CARD_ID_KEYS = ['CardID', 'CardId', 'cardID', 'cardId'] as const;
 const DRAW_PILE_ZONE = 1;
+const HAND_ZONE = 5;
 const DRAW_PILE_TOP = 0xff00;
 const DRAW_PILE_BOTTOM = 0;
 /** 协议没写从哪一头拿。0 是牌堆底，不能拿来填这个空缺。 */
@@ -364,7 +365,7 @@ function translateCardMovement(payload: UnknownRecord): GameEvent | null {
   const cardCount = readNonNegativeInteger(body, ['CardCount', 'cardCount', 'card_count']);
   const moveType = readNonNegativeInteger(body, ['MoveType', 'moveType', 'move_type']);
   // MoveType=0 仍可能是有效的牌移动枚举值；有正数牌数且类名为 MoveCard 时即可记录。
-  if (!cardCount || payload.isSend === true || body.isSend === true) return null;
+  if (!cardCount || body.isSend === true || body.IsSend === true) return null;
   const fromZone = readNonNegativeInteger(body, ['FromZone', 'fromZone', 'from_zone']) ?? 0;
   const toZone = readNonNegativeInteger(body, ['ToZone', 'toZone', 'to_zone']) ?? 0;
   const moved: Extract<GameEvent, { type: 'cards-moved' }> = {
@@ -389,8 +390,20 @@ function translateCardMovement(payload: UnknownRecord): GameEvent | null {
     spellId: readNonNegativeInteger(body, ['SpellID', 'SpellId', 'spellID', 'spellId', 'spell_id']) ?? 0,
     srcSeatId: readSeatId(body, SRC_SEAT_ID_KEYS)
   };
+  if (moved.toZone === HAND_ZONE && (moved.fromZone !== HAND_ZONE || moved.fromId !== moved.toId)
+    && skillShowsIncomingCardFaces(body)) {
+    moved.showsCardFaces = true;
+  }
   noteBottomDrawSeat(moved.srcSeatId ?? moved.toId, moved.spellId);
   return adjustBottomDraw(adjustPlayedCardPile(moved));
+}
+
+function skillShowsIncomingCardFaces(body: UnknownRecord): boolean {
+  try {
+    return asRecord(body.Spell)?.NeedShowCardAnyTime === true;
+  } catch {
+    return false;
+  }
 }
 
 /** 牌堆移动没写位置时记成未指定，后面再判断顶还是底。别的区仍用 0。 */

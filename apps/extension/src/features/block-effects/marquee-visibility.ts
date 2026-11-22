@@ -2,8 +2,6 @@
  * 顶部跑马灯可见性接管：屏蔽时强制不绘制，解除时恢复游戏期望的 visible。
  */
 
-import { isXiaochaoOverlayElement } from '../../ui/display-layer.ts';
-
 type UnknownRecord = Record<string, unknown>;
 
 interface VisibilityGuard {
@@ -24,14 +22,16 @@ const GUARD_KEY = '__xcSystemNoticeVisibilityGuard';
  * 屏蔽期间游戏仍可正常设置可见性，但实际始终不绘制。
  */
 export function createMarqueeVisibilityBlocker() {
-  const guards = new Set<VisibilityGuard>();
+  const guards = new Map<UnknownRecord, VisibilityGuard>();
 
   function hide(ui: UnknownRecord): boolean {
     if (ui.destroyed) return false;
-    const existing = ui[GUARD_KEY] as VisibilityGuard | undefined;
+    const existing = guards.get(ui);
     if (existing) {
-      existing.blocked = true;
-      repaint(ui);
+      if (existing.fallback && ui.visible !== false) {
+        existing.requestedVisible = true;
+        ui.visible = false;
+      }
       return true;
     }
     const ownVisible = Object.getOwnPropertyDescriptor(ui, 'visible');
@@ -52,6 +52,13 @@ export function createMarqueeVisibilityBlocker() {
       ownRenderDescriptor: ownRender,
       fallback: false
     };
+    // 原生跑马灯的 visible setter 会同步自定义绘制子项，必须保留。
+    if (writeVisible) {
+      writeVisible(false);
+      guard.fallback = true;
+      guards.set(ui, guard);
+      return true;
+    }
     try {
       Object.defineProperty(ui, GUARD_KEY, { configurable: true, value: guard });
       if (!ownRender?.configurable || !('value' in ownRender)) throw new Error('_visible 渲染字段不可接管');
@@ -79,7 +86,7 @@ export function createMarqueeVisibilityBlocker() {
           if (!current.blocked && writeVisible) writeVisible(Boolean(value));
         }
       });
-      guards.add(guard);
+      guards.set(ui, guard);
       repaint(ui);
       return true;
     } catch {
@@ -91,7 +98,7 @@ export function createMarqueeVisibilityBlocker() {
         delete ui[GUARD_KEY];
         ui.visible = false;
         if ('_visible' in ui) ui._visible = false;
-        guards.add(guard);
+        guards.set(ui, guard);
         return true;
       } catch (error) {
         console.warn('[屏蔽设置] 隐藏顶部广播失败', error);
@@ -101,7 +108,7 @@ export function createMarqueeVisibilityBlocker() {
   }
 
   function restore(guard: VisibilityGuard): boolean {
-    guards.delete(guard);
+    guards.delete(guard.ui);
     const { ui } = guard;
     if (ui.destroyed) return false;
     const visible = guard.requestedVisible;
@@ -125,118 +132,55 @@ export function createMarqueeVisibilityBlocker() {
     }
   }
 
-  /** 按开关同步：关闭或 UI 已销毁时恢复，开启时隐藏当前全部跑马灯 UI。 */
-  function sync(uis: UnknownRecord[], blocked: boolean): void {
-    Array.from(guards).forEach((guard) => {
-      if (guard.ui.destroyed || !blocked) restore(guard);
-    });
-    if (blocked) uis.forEach(hide);
+  function sync(uis: ReadonlySet<UnknownRecord>): void {
+    for (const guard of guards.values()) {
+      if (!uis.has(guard.ui) || guard.ui.destroyed) restore(guard);
+    }
+    for (const ui of uis) hide(ui);
   }
 
   function restoreAll(): void {
-    Array.from(guards).forEach(restore);
+    for (const guard of guards.values()) restore(guard);
   }
 
   return { sync, restoreAll };
 }
 
-/** 跑马灯管理器上的全部跑马灯 UI（单条、列表、活动列表及后续新增字段）。 */
-export function collectMarqueeUis(manager: UnknownRecord): UnknownRecord[] {
-  const candidates: unknown[] = [manager.marqueeUI];
-  for (const key of Object.keys(manager)) {
-    if (!/marquee/i.test(key)) continue;
-    const value = manager[key];
-    if (value && typeof value === 'object' && !Array.isArray(value) && isDisplayNode(value)) {
-      candidates.push(value);
-      continue;
+/** 只收集管理器持有的跑马灯，禁止从舞台或聊天容器推断。 */
+export function collectManagedMarqueeNodes(manager?: UnknownRecord | null): Set<UnknownRecord> {
+  const found = new Set<UnknownRecord>();
+  if (typeof manager?.ShowMarquee !== 'function' || typeof manager.HideAllMarquee !== 'function') return found;
+  for (const value of [
+    manager.marqueeUI,
+    ...marqueeListItems(manager.marqueeUIList),
+    ...marqueeListItems(manager.marqueeUIActList)
+  ]) {
+    const node = asRecord(value);
+    if (node && !node.destroyed && (typeof node.visible === 'boolean' || typeof node._visible === 'boolean')) {
+      found.add(node);
     }
-    candidates.push(...listItems(value));
-  }
-  candidates.push(...listItems(manager.marqueeUIList), ...listItems(manager.marqueeUIActList));
-  return uniqueLiveNodes(candidates);
-}
-
-/** 仅匹配跑马灯/公告节点名；勿含 chatmsg/chatsys，否则会误伤 ChatSysNewsManager 与对局聊天输入。 */
-const MARQUEE_NODE_NAME = /marquee|systemnotice|noticebar|broadcast|scrolltip|runtext|跑马|广播|绘卷/i;
-
-/** 供测试与收集逻辑共用：节点名/类名是否像跑马灯（不含普通聊天）。 */
-export function isMarqueeDisplayNodeName(nameOrCtor: string): boolean {
-  return MARQUEE_NODE_NAME.test(nameOrCtor);
-}
-
-/**
- * 管理器未挂上或 UI 不在列表里时，从顶部 UI 层兜底查找跑马灯节点。
- */
-export function collectMarqueeUisFromDisplayTree(
-  layers: Array<UnknownRecord | null | undefined>
-): UnknownRecord[] {
-  const found: UnknownRecord[] = [];
-  const seen = new Set<UnknownRecord>();
-  for (const root of layers) {
-    if (!root) continue;
-    walkDisplayTree(root, (node) => {
-      if (!isDisplayNode(node) || seen.has(node)) return;
-      const ctor = String(asRecord(Object.getPrototypeOf(node)?.constructor)?.name ?? '');
-      const name = String(node.name ?? '');
-      if (!MARQUEE_NODE_NAME.test(name) && !MARQUEE_NODE_NAME.test(ctor)) return;
-      seen.add(node);
-      found.push(node);
-    }, 600);
   }
   return found;
 }
 
-function uniqueLiveNodes(candidates: unknown[]): UnknownRecord[] {
-  return Array.from(new Set(candidates.filter(
-    (ui): ui is UnknownRecord => isDisplayNode(ui) && !ui.destroyed
-  )));
-}
-
-function isDisplayNode(value: unknown): value is UnknownRecord {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+function marqueeListItems(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  const list = asRecord(value);
+  if (typeof list?.forEach === 'function') {
+    const items: unknown[] = [];
+    list.forEach((_key: unknown, node: unknown) => items.push(node));
+    return items;
+  }
+  if (Array.isArray(list?.datum)) return list.datum;
+  if (Array.isArray(list?._objDatum) && list._objDatum.length) return list._objDatum;
+  const maps = asRecord(list?._maps);
+  return maps ? Object.values(maps).flat() : [];
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
-}
-
-function walkDisplayTree(
-  root: UnknownRecord,
-  visit: (node: UnknownRecord) => void,
-  budget: number
-): void {
-  const queue: UnknownRecord[] = [root];
-  let scanned = 0;
-  while (queue.length > 0 && scanned < budget) {
-    const node = queue.shift()!;
-    scanned += 1;
-    visit(node);
-    const count = Number(node.numChildren);
-    if (!Number.isInteger(count) || typeof node.getChildAt !== 'function') continue;
-    for (let index = 0; index < count; index += 1) {
-      const child = asRecord(node.getChildAt(index));
-      if (child) queue.push(child);
-    }
-  }
-}
-
-/** 兼容数组与 Laya 的几种列表/字典容器。 */
-function listItems(list: unknown): unknown[] {
-  try {
-    if (Array.isArray(list)) return list.filter((item) => item != null);
-    const record = list && typeof list === 'object' ? list as UnknownRecord : null;
-    if (!record) return [];
-    if (Array.isArray(record.datum)) return record.datum.filter((item) => item != null);
-    if (Array.isArray(record._objDatum) && record._objDatum.length) return record._objDatum.filter((item) => item != null);
-    if (record._maps && typeof record._maps === 'object') {
-      return Object.values(record._maps as UnknownRecord).flat().filter((item) => item != null);
-    }
-  } catch {
-    // 容器结构异常时视为空。
-  }
-  return [];
 }
 
 function findDescriptor(target: unknown, name: string): PropertyDescriptor | undefined {
@@ -249,171 +193,4 @@ function findDescriptor(target: unknown, name: string): PropertyDescriptor | und
 
 function repaint(ui: UnknownRecord): void {
   if (typeof ui.repaint === 'function') (ui.repaint as () => void).call(ui);
-}
-
-/** 扫描舞台与 DOM，找出当前狗托跑马灯容器节点。 */
-export function collectDogTuoBannerNodes(
-  globalObject: { Laya?: { stage?: unknown } }
-): UnknownRecord[] {
-  const found: UnknownRecord[] = [];
-  const seen = new Set<UnknownRecord>();
-  const stage = asRecord(globalObject.Laya?.stage);
-  if (stage) {
-    walkDisplayTree(stage, (node) => {
-      if (!isDogTuoBannerNode(node)) return;
-      const root = findBannerRoot(node);
-      if (seen.has(root) || root.destroyed) return;
-      seen.add(root);
-      found.push(root);
-    }, 12000);
-  }
-  return found;
-}
-
-/** 狗托横幅固定在屏幕最上方，结算等中间文案不能按「恭喜获得」误伤。 */
-function isTopBannerLayout(rect: { y: number; width: number; height: number }): boolean {
-  return rect.y <= 140 && rect.width >= 160 && rect.height >= 10 && rect.height <= 180;
-}
-
-export function isDogTuoBannerNode(node: UnknownRecord): boolean {
-  if (looksLikeChatOrInputNode(node)) return false;
-  const rect = readGlobalRect(node);
-  if (!rect || !isTopBannerLayout(rect)) return false;
-  const text = normalizeDogTuoText(collectSubtreeText(node, 14));
-  if (text && matchesDogTuoBannerText(text)) return true;
-  const partial = normalizeDogTuoText(collectSubtreeText(node, 6));
-  return /(?:祈愿台|琳琅绘卷|琳琅|翻翻乐)/.test(partial) && /抽奖|活动中/.test(partial);
-}
-
-/** 聊天面板、输入框及其容器不能当狗托横幅藏掉。 */
-function looksLikeChatOrInputNode(node: UnknownRecord): boolean {
-  const ctor = String(asRecord(Object.getPrototypeOf(node)?.constructor)?.name ?? '');
-  const name = String(node.name ?? '');
-  if (/input|textarea|editable|chatpanel|chatview|chatbox|chatbar|chatui|chatedit|聊天/i.test(name)) return true;
-  if (/Input|TextInput|TextArea|ChatPanel|ChatView|ChatBox|ChatBar|ChatUI|ChatEdit/i.test(ctor)) return true;
-  // ChatSys* 管理器/面板（跑马灯类名含 Marquee 的除外）
-  if (/chatsys/i.test(name) && !/marquee/i.test(name)) return true;
-  if (/ChatSys/i.test(ctor) && !/Marquee/i.test(ctor)) return true;
-  return false;
-}
-
-/** 协议/UI 管理器未命中时，兜底隐藏 DOM 层狗托条。 */
-export function sweepDogTuoTextOnStage(
-  globalObject: { Laya?: { stage?: unknown } },
-  blocked: boolean
-): void {
-  if (!blocked) return;
-  sweepDogTuoTextInDom();
-}
-
-function collectSubtreeText(root: UnknownRecord, maxDepth: number): string {
-  const parts: string[] = [];
-  const queue: Array<{ node: UnknownRecord; depth: number }> = [{ node: root, depth: 0 }];
-  let steps = 0;
-  while (queue.length > 0 && steps < 200) {
-    const item = queue.shift()!;
-    steps += 1;
-    const chunk = readDisplayText(item.node);
-    if (chunk) parts.push(chunk);
-    if (item.depth >= maxDepth) continue;
-    const count = Number(item.node.numChildren);
-    if (!Number.isInteger(count) || typeof item.node.getChildAt !== 'function') continue;
-    for (let index = 0; index < count; index += 1) {
-      const child = asRecord(item.node.getChildAt(index));
-      if (child) queue.push({ node: child, depth: item.depth + 1 });
-    }
-  }
-  return parts.join('');
-}
-
-/** 尽量找到整条横幅容器，避免只藏单个字节点；不爬到聊天/输入容器。 */
-function findBannerRoot(node: UnknownRecord): UnknownRecord {
-  let current: UnknownRecord = node;
-  let candidate: UnknownRecord = node;
-  for (let depth = 0; depth < 10; depth += 1) {
-    const parent = asRecord(current.parent);
-    if (!parent || looksLikeChatOrInputNode(parent)) break;
-    const merged = normalizeDogTuoText(collectSubtreeText(parent, 14));
-    if (merged && matchesDogTuoBannerText(merged)) {
-      candidate = parent;
-      current = parent;
-      continue;
-    }
-    break;
-  }
-  return candidate;
-}
-
-function sweepDogTuoTextInDom(): void {
-  if (typeof document === 'undefined') return;
-  const roots = [
-    document.getElementById('layaCanvas')?.parentElement,
-    document.getElementById('layaContainer'),
-    document.body
-  ].filter((item): item is HTMLElement => item instanceof HTMLElement);
-  for (const root of roots) {
-    const nodes = root.querySelectorAll('div, span, p, label');
-    for (const element of nodes) {
-      if (!(element instanceof HTMLElement)) continue;
-      if (isXiaochaoOverlayElement(element)) continue;
-      // 含输入控件或自身是可编辑节点时不能藏，否则排位/斗地主等对局打不了字。
-      if (element.closest('input, textarea, [contenteditable="true"]')) continue;
-      if (element.querySelector('input, textarea, [contenteditable="true"]')) continue;
-      if (element.isContentEditable) continue;
-      const rect = element.getBoundingClientRect();
-      // 过大的容器多半是页面壳，textContent 聚合了狗托文案也不该整块隐藏。
-      if (rect.width >= window.innerWidth * 0.8 && rect.height >= 120) continue;
-      const ownText = normalizeDogTuoText(
-        Array.from(element.childNodes)
-          .filter((child) => child.nodeType === Node.TEXT_NODE)
-          .map((child) => child.textContent ?? '')
-          .join('')
-      );
-      const text = ownText || normalizeDogTuoText(element.textContent ?? '');
-      if (!text || !matchesDogTuoBannerText(text)) continue;
-      // 仅藏矮横幅；大块 UI 留给 Laya 侧按节点屏蔽。
-      if (rect.height > 180) continue;
-      element.style.setProperty('display', 'none', 'important');
-      element.style.setProperty('visibility', 'hidden', 'important');
-    }
-  }
-}
-
-export function matchesDogTuoBannerText(text: string): boolean {
-  if (/祈愿台|琳琅绘卷|翻翻乐|天载阁|元藏/.test(text)) return true;
-  if (/恭喜/.test(text) && /(?:抽奖|祈愿台|琳琅绘卷|翻翻乐)/.test(text)) return true;
-  return /抽奖\d+次/.test(text);
-}
-
-function readGlobalRect(node: UnknownRecord): { x: number; y: number; width: number; height: number } | null {
-  try {
-    const point = typeof node.localToGlobal === 'function'
-      ? node.localToGlobal({ x: 0, y: 0 }) as { x?: number; y?: number }
-      : null;
-    const width = Number(node.width ?? node._width);
-    const height = Number(node.height ?? node._height);
-    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
-    return { x: point.x, y: point.y, width, height };
-  } catch {
-    return null;
-  }
-}
-
-function readDisplayText(node: UnknownRecord): string {
-  const parts: string[] = [];
-  for (const key of ['text', '_text', 'innerHTML', 'innerTEXT', '_innerHTML']) {
-    const value = node[key];
-    if (typeof value === 'string' && value.trim()) parts.push(value);
-  }
-  const textField = asRecord(node._tf) ?? asRecord(node.textField) ?? asRecord(node._style);
-  if (typeof textField?.text === 'string' && textField.text.trim()) parts.push(textField.text);
-  const element = asRecord(node._element) ?? asRecord(node._$element);
-  if (typeof element?.innerHTML === 'string' && element.innerHTML.trim()) parts.push(element.innerHTML);
-  if (typeof node._innerHTML === 'string' && node._innerHTML.trim()) parts.push(node._innerHTML);
-  return parts.join(' ');
-}
-
-function normalizeDogTuoText(value: string): string {
-  return value.replace(/<[^>]*>/g, '').replace(/\u0000/g, '').trim();
 }

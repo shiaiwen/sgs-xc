@@ -17,6 +17,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildSync } from 'esbuild';
 import { USERSCRIPT_PAYLOAD_FILE_NAME, USERSCRIPT_PAYLOAD_URL } from '../src/const/userscript-payload.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -281,6 +282,17 @@ async function main() {
   }
 
   const shellPackage = JSON.parse(readFileSync(path.join(appDir, 'package.json'), 'utf8'));
+  // 沙盒 preload 只能 require Electron 内置模块。把登录助手合进 guest preload。
+  const guestPreload = path.join(appDir, 'script', 'electron_renderer.js');
+  const { outputFiles } = buildSync({
+    entryPoints: [guestPreload],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'cjs',
+    external: ['electron']
+  });
+  writeFileSync(guestPreload, outputFiles[0].contents);
   const projectPackage = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   // 微端壳版本保持壳自身；脚本版本用工程 package.json，写入 @version 头。
   const scriptVersion = String(projectPackage.version || shellPackage.version || '0');

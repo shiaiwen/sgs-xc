@@ -23,7 +23,7 @@ function emitter(values = {}) {
   });
 }
 
-function harness(managers, quest = null, windows = {}) {
+function harness(managers, quest = null, windows = {}, dispatcher = null) {
   let now = 100_000;
   let account = 'account-a';
   const tasks = { disposed: false, later(fn, ms) { if (ms <= 1200) queueMicrotask(fn); } };
@@ -31,10 +31,12 @@ function harness(managers, quest = null, windows = {}) {
     locator: {
       manager: name => managers[name] ?? null,
       findManagerByPredicate: check => quest && check(quest) ? quest : null,
-      obfuscatedMethodName: () => null
+      obfuscatedMethodName: () => null,
+      dispatcher: () => dispatcher
     },
     windows: { get: () => null, release() {}, ...windows },
     claims: createAutoTaskClaims(undefined, () => account, () => now),
+    patcher: dispatcher ? createMethodPatcher() : undefined,
     tasks, enabled: () => !tasks.disposed,
     options: () => ({ skipTavern: false, skipMail: true, skipDailyGeneralBag: true,
       skipSignTrialCard: true, skipDiJiaQuan: false, skipHuanLeDou: true,
@@ -47,13 +49,19 @@ function harness(managers, quest = null, windows = {}) {
 
 async function flush() { for (let i = 0; i < 35; i++) await Promise.resolve(); }
 
+class ActivityManager {
+  static NEW_JD_INFO_SUC = 'codex-info';
+  static NEW_JD_REWARD_REP = 'codex-reward';
+}
+
 for (const first of ['free', 'paid']) {
   test(`new codex waits for both claim lists (${first} arrives first)`, async () => {
     let views = 0;
     let claims = 0;
-    const activity = emitter({ NewJDLevel: 1, NewJDHaveRewardList: [], NewJDHaveRewardList_bp: [],
-      HasNewJDRewardRed: true, NEW_JD_INFO_SUC: 'codex-info', NEW_JD_REWARD_REP: 'codex-reward',
-      SendGetNewJDInfoReq() {}, SendGetNewJDRewardReq() { claims++; } });
+    const activity = emitter(Object.assign(new ActivityManager(), {
+      NewJDLevel: 1, NewJDHaveRewardList: [], NewJDHaveRewardList_bp: [], HasNewJDRewardRed: true,
+      SendGetNewJDInfoReq() {}, SendGetNewJDRewardReq() { claims++; }
+    }));
     const h = harness({ ActivityManager: activity }, null, {
       get(name) {
         if (name !== 'NewJunDianViewCtrl') return null;
@@ -76,6 +84,83 @@ for (const first of ['free', 'paid']) {
     assert.equal(activity.listenerCount(), 0);
   });
 }
+
+function codexHarness() {
+  const requests = [];
+  const claimed = [];
+  const errors = [];
+  let infoRequests = 0;
+  const dispatcher = { ShowProtocolError(id, code) { errors.push([id, code]); } };
+  const activity = emitter(Object.assign(new ActivityManager(), {
+    NewJDLevel: 0, NewJDHaveRewardList: [], HasNewJDRewardRed: true, Ged: dispatcher,
+    SendGetNewJDInfoReq() {
+      infoRequests++;
+      this.NewJDHaveRewardList = [...claimed];
+      this.emit(ActivityManager.NEW_JD_INFO_SUC);
+    },
+    SendGetNewJDRewardReq(...args) { requests.push(args); }
+  }));
+  const proxy = emitter({ event(name, payload) { this.emit(name, payload); } });
+  const event = 'decodeClientNewJDGetAwardRep';
+  proxy.on(event, activity, ({ Protocol }) => {
+    const { result } = Protocol.Data.ProtoObj;
+    if (result) dispatcher.ShowProtocolError(Protocol.Id, result);
+    else activity.emit(ActivityManager.NEW_JD_REWARD_REP);
+  });
+  const h = harness({ ActivityManager: activity, ServerProxy: proxy }, null, {
+    get: name => name === 'NewJunDianViewCtrl' ? { createSubView: () => ({
+      currentScore: 100,
+      curScoreAwards: [7, 8].map(Id => ({ Id, Point: 10, ItemId: 100, FfItemId: 101 }))
+    }) } : null
+  }, dispatcher);
+  function reply(data) {
+    if (!data.result && data.id) claimed.push(data.id);
+    proxy.event(event, { Protocol: { Id: 170297, Data: { ProtoObj: data } } });
+  }
+  return { ...h, activity, dispatcher, errors, requests, reply, get infoRequests() { return infoRequests; } };
+}
+
+test('new codex claims free rewards sequentially after refreshing the claimed list', async () => {
+  const h = codexHarness();
+  h.runner.runPass();
+  await flush();
+  assert.deepEqual(h.requests, [[7, false, false]]);
+  h.reply({ id: 7 });
+  await flush();
+  assert.deepEqual(h.activity.NewJDHaveRewardList, [7]);
+  assert.deepEqual(h.requests, [[7, false, false], [8, false, false]]);
+  assert.equal(h.infoRequests, 2);
+  h.reply({ id: 8 });
+  await flush();
+  assert.deepEqual(h.activity.NewJDHaveRewardList, [7, 8]);
+  assert.equal(h.infoRequests, 3);
+  assert.equal(h.activity.listenerCount(), 0);
+});
+
+test('new codex silences only a matching automatic claim rejection', async () => {
+  const h = codexHarness();
+  h.runner.runPass();
+  await flush();
+  h.reply({ id: 8, result: 2 });
+  h.reply({ id: 7, is_bp: true, result: 3 });
+  h.reply({ result: 4 });
+  h.reply({ id: 7, result: 5 });
+  h.dispatcher.ShowProtocolError(170297, 5);
+  await flush();
+  assert.deepEqual(h.errors, [[170297, 2], [170297, 3], [170297, 4], [170297, 5]]);
+  assert.deepEqual(h.requests, [[7, false, false]]);
+});
+
+test('new codex leaves the game error visible when a manual claim overlaps the automatic one', async () => {
+  const h = codexHarness();
+  h.runner.runPass();
+  await flush();
+  h.activity.SendGetNewJDRewardReq(7, false, false);
+  h.reply({ id: 7, result: 2 });
+  await flush();
+  assert.deepEqual(h.requests, [[7, false, false], [7, false, false]]);
+  assert.deepEqual(h.errors, [[170297, 2]]);
+});
 
 test('old privilege daily silver skips inactive cards and still claims active cards', async () => {
   let active = false;

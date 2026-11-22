@@ -16,6 +16,11 @@ export interface OfficialCardView {
   pooled?: boolean;
 }
 
+export interface OfficialCardLabels {
+  native?: readonly string[];
+  tracked?: readonly string[];
+}
+
 export const OFFICIAL_CARD_BASE_WIDTH = 93;
 export const OFFICIAL_CARD_BASE_HEIGHT = 130;
 /** 详情牌一律原尺寸画完，再整张缩到 0.75。 */
@@ -59,7 +64,8 @@ export function createOfficialCardView(
   height = OFFICIAL_CARD_BASE_HEIGHT,
   scene = asRecord(locateGameScene(window)),
   position?: { x: number; y: number },
-  scale = OFFICIAL_CARD_DETAIL_SCALE
+  scale = OFFICIAL_CARD_DETAIL_SCALE,
+  labels: OfficialCardLabels = {}
 ): OfficialCardView | null {
   if (!host || !(cardId > 0) || !scene) return null;
   const container = findCardContainer(scene);
@@ -94,7 +100,7 @@ export function createOfficialCardView(
     if (typeof ui.SetActualSize === 'function') call(ui, 'SetActualSize', OFFICIAL_CARD_BASE_WIDTH, OFFICIAL_CARD_BASE_HEIGHT);
     call(ui, 'pos', 0, 0);
     (ui.Draw as Function).call(ui, drawHost);
-    suppressOfficialCardSkillTags(ui);
+    renderDetachedCardLabels(ui, labels);
     return { ui, owner: container, cardId, holder, pooled };
   } catch {
     if (ui) releaseOfficialCardView({ ui, owner: container, cardId, pooled });
@@ -127,31 +133,29 @@ function createDetailHolder(x: number, y: number, scale = OFFICIAL_CARD_DETAIL_S
   return holder;
 }
 
-/** 覆盖层不展示牌面自带的技能来源标签；不改写局内手牌对象上的 tagArr1。 */
-function suppressOfficialCardSkillTags(ui: UnknownRecord): void {
-  ui.__xcSuppressLabel = true;
-  const card = asRecord(ui.Card) ?? asRecord(ui.card);
-  const tagKey = card && Object.prototype.hasOwnProperty.call(card, 'tagArr1')
-    ? 'tagArr1'
-    : card && Object.prototype.hasOwnProperty.call(card, 'TagArr1')
-      ? 'TagArr1'
-      : null;
-  const original = tagKey && card ? card[tagKey] : undefined;
+/** 用弹层自己的标签绘制，随后恢复原卡对象的标签引用。 */
+function renderDetachedCardLabels(ui: UnknownRecord, labels: OfficialCardLabels): void {
+  const card = asRecord(ui.Card) ?? asRecord(ui.theCard) ?? asRecord(ui.card);
+  if (!card) return;
+  const native = labels.native ?? [];
+  const tracked = labels.tracked ?? [];
+  const useQiStyle = tracked.includes('炁') && !native.includes('炁') && typeof ui.AddCardTag2 === 'function';
+  const text = [...new Set([...native, ...tracked.filter((tag) => !useQiStyle || tag !== '炁')])];
+  const original = Object.getOwnPropertyDescriptor(card, 'tagArr1');
   try {
-    if (card && tagKey) card[tagKey] = [];
-    call(ui, 'AddCardTag');
-    call(ui, 'UpdateTag');
-    call(ui, 'layoutTagUI');
+    card.tagArr1 = text;
+    try {
+      call(ui, 'AddCardTag');
+      call(ui, 'UpdateTag');
+      if (useQiStyle) call(ui, 'AddCardTag2', '炁');
+      call(ui, 'layoutTagUI');
+    } finally {
+      if (original) Object.defineProperty(card, 'tagArr1', original);
+      else delete card.tagArr1;
+    }
   } catch {
     // 没有标签接口时保持牌面即可。
-  } finally {
-    if (card && tagKey) {
-      if (original === undefined) delete card[tagKey];
-      else card[tagKey] = original;
-    }
   }
-  const label = asRecord(ui.__xcLabelBtn);
-  if (label) label.visible = false;
 }
 
 /**

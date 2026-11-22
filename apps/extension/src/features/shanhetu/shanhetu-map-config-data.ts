@@ -47,7 +47,8 @@ function readAbbreviationMap(raw: unknown): Map<string, string> {
   const record = asRecord(raw);
   const metaRoot = asRecord(record?.root) ?? asRecord(record?.Root) ?? record;
   const table = new Map<string, string>();
-  for (const entry of asArray(metaRoot?.abbreviation ?? metaRoot?.Abbreviation)) {
+  const abbreviation = metaRoot?.abbreviation ?? metaRoot?.Abbreviation;
+  for (const entry of asArray(asRecord(abbreviation)?.field ?? abbreviation)) {
     const item = asRecord(entry);
     if (!item || typeof item.Short !== 'string' || typeof item.Long !== 'string') continue;
     table.set(item.Short, item.Long);
@@ -61,6 +62,26 @@ function expandRecord(record: UnknownRecord, abbreviation: Map<string, string>):
     expanded[abbreviation.get(key) ?? key] = value;
   }
   return expanded;
+}
+
+function buildGeneralSpellIds(raw: unknown): Record<string, string[]> {
+  const abbreviation = readAbbreviationMap(raw);
+  const characters = asArray(asRecord(rootOf(raw)?.GameCharacters)?.character);
+  const result: Record<string, string[]> = {};
+  for (const entry of characters) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const character = expandRecord(record, abbreviation);
+    const id = Number(character.id ?? record.a);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    const skills = [];
+    for (let index = 1; index <= 6; index += 1) {
+      const spellId = Number(character[`spellId${index}`]);
+      if (Number.isInteger(spellId) && spellId > 0) skills.push(String(spellId));
+    }
+    if (skills.length) result[id] = skills;
+  }
+  return result;
 }
 
 function localize(textTable: Record<string, string>, value: unknown): string {
@@ -525,7 +546,8 @@ function emptyConfig(): ShanhetuMapConfigData {
  */
 export function buildShanhetuMapConfigData(
   raw: unknown,
-  names: ShanhetuMapNameTables = {}
+  names: ShanhetuMapNameTables = {},
+  characterConfig?: unknown
 ): ShanhetuMapConfigData {
   const root = rootOf(raw);
   if (!root) return emptyConfig();
@@ -550,6 +572,7 @@ export function buildShanhetuMapConfigData(
     text,
     Rplot,
     RspellNames: Object.fromEntries(Array.from(names.spells ?? []).map(([id, spell]) => [String(id), spell.name])),
+    RgeneralSpellIds: buildGeneralSpellIds(characterConfig),
     Rreward,
     Rgrow: buildRgrow(root),
     RnumGrow: buildRnumGrow(root),

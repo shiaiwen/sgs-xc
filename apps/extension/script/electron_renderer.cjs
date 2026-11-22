@@ -11,6 +11,7 @@
  * 里对 xiaochao-focus-webview 的处理，否则中文输入法会打不进游戏页。
  */
 const { ipcRenderer, contextBridge } = require('electron');
+const { installLoginPasswordManager, isSupportedLoginPage } = require('../tools/release-app-shell/script/login-password-manager.cjs');
 
 /** 向主进程查询本机 Steam ID（非 Steam 包一般为空）。 */
 async function GetSteamId(){
@@ -145,3 +146,12 @@ function exposeApi() {
 }
 
 exposeApi();
+
+if (process.isMainFrame !== false && isSupportedLoginPage(window.location)) {
+    if (process.contextIsolated && contextBridge) {
+        contextBridge.exposeInMainWorld('WDVerSion', api.WDVerSion);
+    } else {
+        window.WDVerSion = api.WDVerSion;
+    }
+    installLoginPasswordManager({ window, storage: xiaochaoStorage, focusWebview: api.focusWebview });
+}

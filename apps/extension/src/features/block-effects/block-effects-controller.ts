@@ -2,8 +2,7 @@
  * 屏蔽特效/弹窗总控：按配置关闭广告、MVP、特效资源与协议字段改写。
  */
 
-import { CONFIG_CHANGE_EVENT, type XiaochaoConfigStore } from '../../config/config-store.ts';
-import { refreshGameEventDispatcher } from '../../features/seat-display/game-scene-locator.ts';
+import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
   createLayaObjectLocator,
@@ -12,7 +11,7 @@ import {
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher, type MethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
-import { MARQUEE_SWEEP_MS, NOTICE_BLOCK_CHECK_MS } from '../../const/poll-intervals.ts';
+import { MARQUEE_SWEEP_MS } from '../../const/poll-intervals.ts';
 import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
 import { SKILL_SWITCH_SKIN_PLAY_TYPES } from '../../const/skin-play-type.ts';
 import {
@@ -27,16 +26,8 @@ import {
   isXiaochaoGameplayUiReady
 } from '../skin-background/skin-runtime.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
-import { applyBlockMessageFilters, shouldDropNoticeProtocol } from './block-message-filters.ts';
-import { installPersistentMarqueeEventBlock } from './marquee-event-hook.ts';
-import {
-  collectMarqueeUis,
-  collectMarqueeUisFromDisplayTree,
-  collectDogTuoBannerNodes,
-  createMarqueeVisibilityBlocker,
-  isDogTuoBannerNode,
-  sweepDogTuoTextOnStage
-} from './marquee-visibility.ts';
+import { applyBlockMessageFilters } from './block-message-filters.ts';
+import { collectManagedMarqueeNodes, createMarqueeVisibilityBlocker } from './marquee-visibility.ts';
 import {
   hasAnyEffectResourceBlock,
   replaceBlockedEffectUrl,
@@ -78,18 +69,6 @@ const JINNANG_PLAY_METHODS = [
 ];
 const EFFECT_PLAYBACK_METHODS = ['ShowEffectByData', 'ShowEffectByDataWithJson', 'ShowMulitEffectByData'];
 const LOBBY_AD_BUTTON_TYPE = 0x27cb;
-const MARQUEE_EVENTS = ['CHAT_MARQUEE_ADD', 'CHAT_MARQUEE2023_ADD', 'CHAT_MARQUEE2023_ACT_ADD'];
-const MARQUEE_SHOW_METHODS = ['ShowMarquee', 'intActDataMarquee', 'ShowNextActMarquee'];
-const MARQUEE_MANAGER_CLASS_NAMES = [
-  'ChatMarqueeManager',
-  'MarqueeManager',
-  'SystemNoticeManager',
-  'ChatSysMarqueeManager',
-  'ChatMarquee2023Manager',
-  'Marquee2023Manager',
-  'ChatSysMarquee2023Manager'
-];
-
 /** 显示后需要处理的窗口及其对应开关；未开启时不轮询窗口。 */
 const SHOWN_WINDOW_SWITCHES: Record<string, BlockSettingKey> = {
   AdPushWindow: 'block.adWindow',
@@ -569,434 +548,50 @@ export function installBlockEffectsController(
 
   // ---------- 狗托（顶部跑马灯） ----------
 
-  let marqueeManager: UnknownRecord | null = null;
-  let marqueeDispatcherHooksBound = false;
-  const wrappedMarqueePrototypes = new WeakSet<object>();
-  const wrappedMarqueeManagerInstances = new WeakSet<UnknownRecord>();
-  let noticeManagerHookGeneration = 0;
-  let noticeManagerPollActive = false;
-  const marqueeSceneHookOwner = {};
-  let chatSysNewsIngressWrapped = false;
-  let gameDispatcherMarqueeGuardWrapped = false;
-  let gedPersistentMarqueeHooked = false;
-  let marqueeGedHookTarget: UnknownRecord | null = null;
-  let marqueeFrameLoopBound = false;
-  let marqueeBlockInstallPromise: Promise<void> | null = null;
-  let syncMarqueeScheduled = false;
-  let displayAddChildGuardWrapped = false;
-  const wrappedMarqueeListenerRecords = new WeakSet<object>();
+  let stopMarqueeSweep: (() => void) | undefined;
+  const hookedMarqueeManagers = new WeakSet<UnknownRecord>();
+  cleanups.push(() => {
+    stopMarqueeSweep?.();
+    marqueeBlocker.restoreAll();
+  });
 
-  function marqueeDisplayLayers(): Array<UnknownRecord | null> {
-    // 不要把 ChatSysNewsManager 当显示树根扫描：类名含 ChatSys，会被误判为跑马灯并藏掉，导致对局打不了字。
-    return [
-      locator.layer('TopUILayer'),
-      locator.layer('PromptLayer'),
-      locator.layer('WindowLayer'),
-      asRecord(locator.scene()?.topView),
-      asRecord(locator.scene()?.noticeView),
-      asRecord(locator.scene()?.marqueeView),
-      asRecord(locator.scene()?.chatMarquee)
-    ];
-  }
-
-  function isTableGameScene(): boolean {
-    return Boolean(locator.gameScene());
-  }
-
-  function collectAllMarqueeUis(): UnknownRecord[] {
-    const inTable = isTableGameScene();
-    const fromManager = marqueeManager ? collectMarqueeUis(marqueeManager) : [];
-    const fromTree = inTable ? [] : collectMarqueeUisFromDisplayTree(marqueeDisplayLayers());
-    const fromBannerScan = !inTable && isOn('block.noticeWindow')
-      ? collectDogTuoBannerNodes(globalObject)
-      : [];
-    return Array.from(new Set([...fromManager, ...fromTree, ...fromBannerScan]));
-  }
-
-  let lastSyncMarqueeAt = 0;
-  const SYNC_MARQUEE_MIN_INTERVAL_MS = 500;
-
-  function scheduleSyncMarquee(): void {
-    if (syncMarqueeScheduled) return;
-    syncMarqueeScheduled = true;
-    later(() => {
-      syncMarqueeScheduled = false;
-      syncMarquee();
-    }, 0);
-  }
-
-  function looksLikeMarqueeManager(caller: UnknownRecord): boolean {
-    return typeof caller.ShowMarquee === 'function'
-      && typeof caller.HideAllMarquee === 'function';
-  }
-
-  function syncMarquee(): void {
-    const now = Date.now();
-    if (now - lastSyncMarqueeAt < SYNC_MARQUEE_MIN_INTERVAL_MS) return;
-    lastSyncMarqueeAt = now;
-    const blocked = isOn('block.noticeWindow');
-    const inTable = isTableGameScene();
-    if (blocked && !inTable && marqueeManager && typeof marqueeManager.HideAllMarquee === 'function') {
-      callMethod(marqueeManager, 'HideAllMarquee');
-    }
-    marqueeBlocker.sync(collectAllMarqueeUis(), blocked);
-    if (blocked && !inTable) sweepDogTuoTextOnStage(globalObject, true);
-  }
-
-  function listenersOnEvent(events: UnknownRecord | null, eventName: string): unknown[] {
-    const bucket = events?.[eventName];
-    if (!bucket) return [];
-    return Array.isArray(bucket) ? bucket : [bucket];
-  }
-
-  function findMarqueeManager(): UnknownRecord | null {
-    const events = asRecord(locator.dispatcher()?._events);
-    if (events) {
-      for (const eventName of Object.keys(events)) {
-        if (!/MARQUEE/i.test(eventName) && !/marquee/i.test(eventName)) continue;
-        for (const listener of listenersOnEvent(events, eventName)) {
-          const caller = asRecord(asRecord(listener)?.caller);
-          if (caller && looksLikeMarqueeManager(caller)) return caller;
-        }
-      }
-      for (const eventName of Object.keys(events)) {
-        for (const listener of listenersOnEvent(events, eventName)) {
-          const caller = asRecord(asRecord(listener)?.caller);
-          if (caller && looksLikeMarqueeManager(caller)) return caller;
-        }
-      }
-    }
-    return locator.findManagerByPredicate((manager) => looksLikeMarqueeManager(manager));
-  }
-
-  function wrapMarqueeDispatchListeners(): void {
-    const events = asRecord(locator.dispatcher()?._events);
-    if (!events) return;
-    for (const eventName of Object.keys(events)) {
-      if (!/MARQUEE/i.test(eventName)) continue;
-      for (const listener of listenersOnEvent(events, eventName)) {
-        const record = asRecord(listener);
-        if (!record || wrappedMarqueeListenerRecords.has(record)) continue;
-        const caller = asRecord(record.caller);
-        const methodName = typeof record.method === 'string' ? record.method : null;
-        if (!caller || !methodName || typeof caller[methodName] !== 'function') continue;
-        if (patcher.wrap(caller, methodName, (original) => function (this: unknown, ...args: unknown[]) {
+  function syncManagedMarquee(): void {
+    const manager = locator.findManagerByPredicate((candidate) =>
+      typeof candidate.ShowMarquee === 'function' && typeof candidate.HideAllMarquee === 'function'
+    );
+    if (manager && !hookedMarqueeManagers.has(manager)) {
+      hookedMarqueeManagers.add(manager);
+      // 保留原方法的队列与计时器，在它创建展示节点后立即同步显隐。
+      for (const key of ['ShowMarquee', 'intActDataMarquee', 'ShowNextActMarquee']) {
+        if (typeof manager[key] !== 'function') continue;
+        patcher.wrap(manager, key, (original) => function (this: UnknownRecord, ...args: unknown[]) {
+          const result = original.apply(this, args);
           if (isOn('block.noticeWindow')) {
-            syncMarquee();
-            return undefined;
+            marqueeBlocker.sync(collectManagedMarqueeNodes(this));
           }
-          return original.apply(this, args);
-        })) {
-          wrappedMarqueeListenerRecords.add(record);
-        }
+          return result;
+        });
       }
     }
+    marqueeBlocker.sync(collectManagedMarqueeNodes(manager));
   }
 
-  function tryInstallGedPersistentMarqueeHook(): void {
-    let ged = locator.dispatcher();
-    if (!ged || (gedPersistentMarqueeHooked && marqueeGedHookTarget === ged)) return;
-    if (marqueeGedHookTarget && marqueeGedHookTarget !== ged) {
-      gedPersistentMarqueeHooked = false;
-    }
-    if (!gedPersistentMarqueeHooked) {
-      ged = refreshGameEventDispatcher(globalObject) ?? ged;
-    }
-    if (!ged) return;
-    if (installPersistentMarqueeEventBlock(ged, () => isOn('block.noticeWindow'), () => scheduleSyncMarquee())) {
-      marqueeGedHookTarget = ged;
-      gedPersistentMarqueeHooked = true;
-      dispatcherMarqueeGuardInstalled = true;
-      if (isOn('block.noticeWindow')) syncMarquee();
-    }
-  }
-
-  function ensureMarqueeFrameSweep(): void {
-    if (marqueeFrameLoopBound || !isOn('block.noticeWindow')) return;
-    marqueeFrameLoopBound = true;
-    const stopSweeping = everyInterval('屏蔽跑马灯', MARQUEE_SWEEP_MS, () => {
-      if (disposed || !isOn('block.noticeWindow')) return;
-      syncMarquee();
-    });
-    cleanups.push(() => {
-      stopSweeping();
-      marqueeFrameLoopBound = false;
-    });
-  }
-
-  function wrapMarqueeManagerInstance(manager: UnknownRecord): void {
-    if (wrappedMarqueeManagerInstances.has(manager)) return;
-    let wrappedAny = false;
-    for (const method of MARQUEE_SHOW_METHODS) {
-      if (typeof manager[method] !== 'function') continue;
-      const ok = patcher.wrap(manager, method, (original) => function (this: unknown, ...args: unknown[]) {
-        const result = original.apply(this, args);
-        if (isOn('block.noticeWindow')) {
-          syncMarquee();
-          return undefined;
-        }
-        return result;
-      });
-      if (ok) wrappedAny = true;
-    }
-    if (wrappedAny) wrappedMarqueeManagerInstances.add(manager);
-  }
-
-  /** 与参考脚本 FB 一致：先挂上跑马灯管理器钩子，开关只决定藏不藏。 */
-  function ensureNoticeManagerAttached(): void {
-    if (disposed || noticeManagerPollActive) return;
-    const readyManager = findMarqueeManager();
-    if (readyManager && wrappedMarqueeManagerInstances.has(readyManager)) return;
-    const generation = noticeManagerHookGeneration;
-    noticeManagerPollActive = true;
-    void poll(() => findMarqueeManager(), 120, 250).then((manager) => {
-      noticeManagerPollActive = false;
-      if (disposed || generation !== noticeManagerHookGeneration) return;
-      if (!manager) return;
-      wrapMarqueeManagerInstance(manager);
-      bindMarqueeManager(manager);
-      applyNoticeBlockState();
-    });
-  }
-
-  function wrapMarqueeShowPrototype(prototype: UnknownRecord | null): void {
-    if (!prototype || wrappedMarqueePrototypes.has(prototype)) return;
-    let wrappedAny = false;
-    for (const method of MARQUEE_SHOW_METHODS) {
-      if (typeof prototype[method] !== 'function') continue;
-      const ok = patcher.wrap(prototype, method, (original) => function (this: unknown, ...args: unknown[]) {
-        const result = original.apply(this, args);
-        if (isOn('block.noticeWindow')) {
-          syncMarquee();
-          return undefined;
-        }
-        return result;
-      });
-      if (ok) wrappedAny = true;
-    }
-    if (wrappedAny) wrappedMarqueePrototypes.add(prototype);
-  }
-
-  function wrapMarqueeManagersFromList(): void {
-    const windowManager = locator.manager('WindowManager');
-    const list = windowManager?.managerList;
-    if (!Array.isArray(list)) return;
-    for (const item of list) {
-      const record = asRecord(item);
-      if (!record || !looksLikeMarqueeManager(record)) continue;
-      wrapMarqueeShowPrototype(asRecord(Object.getPrototypeOf(record)));
-      wrapMarqueeManagerInstance(record);
-    }
-  }
-
-  function installDisplayAddChildGuard(): void {
-    if (displayAddChildGuardWrapped) return;
-    const classNames = ['Node', 'Sprite', 'Box', 'UIComponent', 'View'];
-    let wrapped = false;
-    for (const className of classNames) {
-      const prototype = locator.classPrototype(className);
-      if (!prototype || typeof prototype.addChild !== 'function') continue;
-      if (patcher.wrap(prototype, 'addChild', (original) => function (this: unknown, child: unknown, ...rest: unknown[]) {
-        const result = original.apply(this, [child, ...rest]);
-        if (!isOn('block.noticeWindow') || isTableGameScene()) return result;
-        const node = asRecord(child);
-        if (node && isDogTuoBannerNode(node)) {
-          scheduleSyncMarquee();
-        }
-        return result;
-      })) wrapped = true;
-    }
-    if (wrapped) displayAddChildGuardWrapped = true;
-  }
-
-  function wrapChatSysNewsIngress(): void {
-    if (chatSysNewsIngressWrapped) return;
-    const manager = locator.manager('ChatSysNewsManager');
-    const prototype = locator.classPrototype('ChatSysNewsManager')
-      ?? (manager ? asRecord(Object.getPrototypeOf(manager)) : null);
-    if (!prototype) return;
-    let wrappedAny = false;
-    for (const key of Object.getOwnPropertyNames(prototype)) {
-      if (key === 'constructor' || typeof prototype[key] !== 'function') continue;
-      const isChatIngress = /SSCChatmsg|ChatmsgNtf/i.test(key);
-      const isMarqueeShow = MARQUEE_SHOW_METHODS.includes(key);
-      if (!isChatIngress && !isMarqueeShow) continue;
-      const ok = patcher.wrap(prototype, key, (original) => function (this: unknown, ...args: unknown[]) {
-        if (!isOn('block.noticeWindow')) return original.apply(this, args);
-        if (isMarqueeShow) {
-          syncMarquee();
-          return undefined;
-        }
-        const payload = asRecord(args[0]);
-        const className = /decode/i.test(key) ? key : 'decodeSSCChatmsgNtf';
-        if (payload && shouldDropNoticeProtocol(className, payload, Boolean(locator.gameScene()))) {
-          return undefined;
-        }
-        return original.apply(this, args);
-      });
-      if (ok) wrappedAny = true;
-    }
-    if (wrappedAny) chatSysNewsIngressWrapped = true;
-  }
-
-  function installKnownMarqueePrototypes(): void {
-    for (const className of MARQUEE_MANAGER_CLASS_NAMES) {
-      wrapMarqueeShowPrototype(locator.classPrototype(className));
-    }
-    wrapMarqueeManagersFromList();
-    wrapChatSysNewsIngress();
-    const manager = findMarqueeManager();
-    if (manager) wrapMarqueeShowPrototype(asRecord(Object.getPrototypeOf(manager)));
-  }
-
-  function bindMarqueeManager(manager: UnknownRecord): void {
-    wrapMarqueeManagerInstance(manager);
-    wrapMarqueeShowPrototype(asRecord(Object.getPrototypeOf(manager)));
-    const dispatcher = locator.dispatcher();
-    if (marqueeManager && marqueeManager !== manager && dispatcher) {
-      MARQUEE_EVENTS.forEach((eventName) => (
-        callMethod(dispatcher, 'off', eventName, marqueeManager, syncMarquee)
-      ));
-    }
-    if (marqueeManager === manager && marqueeDispatcherHooksBound) {
-      syncMarquee();
-      return;
-    }
-    marqueeManager = manager;
-    if (!marqueeDispatcherHooksBound) {
-      marqueeDispatcherHooksBound = true;
-      cleanups.push(() => {
-        if (!dispatcher) return;
-        MARQUEE_EVENTS.forEach((eventName) => (
-          callMethod(dispatcher, 'off', eventName, manager, syncMarquee)
-        ));
-        marqueeBlocker.restoreAll();
-        marqueeManager = null;
-        marqueeDispatcherHooksBound = false;
-      });
-    }
-    if (dispatcher) {
-      MARQUEE_EVENTS.forEach((eventName) => callMethod(dispatcher, 'on', eventName, manager, syncMarquee));
-    }
-    syncMarquee();
-  }
-
-  /** 配置已为开、或运行时刚挂上钩子时，主动套用狗托屏蔽，不依赖用户再拨一次开关。 */
   function applyNoticeBlockState(): void {
+    if (disposed) return;
     if (!isOn('block.noticeWindow')) {
-      noticeManagerHookGeneration += 1;
-      noticeManagerPollActive = false;
+      stopMarqueeSweep?.();
+      stopMarqueeSweep = undefined;
       marqueeBlocker.restoreAll();
-      syncMarquee();
       return;
     }
-    ensureNoticeManagerAttached();
-    tickMarqueeBlock();
-    later(() => tickMarqueeBlock(), 0);
-    later(() => tickMarqueeBlock(), 400);
-    later(() => tickMarqueeBlock(), 1200);
-    later(() => tickMarqueeBlock(), 3000);
-    ensureMarqueeFrameSweep();
-  }
-
-  function refreshMarqueeBlock(): void {
-    applyNoticeBlockState();
-  }
-
-  function tickMarqueeBlock(): void {
-    if (!isBlockUiReady()) return;
-    tryInstallGedPersistentMarqueeHook();
-    wrapMarqueeDispatchListeners();
-    installDisplayAddChildGuard();
-    installKnownMarqueePrototypes();
-    const manager = findMarqueeManager();
-    if (manager) bindMarqueeManager(manager);
-    else syncMarquee();
-    if (isOn('block.noticeWindow')) ensureMarqueeFrameSweep();
-  }
-
-  function installMarqueeSceneHooks(): void {
-    const dispatcher = locator.dispatcher();
-    if (!dispatcher) return;
-    const onSceneChange = () => {
-      later(() => refreshMarqueeBlock(), 0);
-      later(() => refreshMarqueeBlock(), 800);
-    };
-    callMethod(dispatcher, 'on', 'SWITCH_SCENE', marqueeSceneHookOwner, onSceneChange);
-    cleanups.push(() => callMethod(dispatcher, 'off', 'SWITCH_SCENE', marqueeSceneHookOwner, onSceneChange));
-  }
-
-  function dispatcherEventKeys(dispatcher: UnknownRecord): string[] {
-    return typeof dispatcher.event === 'function' ? ['event'] : [];
-  }
-
-  let dispatcherMarqueeGuardInstalled = false;
-
-  function tryInstallGameDispatcherMarqueeGuard(): void {
-    if (gameDispatcherMarqueeGuardWrapped) return;
-    const prototype = locator.classPrototype('GameEventDispatcher');
-    if (!prototype || typeof prototype.event !== 'function') return;
-    if (patcher.wrap(prototype, 'event', (original) => function (this: unknown, type: unknown, ...rest: unknown[]) {
-      if (isOn('block.noticeWindow') && typeof type === 'string' && (
-        /MARQUEE/i.test(type) || MARQUEE_EVENTS.includes(type)
-      )) {
-        scheduleSyncMarquee();
-        return undefined;
-      }
-      return original.call(this, type, ...rest);
-    })) {
-      gameDispatcherMarqueeGuardWrapped = true;
-      dispatcherMarqueeGuardInstalled = true;
-    }
-  }
-
-  function tryInstallDispatcherMarqueeGuard(): void {
-    tryInstallGedPersistentMarqueeHook();
-    tryInstallGameDispatcherMarqueeGuard();
-    if (gedPersistentMarqueeHooked) return;
-    const dispatcher = locator.dispatcher();
-    if (!dispatcher) return;
-    for (const eventKey of dispatcherEventKeys(dispatcher)) {
-      if (patcher.wrap(dispatcher, eventKey, (original) => function (this: unknown, type: unknown, ...rest: unknown[]) {
-        if (isOn('block.noticeWindow') && typeof type === 'string' && (
-          /MARQUEE/i.test(type) || MARQUEE_EVENTS.includes(type)
-        )) {
-          scheduleSyncMarquee();
-          return undefined;
-        }
-        return original.call(this, type, ...rest);
-      })) {
-        dispatcherMarqueeGuardInstalled = true;
-      }
-    }
-  }
-
-  function ensureMarqueeBlockInstalled(): Promise<void> {
-    if (!isBlockUiReady()) return Promise.resolve();
-    if (!marqueeBlockInstallPromise) marqueeBlockInstallPromise = installMarqueeBlock();
-    return marqueeBlockInstallPromise;
-  }
-
-  async function installMarqueeBlock(): Promise<void> {
-    await poll(() => locator.dispatcher(), Infinity, 200);
-    tryInstallDispatcherMarqueeGuard();
-    installMarqueeSceneHooks();
-    tickMarqueeBlock();
-    await poll(() => findMarqueeManager(), 120, 250);
-    tickMarqueeBlock();
-    applyNoticeBlockState();
-    ensureNoticeManagerAttached();
-    cleanups.push(everyInterval('屏蔽公告', NOTICE_BLOCK_CHECK_MS, () => {
-      if (disposed) return;
-      const guardMissing = !dispatcherMarqueeGuardInstalled || !gedPersistentMarqueeHooked;
-      if (guardMissing) tryInstallDispatcherMarqueeGuard();
-      tickMarqueeBlock();
-      ensureNoticeManagerAttached();
-      if (isOn('block.noticeWindow') && (guardMissing || !marqueeFrameLoopBound)) {
-        syncMarquee();
-        ensureMarqueeFrameSweep();
-      }
-    }));
+    stopMarqueeSweep ??= everyInterval(
+      '顶部跑马灯',
+      MARQUEE_SWEEP_MS,
+      syncManagedMarquee,
+      { visualOnly: true },
+      globalObject
+    );
+    syncManagedMarquee();
   }
 
   let laoXianBlockInstalled = false;
@@ -1428,7 +1023,7 @@ export function installBlockEffectsController(
           if (!isBlockUiReady()) return;
           if (sceneName === 'TableScene') installRecordViewTracker();
           installSceneEffectPatches();
-          refreshMarqueeBlock();
+          applyNoticeBlockState();
           mvpWindowBlock.ensureOpenWindowListener();
           mvpWindowBlock.ensureShowWindowHook();
           mvpWindowBlock.installPrototypePatches();
@@ -1782,9 +1377,7 @@ export function installBlockEffectsController(
       killEffect: isOn('block.killEffect'),
       otherSkinState: isOn('block.otherSkinState'),
       factionSlogan: isOn('block.factionSlogan'),
-      noticeWindow: isOn('block.noticeWindow'),
       chatEmotion: isOn('block.chatEmotion'),
-      inTableGame: Boolean(locator.gameScene()),
       isOtherPlayerSkinMessage: (message) => isOtherPlayerSkinMessage(locator, message),
       isOtherPlayerBigFaceMessage: (message) => isOtherPlayerBigFaceMessage(message)
     });
@@ -1821,9 +1414,7 @@ export function installBlockEffectsController(
       hideLobbyAd(3);
       hideHomeBanner();
     }),
-    configStore.subscribe('block.noticeWindow', () => {
-      void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
-    }),
+    configStore.subscribe('block.noticeWindow', applyNoticeBlockState),
     configStore.subscribe('block.taskRedDot', ({ value }) => {
       if (value) clearAllRedDots();
       else refreshHallRedDots();
@@ -1852,41 +1443,22 @@ export function installBlockEffectsController(
   }, Infinity, 1000).then((ready) => {
     if (!ready) return;
     installResourceRequestFilter();
-    // 跑马灯装失败也要继续装其余屏蔽，否则开包、弹窗屏蔽全都不生效。
-    void ensureMarqueeBlockInstalled().catch(() => undefined).then(() => {
-      if (isOn('block.noticeWindow')) applyNoticeBlockState();
-      installLaoXianBlock();
-      const installers = [
-        installWindowBlocks,
-        installLobbyAdBlock,
-        installSceneSwitchHook,
-        installBossCityEntranceBlock,
-        installKillEffectBlock,
-        installRedDotBlock
-      ];
-      installers.forEach((install) => {
-        void Promise.resolve(install()).catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
-      });
-      installSceneEffectPatches();
-      if (isOn('block.noticeWindow')) applyNoticeBlockState();
+    installLaoXianBlock();
+    const installers = [
+      installWindowBlocks,
+      installLobbyAdBlock,
+      installSceneSwitchHook,
+      installBossCityEntranceBlock,
+      installKillEffectBlock,
+      installRedDotBlock
+    ];
+    installers.forEach((install) => {
+      void Promise.resolve(install()).catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
     });
+    installSceneEffectPatches();
   });
 
-  const onConfigAccountOrNotice = (event: Event) => {
-    const detail = (event as CustomEvent<{ key?: string }>).detail;
-    if (detail?.key && detail.key !== 'block.noticeWindow' && !isOn('block.noticeWindow')) return;
-    if (isOn('block.noticeWindow')) {
-      void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
-    }
-  };
-  globalObject.addEventListener?.(CONFIG_CHANGE_EVENT, onConfigAccountOrNotice);
-  cleanups.push(() => globalObject.removeEventListener?.(CONFIG_CHANGE_EVENT, onConfigAccountOrNotice));
-
-  void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
-
-  function armNoticeBlock(): void {
-    void ensureMarqueeBlockInstalled().then(() => applyNoticeBlockState());
-  }
+  applyNoticeBlockState();
 
   function armAdBlock(): void {
     if (!isOn('block.adWindow')) return;
@@ -1896,7 +1468,7 @@ export function installBlockEffectsController(
 
   return {
     filterMessage,
-    armNoticeBlock,
+    armNoticeBlock: applyNoticeBlockState,
     armAdBlock,
     clearRedDots() {
       const manager = taskRedDotManager();

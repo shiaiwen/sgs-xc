@@ -8,9 +8,10 @@ defineProps({
     type: Boolean,
     required: true,
   },
+  dockedRight: Boolean,
 });
 
-defineEmits(['toggle', 'drag-start']);
+defineEmits(['toggle', 'drag-start', 'toggle-dock']);
 </script>
 
 <template>
@@ -22,6 +23,15 @@ defineEmits(['toggle', 'drag-start']);
     <div class="xc-frame-header__status">
       <slot />
     </div>
+    <button
+      v-if="!collapsed"
+      type="button"
+      class="xc-frame-dock-button"
+      @pointerdown.stop
+      @click="$emit('toggle-dock')"
+    >
+      {{ dockedRight ? '取消停靠' : '停靠右侧' }}
+    </button>
     <button
       type="button"
       id="toggle-me"

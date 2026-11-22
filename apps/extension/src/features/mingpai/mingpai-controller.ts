@@ -4,6 +4,7 @@
  */
 
 import type { GameEvent, GameEventBus } from '../../runtime/game-event-bus.ts';
+import { isPublicInPlaceHandReveal } from '../cards/public-card-origins.ts';
 import type { SeatStateStore } from '../seat-display/seat-state-store.ts';
 import { isNationWarMode, type GameSeatSnapshot } from '../seat-display/seat-state.ts';
 import {
@@ -12,6 +13,7 @@ import {
   DISCARD_ZONE,
   DRAW_PILE_ZONE,
   EQUIP_ZONE,
+  GLOBAL_OWNER,
   HAND_ZONE,
   TEMPORARY_CARD_ZONES,
   type MingpaiEngine
@@ -43,8 +45,7 @@ import {
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { resolveSkillIds } from '../skill-assist/skill-visibility.ts';
 import { traceMingpai } from '../../runtime/mingpai-trace.ts';
-import { buildIncomingHandSourceLabel } from './rules/hand-source-label.ts';
-import { readSpellName } from './spell-name.ts';
+import { buildIncomingHandSourceLabel, isBachaoSpell, readIncomingCardOwner } from './rules/hand-source-label.ts';
 import {
   cancelMingpaiPostGameCleanup,
   registerMingpaiPostGameCleanup,
@@ -53,6 +54,8 @@ import {
 import { DRAW_PILE_OWNER, handReveal } from './rules/reveal-types.ts';
 
 type MoveCardEvent = Extract<GameEvent, { type: 'cards-moved' }>;
+const BACHAO_GIVE_PROMPT = 28;
+const BACHAO_MOVE_WINDOW = 24;
 
 export interface MingpaiControllerOptions {
   /** 兼容旧调用：未传入时内部自建引擎。 */
@@ -61,6 +64,7 @@ export interface MingpaiControllerOptions {
   isRedCard?: (cardId: number) => boolean | null;
   /** 原生牌类型；读不到时返回 0。四张类型 8 的特殊摸牌不计入牌堆顺序。 */
   cardType?: (cardId: number) => number;
+  onCardLabelMovement?: (event: MoveCardEvent, ids: readonly number[], selfSeatId: number | null, source: string | null) => void;
 }
 
 /**
@@ -73,7 +77,8 @@ export function installMingpaiController(
   {
     engine: injected,
     isRedCard = () => null,
-    cardType = () => 0
+    cardType = () => 0,
+    onCardLabelMovement
   }: MingpaiControllerOptions = {}
 ): { dispose: () => void; engine: MingpaiEngine } {
   const engine = injected ?? createMingpaiEngine();
@@ -86,14 +91,13 @@ export function installMingpaiController(
     expiresAfterMovement: number;
   } | null = null;
   let movementSequence = 0;
+  const pendingBachaoGivers = new Map<number, number>();
   let xinyouCaster: { seatId: number; expiresAfterMovement: number } | null = null;
   /** 每个座位最近一次角色数据里的心幽牌，用来在名单变短时只清掉离开的牌。 */
   const xinyouCardsBySeat = new Map<number, number[]>();
   /** 本回合心幽已经结束。下一次再发动之前，旧名单不能把标记写回去。 */
   let xinyouClosed = false;
   let lastPhase: number | null = null;
-  /** 霸朝问别人要牌期间，交进来的牌标上是谁给的。 */
-  let bachaoGain: { seatId: number; expiresAfterMovement: number } | null = null;
   let qiStateObserved = false;
   let synchronizingPersistentTags = false;
   /** 重连包没有牌序快照，等座位场景公开手牌后再登记一次。 */
@@ -183,6 +187,7 @@ export function installMingpaiController(
       return;
     }
     if (event.type === 'game-ended') {
+      pendingBachaoGivers.clear();
       scheduleMingpaiPostGameCleanup();
       return;
     }
@@ -226,10 +231,10 @@ export function installMingpaiController(
     }
     if (event.type === 'opt-target') {
       const srcSeatId = event.srcSeatId ?? event.seatId;
-      if (readSpellName(event.spellId) === '火攻') {
-        markSourceLabelCards('[火攻]', [...event.params, ...(event.cardIds ?? [])]);
-      }
       const snapshot = seatStateStore.getSnapshot();
+      if (event.optType === BACHAO_GIVE_PROMPT && srcSeatId === snapshot.selfSeatId && isBachaoSpell(event.spellId)) {
+        expectBachaoGift(event.seatId, srcSeatId);
+      }
       const reveals = judgeOptTarget({
         spellId: event.spellId,
         param: event.param,
@@ -250,7 +255,6 @@ export function installMingpaiController(
       return;
     }
     if (event.type === 'spell-opt-rep') {
-      if (readSpellName(event.spellId) === '火攻') markSourceLabelCards('[火攻]', event.datas);
       const reveals = judgeSpellOpt(event.spellId, event.optType, event.seatId, event.datas);
       traceMingpai('spell-opt-rep', {
         spellId: event.spellId, optType: event.optType, seatId: event.seatId,
@@ -300,6 +304,7 @@ export function installMingpaiController(
       });
     }
     if (event.type === 'turn-started' || event.type === 'phase-changed') {
+      pendingBachaoGivers.clear();
       if (event.type === 'phase-changed') {
         noteCurrentTurnSeat(event.seatId);
         lastPhase = event.phase;
@@ -317,14 +322,15 @@ export function installMingpaiController(
       recordQiTransferSpell(event.seatId, event.targetSeatIds);
     }
     if (event.type === 'spell-targeted') {
-      if (readSpellName(event.spellId) === '霸朝') {
-        bachaoGain = { seatId: event.seatId, expiresAfterMovement: movementSequence + 24 };
+      const selfSeatId = seatStateStore.getSnapshot().selfSeatId;
+      if (event.seatId === selfSeatId && isBachaoSpell(event.spellId)) {
+        event.targetSeatIds.forEach((seatId) => expectBachaoGift(seatId, event.seatId));
       }
       noteSpellShownCards(
         event.spellId,
         event.seatId,
         event.cardIds,
-        seatStateStore.getSnapshot().selfSeatId,
+        selfSeatId,
         event.targetSeatIds,
         event.effectIndex ?? null
       );
@@ -420,7 +426,8 @@ export function installMingpaiController(
     const generalName = readSeatGeneralName(seatId);
     if (generalName) return generalName;
     const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
-    const order = seat?.displayOrder ?? seatId + 1;
+    if (!seat) return '';
+    const order = seat.displayOrder;
     const numeral = '一二三四五六七八'[Math.max(0, order - 1)];
     return `${numeral ?? order}号位`;
   }
@@ -432,14 +439,17 @@ export function installMingpaiController(
     const seatContainer = scene.seatContainer as { seatUIs?: unknown[] } | undefined;
     const seatUis = [scene.SelfSeatUi, ...(seatContainer?.seatUIs ?? [])]
       .filter((ui): ui is Record<string, unknown> => Boolean(ui) && typeof ui === 'object');
-    const seatUi = seatUis.find((ui) => Number(ui.seatID) === seatId);
+    const seatUi = seatUis.find((ui) => {
+      const seat = ui.seat as Record<string, unknown> | undefined;
+      return Number(ui.seatID ?? seat?.Index ?? seat?.index) === seatId;
+    });
     const seat = seatUi?.seat as Record<string, unknown> | undefined;
     if (!seat) return '';
     const names: string[] = [];
-    for (const key of ['General', 'general', 'General2', 'general2']) {
-      const general = seat[key] as Record<string, unknown> | undefined;
+    for (const value of [seat.general ?? seat.General, seat.general2 ?? seat.General2]) {
+      const general = value as Record<string, unknown> | undefined;
       if (!general || typeof general !== 'object') continue;
-      for (const nameKey of ['cardName', 'specifyName', 'trueSpecifyName', 'Name', 'name']) {
+      for (const nameKey of ['CardName', 'cardName', 'specifyName', 'Name', 'name']) {
         const value = general[nameKey];
         if (typeof value === 'string' && value) {
           names.push(value);
@@ -478,43 +488,27 @@ export function installMingpaiController(
     return false;
   }
 
-  /** 给这几张牌打上来源短名，自己的手牌和别人亮出来的牌都能用。 */
-  function markSourceLabelCards(label: string, cardIds: readonly number[]): void {
-    cardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
-      engine.rememberPersistentCardTag(cardId, label);
-      const persistentTags = engine.getPersistentTags(cardId);
-      if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
-    });
+  function expectBachaoGift(giverSeatId: number, recipientSeatId: number): void {
+    if (Number.isInteger(giverSeatId) && giverSeatId >= 0 && giverSeatId < GLOBAL_OWNER && giverSeatId !== recipientSeatId) {
+      pendingBachaoGivers.set(giverSeatId, movementSequence + BACHAO_MOVE_WINDOW);
+    }
   }
 
-  /** 霸朝结算里别人交出的牌，协议上常常不带技能号，仍标是谁给的。 */
-  function bachaoGivenLabel(event: MoveCardEvent): string | null {
-    if (!bachaoGain || movementSequence > bachaoGain.expiresAfterMovement) return null;
-    if (event.toZone !== HAND_ZONE || event.toId !== bachaoGain.seatId) return null;
-    if (event.fromId === event.toId || event.fromId === 0xff) return null;
-    if (event.fromZone !== HAND_ZONE && event.fromZone !== 4) return null;
-    return `[霸朝]${readSeatLabel(event.fromId)}`;
-  }
-
-
-  /** 进手牌的来源短名写到这几张牌上。火攻亮出后仍留在手里的牌由操作回报标记。 */
-  function rememberIncomingHandLabels(event: MoveCardEvent, cardIds: readonly number[]): void {
-    const sourceLabel = buildIncomingHandSourceLabel({
-      spellId: event.spellId,
-      moveType: event.moveType,
-      fromZone: event.fromZone,
-      toZone: event.toZone,
-      fromId: event.fromId,
-      toId: event.toId,
-      selfSeatId: seatStateStore.getSnapshot().selfSeatId,
-      seatLabel: readSeatLabel
-    }) ?? bachaoGivenLabel(event);
-    if (!sourceLabel) return;
-    cardIds.filter((cardId) => cardId > 0).forEach((cardId) => {
-      engine.rememberPersistentCardTag(cardId, sourceLabel);
-      const persistentTags = engine.getPersistentTags(cardId);
-      if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
-    });
+  function recordCardLabelMovement(event: MoveCardEvent, cardIds: readonly number[]): void {
+    if (!onCardLabelMovement) return;
+    const selfSeatId = seatStateStore.getSnapshot().selfSeatId;
+    const owner = readIncomingCardOwner({ ...event, selfSeatId });
+    let spellName: string | undefined;
+    if (owner !== null && event.cardCount === 1 && (event.fromZone === HAND_ZONE || event.fromZone === EQUIP_ZONE)) {
+      const expires = pendingBachaoGivers.get(owner);
+      // 霸朝让已指定的角色交一张牌，移牌可能不带技能号。
+      if (expires !== undefined && (event.spellId === 0 || isBachaoSpell(event.spellId))) {
+        pendingBachaoGivers.delete(owner);
+        if (event.spellId === 0 && movementSequence <= expires) spellName = '霸朝';
+      }
+    }
+    const source = buildIncomingHandSourceLabel({ ...event, spellName, selfSeatId, seatLabel: readSeatLabel });
+    onCardLabelMovement(event, cardIds, selfSeatId, source);
   }
 
   function shouldSyncSceneHandCard(cardId: number, seatId: number): boolean {
@@ -577,8 +571,8 @@ export function installMingpaiController(
     return { ...event, fromZone: EQUIP_ZONE };
   }
 
-  function handleCardsMoved(rawEvent: MoveCardEvent): void {
-    rawEvent = normalizeSnatchEquipSource(rawEvent);
+  function handleCardsMoved(labelEvent: MoveCardEvent): void {
+    const rawEvent = normalizeSnatchEquipSource(labelEvent);
     if (rawEvent.fromZone === HAND_ZONE && rawEvent.toZone === HAND_ZONE) {
       const handMoveTrace = {
         spellId: rawEvent.spellId,
@@ -621,8 +615,10 @@ export function installMingpaiController(
       }
     );
     if (corrected.ignore) {
-      // 移动类型 0 的展示不会改牌的位置。别人看得见的牌仍要标来源。
-      rememberIncomingHandLabels(rawEvent, rawEvent.cardIds);
+      // MoveType 0 不进牌区引擎，但已识别的原地亮牌仍要写入小抄标签。
+      if (labelEvent.moveType === 0 && isPublicInPlaceHandReveal(labelEvent)) {
+        recordCardLabelMovement(labelEvent, labelEvent.cardIds);
+      }
       return;
     }
     const event: MoveCardEvent = {
@@ -632,7 +628,7 @@ export function installMingpaiController(
       toPosition: corrected.toPosition
     };
     if (isInPlaceCardShow({ ...event, srcSeatId: event.srcSeatId ?? null }) && applySameZoneShow(event)) {
-      rememberIncomingHandLabels(event, event.cardIds);
+      recordCardLabelMovement(labelEvent, event.cardIds);
       return;
     }
 
@@ -725,7 +721,7 @@ export function installMingpaiController(
       engine.removeZoneCardIds(MINGPAI_ZONE.UNKNOWN, known);
     }
 
-    rememberIncomingHandLabels(event, appliedCardIds);
+    recordCardLabelMovement(labelEvent, appliedCardIds);
     appliedCardIds.forEach((cardId) => {
       const persistentTags = engine.getPersistentTags(cardId);
       if (persistentTags.length) seatStateStore.setPersistentKnownCardTags(cardId, persistentTags);
@@ -763,7 +759,7 @@ export function installMingpaiController(
     pendingQiDeath = null;
     pendingQiTransfer = null;
     xinyouCaster = null;
-    bachaoGain = null;
+    pendingBachaoGivers.clear();
     movementSequence = 0;
     qiStateObserved = false;
   }

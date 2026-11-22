@@ -170,6 +170,8 @@ export type GameEvent =
     spellId: number;
     /** 协议 SrcSeatID（发起移动的座位）；缺省为 null。 */
     srcSeatId?: number | null;
+    /** 游戏技能在这次进手牌时会公开展示牌面。 */
+    showsCardFaces?: true;
   };
 
 export type GameEventListener = (event: Readonly<GameEvent>) => void;
@@ -287,6 +289,7 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
       toZoneParam: normalizeNonNegativeInteger(event.toZoneParam) ?? 0,
       moveType: normalizeNonNegativeInteger(event.moveType) ?? 0,
       spellId: normalizeNonNegativeInteger(event.spellId) ?? 0,
+      ...(event.showsCardFaces === true ? { showsCardFaces: true } : {}),
       srcSeatId: event.srcSeatId === null || event.srcSeatId === undefined ? null : normalizeSeatId(event.srcSeatId)
     }) as Readonly<GameEvent>;
   }

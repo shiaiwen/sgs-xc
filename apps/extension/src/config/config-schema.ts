@@ -24,6 +24,7 @@ export interface XiaochaoConfig {
   'panel.position': PanelPositionConfig | null;
   /** 悬浮时手动调过的展开高度，单位像素。0 表示没调过。 */
   'panel.expandedHeight': number;
+  'panel.expandedWidth': number;
   'display.seatUiEnabled': boolean;
   'display.deckHudEnabled': boolean;
   'display.recentCardMode': 'current' | 'player';
@@ -73,7 +74,6 @@ export interface XiaochaoConfig {
   'shanhetu.mapEnabled': boolean;
   'shanhetu.hideStory': boolean;
   'shanhetu.autoCancelWuxie': boolean;
-  'assist.extraEnabled': boolean;
   'assist.sunquanEnabled': boolean;
   'assist.peixiuEnabled': boolean;
   'assist.xushaoEnabled': boolean;
@@ -156,6 +156,10 @@ export const CONFIG_SCHEMA: {
     }
   },
   'panel.expandedHeight': {
+    defaultValue: 0,
+    parse: (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined
+  },
+  'panel.expandedWidth': {
     defaultValue: 0,
     parse: (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined
   },
@@ -255,10 +259,9 @@ export const CONFIG_SCHEMA: {
   'shanhetu.hideStory': booleanDefinition(false, 'ROGUE_STORY_SWITCH'),
   'shanhetu.autoCancelWuxie': booleanDefinition(false),
   // —— 技能 / 挂机辅助 ——
-  'assist.extraEnabled': booleanDefinition(false, 'EXTRA_ASSIST_SWITCH'),
-  'assist.sunquanEnabled': booleanDefinition(true),
-  'assist.peixiuEnabled': booleanDefinition(true),
-  'assist.xushaoEnabled': booleanDefinition(true),
+  'assist.sunquanEnabled': booleanDefinition(false),
+  'assist.peixiuEnabled': booleanDefinition(false),
+  'assist.xushaoEnabled': booleanDefinition(false),
   'assist.autoBotEnabled': booleanDefinition(false),
   'assist.autoHGEnabled': booleanDefinition(false),
   'assist.baiShengEnabled': booleanDefinition(false),

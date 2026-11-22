@@ -27,9 +27,9 @@ import {
   type XiaochaoPanelLayout
 } from '../ui/mount-xiaochao-app';
 import { createConfigStore } from '../config/config-store';
-import { createPlatformConfigStorage, currentConfigAccount, NO_CONFIG_ACCOUNT } from '../config/config-storage';
+import { createPlatformConfigStorage, NO_CONFIG_ACCOUNT } from '../config/config-storage';
 import { startAccountConfigSync } from '../config/account-config-sync';
-import { ACCOUNT_ID_WAIT_MS } from '../const/panel-startup';
+import { ACCOUNT_ID_WAIT_MS, PANEL_STARTUP_CHECK_MS } from '../const/panel-startup';
 import { installSeatDisplayVisibility } from '../features/seat-display/seat-display-visibility';
 import { createSeatStateStore } from '../features/seat-display/seat-state-store';
 import { isNationWarMode } from '../features/seat-display/seat-state';
@@ -67,7 +67,6 @@ import { SKILL_ASSIST_DEFINITIONS } from '../features/skill-assist/skill-definit
 import { installSkillAssistController } from '../features/skill-assist/skill-assist-controller';
 import { registerSpellNameLookup } from '../features/skill-assist/skill-visibility';
 import { installBlockEffectsController } from '../features/block-effects/block-effects-controller';
-import { shouldDropNoticeProtocol } from '../features/block-effects/block-message-filters';
 import {
   installOfficialBackgroundController,
   type OfficialBackgroundController
@@ -120,6 +119,7 @@ interface XiaochaoCoreRuntime {
   mountPanelShell(layout?: XiaochaoPanelLayout): ReturnType<typeof mountXiaochaoApp> | undefined;
   teardownPanel(): void;
   syncRuntimeSession(): void;
+  startAccountActions(): void;
 }
 
 /** Electron 和油猴共用的启动边界；平台差异只能通过 adapter 注入。 */
@@ -150,10 +150,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const accountConfigSync = startAccountConfigSync({
     configStore,
     storage: pageStorage(),
-    // 启动在等服务器那份时，读完马上接着启动，不等下一轮轮询。
-    onPullSettled: () => {
-      if (!core) syncAccountSession();
-    }
+    onPullSettled: () => syncAccountSession()
   });
   lifecycle.register(() => accountConfigSync.dispose());
   const startupStatus = bindPanelStartupStatus(bootBag);
@@ -165,6 +162,8 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   let tipHooksCleanedAfterRuntime = false;
   let runtimeReadyAt: number | null = null;
   let coreStartError: unknown = null;
+  let startupTimer: number | undefined;
+  let nextHallDiagnosticAt = 0;
 
   const probeRuntimeReady = () => {
     const missing = getMissingGameRuntimeDependencies({ globalObject: window });
@@ -178,43 +177,44 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   };
 
   /**
-   * 每秒轮询：同步登录账号配置，读到新账号时从服务器取一次这个账号的开关和背景。
+   * 启动时尽快检测游戏和账号；挂载后以常驻间隔同步账号。
    * 官网和登录页没有游戏运行时，先不启动功能、也不挂面板。进了游戏再挂。
    */
   const syncAccountSession = () => {
-    configStore.syncAccount();
-    accountConfigSync.checkAccount();
+    if (lifecycle.disposed || coreStartError) return;
     const missing = probeRuntimeReady();
     startupStatus.missing = missing;
-    if (missing.length > 0) {
+    if (missing.includes('GameHallUi') && Date.now() >= nextHallDiagnosticAt) {
+      nextHallDiagnosticAt = Date.now() + ACCOUNT_SESSION_SYNC_MS;
       const locator = createLayaObjectLocator(window as LayaRuntimeWindow);
       startupStatus.hallProbe = describeHallStartupProbe(locator, window as LayaRuntimeWindow);
-    } else {
+    } else if (!missing.includes('GameHallUi')) {
       delete startupStatus.hallProbe;
     }
-    if (!document.body || missing.length > 0) {
+    const gameReady = Boolean(document.body) && missing.length === 0;
+    if (core || gameReady) {
+      configStore.syncAccount();
+      accountConfigSync.checkAccount();
+    }
+    if (!gameReady) {
       if (!core) startupStatus.state = 'waiting';
       return;
     }
     if (!core) {
       // 先等读到账号编号，免得功能先按默认配置跑一段再换成这个号自己的配置。
       runtimeReadyAt ??= Date.now();
-      const waitingForAccount = currentConfigAccount() === NO_CONFIG_ACCOUNT
+      const waitingForAccount = configStore.account() === NO_CONFIG_ACCOUNT
         && Date.now() - runtimeReadyAt < ACCOUNT_ID_WAIT_MS;
       if (waitingForAccount) {
         startupStatus.state = 'waiting';
         startupStatus.missing = ['GameAccountId'];
         return;
       }
-      // 面板只在挂出来时读一次位置、高度和折叠，等这个账号的配置从服务器读回来再挂。
-      if (accountConfigSync.awaitingServer()) {
-        startupStatus.state = 'waiting';
-        startupStatus.missing = ['AccountConfig'];
-        return;
-      }
-      if (coreStartError) return;
       try {
-        core = startXiaochaoCore(platform, lifecycle, configStore);
+        const started = startXiaochaoCore(platform, lifecycle, configStore);
+        // 面板几何先用当前账号的本地值。云同步更新配置仓库时无需重挂面板。
+        started.mountPanelShell();
+        core = started;
       } catch (error) {
         // 启动到一半失败时，已经装上的功能还在；再试一次会把它们叠装一遍，背景等会反复重画闪屏。
         coreStartError = error;
@@ -232,6 +232,9 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     core.mountPanelShell();
     core.syncRuntimeSession();
     startupStatus.state = 'ready';
+    if (configStore.account() !== NO_CONFIG_ACCOUNT && !accountConfigSync.awaitingServer()) {
+      core.startAccountActions();
+    }
   };
 
   // 先装瘦桥，供注入早期调试；core 就绪后会再装一次带完整 getter 的桥
@@ -243,18 +246,21 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     mountPanelShell: () => core?.mountPanelShell()
   });
 
-  lifecycle.register(everyInterval('账号同步', ACCOUNT_SESSION_SYNC_MS, syncAccountSession));
-  syncAccountSession();
+  function checkStartup(): void {
+    startupTimer = undefined;
+    if (lifecycle.disposed) return;
+    syncAccountSession();
+    if (core) {
+      lifecycle.register(everyInterval('账号同步', ACCOUNT_SESSION_SYNC_MS, syncAccountSession));
+    } else if (!coreStartError) {
+      startupTimer = window.setTimeout(checkStartup, PANEL_STARTUP_CHECK_MS);
+    }
+  }
 
-  void waitForGameRuntime({
-    probe: probeRuntimeReady,
-    initialize: () => {
-      syncAccountSession();
-      return true;
-    },
-    registerCleanup: (cleanup) => lifecycle.register(cleanup),
-    status: startupStatus
-  }).catch((error: unknown) => console.error('[xiaochao] 启动失败', error));
+  lifecycle.register(() => {
+    if (startupTimer !== undefined) window.clearTimeout(startupTimer);
+  });
+  checkStartup();
 }
 
 /**
@@ -278,9 +284,11 @@ function startXiaochaoCore(
     configStore.get('display.recentCardMode')
   );
   const mingpaiEngine = createMingpaiEngine();
+  const cardLabels = installCardLabelController(configStore, window, gameEvents, cardConfigSource);
   const deckRecordInteraction = createDeckRecordInteraction();
   const mingpaiRuntime = installMingpaiController(seatStateStore, gameEvents, {
     engine: mingpaiEngine,
+    onCardLabelMovement: cardLabels.recordMovement,
     isRedCard: (cardId) => {
       const card = gameCardCatalog.resolve(cardId);
       return card?.suit ? card.isRed : null;
@@ -348,7 +356,7 @@ function startXiaochaoCore(
   lifecycle.register(mingpaiRuntime.dispose);
   lifecycle.register(installNativeMingpaiPreviewController(configStore, seatStateStore, gameCardCatalog, mingpaiEngine, gameEvents));
   lifecycle.register(installCountdownSecondsController(configStore));
-  lifecycle.register(installCardLabelController(configStore));
+  lifecycle.register(cardLabels.dispose);
   lifecycle.register(installAiPlayerTipController(gameEvents, window));
   lifecycle.register(installChooseFigureController(window, gameEvents));
   lifecycle.register(installHandSortController(configStore));
@@ -381,29 +389,6 @@ function startXiaochaoCore(
     officialBackground: configStore.get('skin.officialBackground') === true
   });
   lifecycle.register(officialBackground.dispose);
-  let autoTask: ReturnType<typeof installAutoTaskController>;
-  try {
-    autoTask = installAutoTaskController(configStore, gameEvents, {
-      cardConfigSource
-    });
-  } catch (error) {
-    console.error('[xiaochao] 自动领取初始化失败，面板仍可用', error);
-    autoTask = {
-      schedule: () => false,
-      getStatus: () => ({
-        phase: 'idle',
-        lastReason: '',
-        lastStartedAt: 0,
-        lastFinishedAt: 0,
-        message: '自动领取未加载'
-      }),
-      subscribe: () => () => {},
-      dispose: () => {}
-    };
-  }
-  lifecycle.register(autoTask.dispose);
-  lifecycle.register(installDdzShopAutoExchange({ cardConfigSource }));
-  lifecycle.register(installGiftCodeController({ configStore }));
   lifecycle.register(installRuntimeSearchController());
   const extraAssist = installExtraAssistController(configStore, {
     getExtraAssistData: () => cardConfigSource.getExtraAssistData(),
@@ -413,10 +398,6 @@ function startXiaochaoCore(
     gameEvents
   });
   lifecycle.register(extraAssist.dispose);
-  const autoHg = installAutoHgController(configStore, { gameEvents });
-  lifecycle.register(autoHg.dispose);
-  const autoBot = installAutoBotController(configStore, { gameEvents });
-  lifecycle.register(autoBot.dispose);
   const updateNotice = installUpdateNoticeController(configStore, platform);
   lifecycle.register(updateNotice.dispose);
   const shanhetu = installShanhetuController(configStore, {
@@ -430,10 +411,30 @@ function startXiaochaoCore(
     blockEffects.filterMessage,
     skinChange.filterMessage,
     skinPaper.filterMessage,
-    shanhetu.filterMessage,
-    autoHg.filterMessage,
-    autoBot.filterMessage
+    shanhetu.filterMessage
   ];
+  let accountActionsStarted = false;
+  function startAccountActions(): void {
+    if (accountActionsStarted) return;
+    accountActionsStarted = true;
+    try {
+      lifecycle.register(installAutoTaskController(configStore, gameEvents, { cardConfigSource }).dispose);
+    } catch (error) {
+      console.error('[xiaochao] 自动领取初始化失败，面板仍可用', error);
+    }
+    try {
+      lifecycle.register(installDdzShopAutoExchange({ cardConfigSource }));
+      lifecycle.register(installGiftCodeController({ configStore }));
+      const autoHg = installAutoHgController(configStore, { gameEvents });
+      lifecycle.register(autoHg.dispose);
+      messageFilters.push(autoHg.filterMessage);
+      const autoBot = installAutoBotController(configStore, { gameEvents });
+      lifecycle.register(autoBot.dispose);
+      messageFilters.push(autoBot.filterMessage);
+    } catch (error) {
+      console.error('[xiaochao] 账号自动操作初始化失败，面板仍可用', error);
+    }
+  }
   lifecycle.register(installMicroClientMessageSource(gameEvents, window, {
     mutateMessage: (payload, className) => {
       for (const filter of messageFilters) {
@@ -443,11 +444,7 @@ function startXiaochaoCore(
           console.warn('[xiaochao] 协议改写失败', className, error);
         }
       }
-    },
-    shouldDropProtocolEvent: (className, payload) => (
-      configStore.get('block.noticeWindow') === true
-      && shouldDropNoticeProtocol(className, payload, Boolean(locateGameScene(window)))
-    )
+    }
   }));
   lifecycle.register(installNativeRecentCardController(configStore, recentCardStore, gameEvents));
   lifecycle.register(installNativeDeckRecordController(
@@ -488,7 +485,6 @@ function startXiaochaoCore(
       skillAssistStore,
       peixiuRouteStore,
       turnStatusStore,
-      autoTask,
       () => blockEffects.clearRedDots(),
       shanhetu,
       updateNotice
@@ -521,6 +517,7 @@ function startXiaochaoCore(
   return {
     mountPanelShell,
     teardownPanel,
+    startAccountActions,
     syncRuntimeSession() {
       blockEffects.armNoticeBlock();
       blockEffects.armAdBlock();

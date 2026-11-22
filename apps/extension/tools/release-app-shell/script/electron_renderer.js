@@ -1,5 +1,6 @@
 /** 渲染进程桥：Steam 编号和主进程调用。 */
 const { ipcRenderer, contextBridge } = require('electron');
+const { installLoginPasswordManager, isSupportedLoginPage } = require('./login-password-manager.cjs');
 async function GetSteamId(){
     const steamId =  await ipcRenderer.invoke('get-steam-id');
     console.log('你的 Steam ID 是:', steamId);
@@ -180,3 +181,12 @@ function exposeApi() {
 }
 
 exposeApi();
+
+if (process.isMainFrame !== false && isSupportedLoginPage(window.location)) {
+    if (process.contextIsolated && contextBridge) {
+        contextBridge.exposeInMainWorld('WDVerSion', api.WDVerSion);
+    } else {
+        window.WDVerSion = api.WDVerSion;
+    }
+    installLoginPasswordManager({ window, storage: xiaochaoStorage, focusWebview: api.focusWebview });
+}

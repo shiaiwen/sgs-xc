@@ -13,7 +13,6 @@ import {
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import {
-  EXTRA_ASSIST_ENABLED_KEY,
   PEIXIU_ASSIST_KEY,
   SUNQUAN_ASSIST_KEY,
   XUSHAO_ASSIST_KEY
@@ -67,21 +66,13 @@ export function installExtraAssistController(
   const patcher = createMethodPatcher();
   const pollIntervalMs = options.pollIntervalMs ?? 800;
   let disposed = false;
-  let enabled = configStore.get(EXTRA_ASSIST_ENABLED_KEY) === true;
   const characterOn = (key: typeof SUNQUAN_ASSIST_KEY | typeof PEIXIU_ASSIST_KEY | typeof XUSHAO_ASSIST_KEY) => (
-    enabled && configStore.get(key) === true
+    configStore.get(key) === true
   );
   let cachedConfig: ExtraAssistConfigData | null = null;
   let seatHooksInstalled = false;
   const cleanups: Array<() => void> = [];
 
-  cleanups.push(configStore.subscribe(EXTRA_ASSIST_ENABLED_KEY, ({ value }) => {
-    enabled = value === true;
-    if (enabled) startPolling();
-    else stopPolling();
-    if (!characterOn(PEIXIU_ASSIST_KEY)) options.peixiuRouteStore?.clear();
-    refreshQuanyu();
-  }));
   for (const key of [SUNQUAN_ASSIST_KEY, PEIXIU_ASSIST_KEY, XUSHAO_ASSIST_KEY]) {
     cleanups.push(configStore.subscribe(key, () => {
       if (!characterOn(PEIXIU_ASSIST_KEY)) options.peixiuRouteStore?.clear();

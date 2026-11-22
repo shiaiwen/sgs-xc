@@ -63,8 +63,5 @@ export const AI_PLAYER_SCAN_OUT_OF_GAME_MS = 2000;
 /** 屏蔽跑马灯：反复清掉已经出来的跑马灯。 */
 export const MARQUEE_SWEEP_MS = 500;
 
-/** 屏蔽公告：补挂钩子、补装屏蔽。 */
-export const NOTICE_BLOCK_CHECK_MS = 500;
-
 /** 阵营聊天面板。 */
 export const CAMP_CHAT_PANEL_SYNC_MS = 500;

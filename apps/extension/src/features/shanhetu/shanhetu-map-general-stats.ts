@@ -215,7 +215,7 @@ export function formatGeneralWarningSkills(
   const seasonId = String(runtime.seasonId || config.RcurSeason || 1);
   const diff = config.Rdiff[seasonId]?.[String(runtime.difficulty)];
   const bigDif = Math.max(1, num(diff?.bdif, 1));
-  const fields = ['getspell', 'getspell_ZD', 'getspell_KN', 'getspell_EM', 'getspell_LY'];
+  const fields = ['getspell_PT', 'getspell_ZD', 'getspell_KN', 'getspell_EM', 'getspell_LY'];
   let ids: string[] = [];
   const apply = (value: string): void => {
     for (const id of value.split(';').filter(Boolean)) {
@@ -223,6 +223,7 @@ export function formatGeneralWarningSkills(
       else ids.push(id);
     }
   };
+  apply(String(general.getspell ?? ''));
   for (const field of fields.slice(0, bigDif)) apply(String(general[field] ?? ''));
   if (runtime.difficulty > 100) {
     const field = hardExtraField(runtime.difficulty, 'getspell_JJ');
@@ -232,5 +233,7 @@ export function formatGeneralWarningSkills(
       for (const change of changes) apply(change);
     }
   }
-  return ids.map((id) => config.RspellNames?.[id] ?? '').filter((name) => WARNING_SPELLS.has(name));
+  // 原生敌方技能面板在山河技能列表为空时回退到武将自带技能。
+  const skillIds = ids.length ? ids : config.RgeneralSpellIds?.[String(general.generalID)] ?? [];
+  return skillIds.map((id) => config.RspellNames?.[id] ?? '').filter((name) => WARNING_SPELLS.has(name));
 }

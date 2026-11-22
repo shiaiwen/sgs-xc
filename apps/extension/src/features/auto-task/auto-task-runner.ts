@@ -41,6 +41,15 @@ import type { AutoTaskWindows } from './auto-task-windows.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
+interface PendingNewJunDianClaim {
+  activity: UnknownRecord;
+  proxy: UnknownRecord;
+  account: string | undefined;
+  id: number;
+  isBp: boolean;
+  finish(success: boolean): void;
+}
+
 export interface AutoTaskOptions {
   skipTavern: boolean;
   skipMail: boolean;
@@ -57,7 +66,7 @@ export interface AutoTaskRunnerDeps {
   windows: AutoTaskWindows;
   claims: AutoTaskClaims;
   tasks: TaskScope;
-  /** 用于在 GameEventDispatcher 上挂可撤销的错误弹窗抑制钩子。 */
+  /** 用于挂可撤销的领奖回包和错误提示钩子。 */
   patcher?: MethodPatcher;
   enabled(): boolean;
   options(): AutoTaskOptions;
@@ -128,11 +137,18 @@ const ACCUMULATED_REWARD_METHODS = [
 const CLIENT_QUEST_OP_REP = 107014;
 /** 自动领取发出的任务操作，回复前保留多久用于抑制对应任务的错误弹窗。 */
 const QUEST_OP_CLAIM_TTL_MS = 20_000;
+const CLIENT_NEW_JD_GET_AWARD_REP = 170297;
+const NEW_JD_AWARD_REPLY_EVENT = 'decodeClientNewJDGetAwardRep';
+const NEW_JD_REPLY_TIMEOUT_MS = 5_000;
 
 /** 创建自动领取执行器，串起窗口、任务和领取记录。 */
 export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   const { locator, windows, claims, tasks, patcher } = deps;
   const newJunDianRuns = new WeakMap<object, Promise<boolean>>();
+  const manualNewJunDianUntil = new WeakMap<object, number>();
+  let pendingNewJunDianClaim: PendingNewJunDianClaim | null = null;
+  let startingNewJunDianClaim: PendingNewJunDianClaim | null = null;
+  let silentNewJunDianError: number | null = null;
   const newPrivilegePending = new WeakMap<object, Map<number, string>>();
   const newPrivilegeBound = new WeakSet<object>();
   let newPrivilegeRetryScheduled = false;
@@ -298,7 +314,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   }
 
   function eventConstant(target: UnknownRecord, name: string): unknown {
-    return asRecord(target.constructor)?.[name] ?? target[name];
+    const constructor = target.constructor;
+    const value = typeof constructor === 'function'
+      ? Reflect.get(constructor, name)
+      : asRecord(constructor)?.[name];
+    return value ?? target[name];
   }
 
   // ---------- 任务 ----------
@@ -318,11 +338,15 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
    * 挂 GameEventDispatcher.ShowProtocolError 的抑制钩子：协议号 107014（任务操作回复）
    * 且任务是我们刚自动领取触发的，就吞掉「未知错误107014_…」弹窗。手动领任务报错不受影响。
    */
-  function ensureQuestOpErrorHook(): void {
+  function ensureClaimErrorHook(dispatcher?: UnknownRecord | null): void {
     if (!patcher) return;
-    const ged = typeof locator.dispatcher === 'function' ? locator.dispatcher() : null;
+    const ged = dispatcher ?? (typeof locator.dispatcher === 'function' ? locator.dispatcher() : null);
     if (!ged || patcher.isWrapped(ged, 'ShowProtocolError')) return;
-    patcher.wrap(ged, 'ShowProtocolError', (original) => (protocolId, errorCode, suffix) => {
+    patcher.wrap(ged, 'ShowProtocolError', (original) => function (this: unknown, ...args: unknown[]) {
+      const [protocolId, errorCode, suffix] = args;
+      if (protocolId === CLIENT_NEW_JD_GET_AWARD_REP && errorCode === silentNewJunDianError && silentNewJunDianError !== null) {
+        return undefined;
+      }
       if (protocolId === CLIENT_QUEST_OP_REP) {
         const questId = Number(suffix);
         if (Number.isFinite(questId) && (autoClaimedQuestIds.get(questId) ?? 0) > Date.now()) {
@@ -330,7 +354,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
           return undefined;
         }
       }
-      return original(protocolId, errorCode, suffix);
+      return original.apply(this, args);
     });
   }
 
@@ -387,7 +411,7 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
             bind(replyTarget, event, (taskId) => { if (matches(taskId)) finish(true); });
           }
         }
-        ensureQuestOpErrorHook();
+        ensureClaimErrorHook();
         if (claimTask(access, id, task, context) === false) finish(false, false);
         else markQuestOpSent(id);
       } catch (error) {
@@ -473,6 +497,80 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   // ---------- 活动 ----------
 
+  function prepareNewJunDianClaims(activity: UnknownRecord): UnknownRecord | null {
+    const proxy = manager('ServerProxy');
+    if (!patcher || !proxy) return null;
+    if (!patcher.isWrapped(activity, 'SendGetNewJDRewardReq') &&
+      !patcher.wrap(activity, 'SendGetNewJDRewardReq', (original) => function (this: unknown, ...args: unknown[]) {
+        const pending = pendingNewJunDianClaim;
+        if (this === activity && !(pending && startingNewJunDianClaim === pending && pending.activity === activity
+          && args[0] === pending.id && args[1] === pending.isBp && args[2] === false)) {
+          // 手动请求可能与自动请求领取同一档，回包无法区分时保留游戏提示。
+          manualNewJunDianUntil.set(activity, Date.now() + NEW_JD_REPLY_TIMEOUT_MS);
+          if (pending?.activity === activity) pending.finish(false);
+        }
+        return original.apply(this, args);
+      })) return null;
+
+    if (!patcher.isWrapped(proxy, 'event') &&
+      !patcher.wrap(proxy, 'event', (original) => function (this: unknown, ...args: unknown[]) {
+        const pending = pendingNewJunDianClaim;
+        if (this !== proxy || args[0] !== NEW_JD_AWARD_REPLY_EVENT || pending?.proxy !== proxy
+          || !active() || pending.account !== deps.account?.()) return original.apply(this, args);
+        const protocol = asRecord(asRecord(args[1])?.Protocol);
+        const reply = asRecord(asRecord(protocol?.Data)?.ProtoObj);
+        if (!reply || protocol?.Id !== CLIENT_NEW_JD_GET_AWARD_REP || reply.is_all) return original.apply(this, args);
+
+        const result = reply.result ?? 0;
+        const sameReward = reply.id === pending.id && Boolean(reply.is_bp) === pending.isBp;
+        // 无编号的成功通知也可触发一次刷新，领取结果仍以已领列表为准。
+        if (!sameReward && !(reply.id === undefined && result === 0)) return original.apply(this, args);
+
+        const previousError = silentNewJunDianError;
+        silentNewJunDianError = sameReward && typeof result === 'number' && result > 0 ? result : null;
+        try {
+          return original.apply(this, args);
+        } finally {
+          silentNewJunDianError = previousError;
+          pending.finish(result === 0);
+        }
+      })) return null;
+
+    ensureClaimErrorHook(asRecord(activity.Ged));
+    return proxy;
+  }
+
+  function requestNewJunDianReward(
+    activity: UnknownRecord, proxy: UnknownRecord | null, id: number, isBp: boolean, account: string | undefined
+  ): Promise<boolean> {
+    const send = () => call(activity, 'SendGetNewJDRewardReq', id, isBp, false);
+    if (!proxy) {
+      return waitForEvent(activity, eventConstant(activity, 'NEW_JD_REWARD_REP'), send, NEW_JD_REPLY_TIMEOUT_MS);
+    }
+    return new Promise((resolve, reject) => {
+      const pending: PendingNewJunDianClaim = { activity, proxy, account, id, isBp, finish };
+      const timer = setTimeout(() => finish(false), NEW_JD_REPLY_TIMEOUT_MS);
+      pendingNewJunDianClaim = pending;
+      startingNewJunDianClaim = pending;
+      function cleanup() {
+        clearTimeout(timer);
+        if (pendingNewJunDianClaim === pending) pendingNewJunDianClaim = null;
+      }
+      function finish(success: boolean) {
+        cleanup();
+        resolve(success);
+      }
+      try {
+        if (send() === false) finish(false);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      } finally {
+        startingNewJunDianClaim = null;
+      }
+    });
+  }
+
   async function syncNewJunDian(activity: UnknownRecord): Promise<boolean> {
     if (!has(activity, 'SendGetNewJDInfoReq')) return false;
     const free = activity.NewJDHaveRewardList;
@@ -487,46 +585,52 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
 
   async function claimNewJunDianOnce(activity: UnknownRecord): Promise<boolean> {
     if (!has(activity, 'SendGetNewJDRewardReq')) return false;
-    if (!await syncNewJunDian(activity) || !activity.HasNewJDRewardRed) return false;
+    const account = deps.account?.();
+    const proxy = prepareNewJunDianClaims(activity);
+    if (!await syncNewJunDian(activity) || !activity.HasNewJDRewardRed || account !== deps.account?.()) return false;
     const level = Number(activity.NewJDLevel);
     if (!Number.isInteger(level) || level < 0) return false;
     const hasBattlePass = level >= 1;
-    const pending: Array<{ id: unknown; isBp: boolean }> = [];
+    const pending: Array<{ id: number; isBp: boolean }> = [];
     const view = windows.get('NewJunDianViewCtrl', null);
     if (!view) return false;
     try {
       const subView = asRecord(call(view, 'createSubView', 1));
       if (!Array.isArray(subView?.curScoreAwards)) return false;
       for (const award of subView.curScoreAwards as UnknownRecord[]) {
-        if (!(Number(subView.currentScore) >= Number(award.Point))) continue;
+        const id = Number(award.Id);
+        if (!Number.isSafeInteger(id) || id <= 0 || !(Number(subView.currentScore) >= Number(award.Point))) continue;
         for (const isBp of [false, true]) {
           if (isBp && !hasBattlePass) continue;
           const itemId = isBp ? award.FfItemId : award.ItemId;
           const claimed = isBp ? activity.NewJDHaveRewardList_bp : activity.NewJDHaveRewardList;
-          if (!(Number(itemId) > 0) || !Array.isArray(claimed) || claimed.includes(award.Id)) continue;
+          if (!(Number(itemId) > 0) || !Array.isArray(claimed) || claimed.includes(id)) continue;
           if (blocked([{ itemId }])) continue;
-          pending.push({ id: award.Id, isBp });
+          pending.push({ id, isBp });
         }
       }
     } finally {
       windows.release('NewJunDianViewCtrl');
     }
     let claimedAny = false;
-    const rewardEvent = eventConstant(activity, 'NEW_JD_REWARD_REP');
     for (const { id, isBp } of pending) {
-      const claimed = isBp ? activity.NewJDHaveRewardList_bp : activity.NewJDHaveRewardList;
-      if (Array.isArray(claimed) && claimed.includes(id)) continue;
+      if (!active() || account !== deps.account?.() || pendingNewJunDianClaim
+        || (proxy && (manualNewJunDianUntil.get(activity) ?? 0) > Date.now())) break;
+      const list = isBp ? 'NewJDHaveRewardList_bp' : 'NewJDHaveRewardList';
+      const claimed = activity[list];
+      if (!Array.isArray(claimed) || claimed.includes(id) || (isBp && Number(activity.NewJDLevel) < 1)) continue;
       if (!claims.acquire(`activity:newJD:${String(id)}:${String(isBp)}`)) continue;
       try {
-        const replied = await waitForEvent(activity, rewardEvent, () => call(activity, 'SendGetNewJDRewardReq', id, isBp, false));
-        if (!replied) break;
+        if (!await requestNewJunDianReward(activity, proxy, id, isBp, account)) break;
+        if (!active() || account !== deps.account?.() || !await syncNewJunDian(activity)) break;
+        const refreshed = activity[list];
+        if (account !== deps.account?.() || !Array.isArray(refreshed) || !refreshed.includes(id)) break;
         claimedAny = true;
       } catch (error) {
         console.warn('[自动领取] 节钺令领取失败:', id, isBp, error);
         break;
       }
     }
-    if (claimedAny) await syncNewJunDian(activity);
     return claimedAny;
   }
 

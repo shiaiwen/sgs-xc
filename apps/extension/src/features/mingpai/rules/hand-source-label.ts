@@ -1,16 +1,18 @@
-/**
- * 手牌来源标记：牌进手牌时用短名，表里没有的技能取名字前两个字。来源是别人的手牌时再带上座位名。
- * 条件：牌进任意座位的手牌、不是回收区、技能号存在、移动类型不是 0 也不是 255。顺手这类普通移动也标。
- * 别人的明牌条上也要能看到这几个字，不能只标自己拿到的牌。
- * 读不到技能名就不标。
- */
+/** 标注本家收到的牌原来属于谁，以及通过哪个技能取得。 */
 
-import { GLOBAL_OWNER } from '../mingpai-engine.ts';
+import { EQUIP_ZONE, GLOBAL_OWNER, HAND_ZONE } from '../mingpai-engine.ts';
 import { readSpellName } from '../spell-name.ts';
 import { HAND_LABEL_ALIASES } from './hand-label-aliases.ts';
 
+const SEAT_CARD_ZONES = new Set([HAND_ZONE, EQUIP_ZONE, 7]); // 7 是判定区。
+const SNATCH_SPELL_ID = 4; // SHUNQIAN
+const BACHAO_SPELL_IDS = new Set([3823, 3902]);
+const BACHAO_NAME = /^霸朝(?:[·\d一二]+)?$/;
+
 export interface IncomingHandLabelInput {
   spellId: number;
+  /** 已由技能结算确认的名称，用于移牌消息没带技能号时。 */
+  spellName?: string;
   moveType: number;
   fromZone: number;
   toZone: number;
@@ -22,30 +24,30 @@ export interface IncomingHandLabelInput {
   seatLabel?: (seatId: number) => string;
 }
 
+/** 别人交来的手牌即使没有亮给全场，移牌消息也明确交代了原持有者。 */
+export function readIncomingCardOwner(
+  input: Pick<IncomingHandLabelInput, 'fromId' | 'fromZone' | 'toId' | 'toZone' | 'selfSeatId'>
+): number | null {
+  const { fromId, fromZone, toId, toZone, selfSeatId } = input;
+  if (toZone !== HAND_ZONE || toId !== selfSeatId || !SEAT_CARD_ZONES.has(fromZone)) return null;
+  if (fromId === undefined || !Number.isInteger(fromId) || fromId < 0 || fromId >= GLOBAL_OWNER || fromId === toId) return null;
+  return fromId;
+}
+
+export function isBachaoSpell(spellId: number): boolean {
+  return BACHAO_SPELL_IDS.has(spellId) || BACHAO_NAME.test(readSpellName(spellId));
+}
+
 export function buildIncomingHandSourceLabel(
   input: IncomingHandLabelInput,
 ): string | null {
-  if (!input.spellId || input.moveType >= 255) return null;
-  const name = readSpellName(input.spellId);
-  if (!name) return null;
-  // 对于别人都不是明牌所以不标来源。
-
-  const skipNames = ['巧织', '制衡', '采风', '茂著','顾曲','尽览'];
-  if (skipNames.includes(name)) return null;
-  // 火攻亮出来的牌常常还停在原来的位置，不进新手牌。移动类型 0 也会被别处丢掉，这里仍要标。
-  if (input.toZone !== 5 || input.fromZone === 12) {
-    return name === '火攻' ? '[火攻]' : null;
-  }
-  if (input.moveType <= 0 && name !== '火攻' && name !== '霸朝') return null;
-  const shortName = HAND_LABEL_ALIASES[name] ?? name.slice(0, 2);
-  // 来源是另一个座位的手牌时标座位。霸朝从装备区交来的牌同样标是谁给的。
-  const fromOtherSeat =
-    input.fromId !== undefined &&
-    input.fromId !== GLOBAL_OWNER &&
-    input.fromId !== input.toId &&
-    (input.fromZone === 5 || name === '霸朝');
-  const source = fromOtherSeat
-    ? (input.seatLabel?.(input.fromId as number) ?? '')
-    : '';
-  return `[${shortName}]${source}`;
+  if (input.moveType <= 0 || input.moveType >= 255 || input.toZone !== HAND_ZONE
+    || input.toId !== input.selfSeatId || input.fromZone === 12) return null;
+  const owner = readIncomingCardOwner(input);
+  const name = input.spellName || readSpellName(input.spellId);
+  let shortName = name.includes('特质') ? '特质' : HAND_LABEL_ALIASES[name] ?? name.slice(0, 2);
+  if (input.spellId === SNATCH_SPELL_ID) shortName = '顺手';
+  if (BACHAO_SPELL_IDS.has(input.spellId)) shortName = '霸朝';
+  const source = owner === null ? '' : input.seatLabel?.(owner) || `${owner + 1}号位`;
+  return shortName || source ? `${shortName ? `[${shortName}]` : ''}${source}` : null;
 }

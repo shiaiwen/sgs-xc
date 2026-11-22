@@ -1,14 +1,12 @@
 <script setup>
 /** 游戏辅助开关：进阶辅助、自动托管、自动换将、百胜、酒馆目标。 */
-import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import { onBeforeUnmount, reactive } from 'vue';
 import BlockCheck from '../BlockCheck.vue';
 import {
   AUTO_BOT_ENABLED_KEY,
   AUTO_HG_ENABLED_KEY,
   BAI_SHENG_ENABLED_KEY,
   EXTRA_ASSIST_CHARACTER_SETTINGS,
-  EXTRA_ASSIST_ENABLED_KEY,
-  GAME_ASSIST_SWITCH_SETTINGS,
 } from '../../features/extra-assist/extra-assist-settings';
 
 const props = defineProps({
@@ -19,21 +17,13 @@ const props = defineProps({
 });
 
 const values = reactive(Object.fromEntries(
-  [...GAME_ASSIST_SWITCH_SETTINGS, ...EXTRA_ASSIST_CHARACTER_SETTINGS].map(({ key }) => [key, props.configStore.get(key)])
+  EXTRA_ASSIST_CHARACTER_SETTINGS.map(({ key }) => [key, props.configStore.get(key)])
 ));
-const hoverKey = ref('');
-const hoverTip = computed(() => (
-  [...GAME_ASSIST_SWITCH_SETTINGS, ...EXTRA_ASSIST_CHARACTER_SETTINGS]
-    .find((setting) => setting.key === hoverKey.value)?.tooltip || ''
-));
-
-const unsubscribe = [
-  ...[...GAME_ASSIST_SWITCH_SETTINGS, ...EXTRA_ASSIST_CHARACTER_SETTINGS].map(({ key }) => (
-    props.configStore.subscribe(key, ({ value }) => {
-      values[key] = value;
-    })
-  )),
-];
+const unsubscribe = EXTRA_ASSIST_CHARACTER_SETTINGS.map(({ key }) =>
+  props.configStore.subscribe(key, ({ value }) => {
+    values[key] = value;
+  })
+);
 
 // 自动化入口已下线；同步关闭历史遗留的开启状态，避免功能隐藏后仍在后台运行。
 for (const key of [AUTO_BOT_ENABLED_KEY, AUTO_HG_ENABLED_KEY, BAI_SHENG_ENABLED_KEY]) {
@@ -51,38 +41,7 @@ function updateSetting(key, event) {
 <template>
   <section class="xiaochao-settings-section" aria-label="辅助功能">
     <div class="xiaochao-settings-section__body">
-      <div class="xiaochao-settings-grid xiaochao-display-switch-grid">
-        <div
-          v-for="setting in GAME_ASSIST_SWITCH_SETTINGS"
-          :key="setting.key"
-          class="xiaochao-block-switch xiaochao-game-assist-switch"
-          :data-tooltip="setting.tooltip"
-          @mouseenter="hoverKey = setting.key"
-          @mouseleave="hoverKey = ''"
-        >
-          <span class="xiaochao-block-switch__label">
-            {{ setting.label }}
-          </span>
-          <label
-            class="xiaochao-block-switch__toggle"
-            :data-tooltip="setting.tooltip"
-            :title="setting.tooltip"
-          >
-            <input
-              type="checkbox"
-              :aria-label="setting.label"
-              :checked="values[setting.key]"
-              @change="updateSetting(setting.key, $event)"
-            >
-            <span class="xiaochao-block-switch__slider" />
-            <span class="xiaochao-block-switch__state" aria-hidden="true" />
-          </label>
-        </div>
-      </div>
-      <div
-        v-if="values[EXTRA_ASSIST_ENABLED_KEY]"
-        class="xiaochao-assist-characters"
-      >
+      <div class="xiaochao-assist-characters">
         <BlockCheck
           v-for="setting in EXTRA_ASSIST_CHARACTER_SETTINGS"
           :key="setting.key"
@@ -90,8 +49,6 @@ function updateSetting(key, event) {
           :label="setting.label"
           :tooltip="setting.tooltip"
           :checked="values[setting.key]"
-          @mouseenter="hoverKey = setting.key"
-          @mouseleave="hoverKey = ''"
           @change="updateSetting(setting.key, $event)"
         />
       </div>
@@ -100,11 +57,6 @@ function updateSetting(key, event) {
 </template>
 
 <style scoped>
-.xiaochao-game-assist-switch {
-  position: relative;
-  pointer-events: auto;
-}
-
 .xiaochao-assist-characters {
   display: flex;
   flex-wrap: wrap;
@@ -118,19 +70,6 @@ function updateSetting(key, event) {
 
 .xiaochao-assist-character-check :deep(.xiaochao-block-check__label) {
   font-size: 12px;
-}
-
-.xiaochao-game-assist-tip {
-  margin: 4px 0 0;
-  padding: 5px 8px;
-  border: 1px solid rgba(242, 222, 156, .5);
-  border-radius: 5px;
-  background: rgba(29, 27, 24, .96);
-  color: #eee5d2;
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-line;
-  pointer-events: none;
 }
 
 </style>

@@ -165,6 +165,21 @@ export function readShownHandEntries(
   ];
 }
 
+/** 只读当前牌面上已有的游戏标签，避开座位仓库合入的历史标签。 */
+export function readNativeHandCardTags(
+  seatUi: UnknownRecord | null,
+  controlled: boolean
+): ReadonlyMap<number, readonly string[]> {
+  const seat = asRecord(seatUi?.seat);
+  const cardUis = readArray(asRecord(seatUi?.cardContainer), CARD_UI_LIST_KEYS);
+  const cards = [
+    ...readShownHandEntries(seat, seatUi),
+    ...cardUis.filter(isPubliclyShownCard),
+    ...(controlled ? readArray(seat, ['HandCards', 'handCards']) : [])
+  ].flatMap(readKnownCard);
+  return new Map(uniqueCards(cards).map((card) => [card.cardId, card.tags]));
+}
+
 /** 返回场景能确认的实际手牌张数；没有可靠来源时返回 null。 */
 export function readSeatHandCardCount(
   seat: UnknownRecord | null,
