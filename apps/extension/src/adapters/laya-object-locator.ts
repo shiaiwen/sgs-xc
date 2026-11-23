@@ -14,6 +14,9 @@ import {
 
 type UnknownRecord = Record<string, unknown>;
 
+/** 混淆方法名解析结果缓存：原型上逐方法 toString 很贵，同一原型重复查时直接复用。 */
+const obfuscatedMethodNameCache = new WeakMap<object, Map<string, string | null>>();
+
 export interface LayaRuntimeWindow extends GameRuntimeWindow {
   GameContext?: unknown;
   Laya?: GameRuntimeWindow['Laya'] & {
@@ -340,6 +343,15 @@ export function createLayaObjectLocator(
     const fragments = typeof signature === 'string' ? [signature] : signature;
     const prototype = Object.getPrototypeOf(record) ?? asRecord(record.constructor)?.prototype;
     if (!prototype) return null;
+    const cacheKey = `${owner}:${method}`;
+    let byOwner = obfuscatedMethodNameCache.get(prototype);
+    if (!byOwner) {
+      byOwner = new Map();
+      obfuscatedMethodNameCache.set(prototype, byOwner);
+    } else if (byOwner.has(cacheKey)) {
+      return byOwner.get(cacheKey)!;
+    }
+    let resolved: string | null = null;
     for (const key of Object.getOwnPropertyNames(prototype)) {
       if (key === 'constructor') continue;
       // 实例上的同名方法可能已被其他补丁包装，也需回查原型上的原函数。
@@ -366,10 +378,12 @@ export function createLayaObjectLocator(
         }
         return false;
       })) {
-        return key;
+        resolved = key;
+        break;
       }
     }
-    return null;
+    byOwner.set(cacheKey, resolved);
+    return resolved;
   }
 
   function listShowWindowMethodNames(target: unknown): string[] {

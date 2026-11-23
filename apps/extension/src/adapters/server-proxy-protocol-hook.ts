@@ -46,16 +46,20 @@ export function installProtocolEventHooks(
     dropped: 0
   };
 
+  let stopScanning: (() => void) | null = null;
+
   function scan(): void {
     hookEventIfNeeded(locator.manager('ServerProxy'), 'ServerProxy', handlers, diagnostics);
     hookEventIfNeeded(locator.manager('ActivityManager'), 'ActivityManager', handlers, diagnostics);
+    // 两个目标都挂上钩后就不再空扫：持久 getter/setter 已能接住游戏后续重绑 event。
+    if (diagnostics.hookedTargets.length >= 2 && stopScanning) stopScanning();
   }
 
   scan();
-  const stopScanning = everyInterval('协议钩子', PROTOCOL_HOOK_SCAN_MS, scan);
+  stopScanning = everyInterval('协议钩子', PROTOCOL_HOOK_SCAN_MS, scan);
   return {
     restore() {
-      stopScanning();
+      stopScanning?.();
     },
     diagnostics
   };

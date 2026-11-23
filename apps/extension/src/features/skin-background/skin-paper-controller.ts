@@ -43,8 +43,7 @@ import {
   isSkinDetailWindowCandidate,
   resolveSkinDetailMount,
   resolveSkinDetailWindow,
-  wireNativeSkinDetailButtons,
-  type SkinDetailResolveProbe
+  wireNativeSkinDetailButtons
 } from './skin-detail-buttons.ts';
 import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from '../../const/stage.ts';
 import { getUploadedBackgroundStore, type UploadedBackgroundFile } from './uploaded-background-store.ts';
@@ -795,9 +794,19 @@ export function installSkinPaperController(
     return true;
   }
 
+  let cachedDetailWindow: UnknownRecord | null = null;
+  /** 皮肤详情窗口是单例，缓存住避免每次维护循环都重扫窗口层/舞台树。 */
+  function resolveDetailWindow(): UnknownRecord | null {
+    if (cachedDetailWindow && !cachedDetailWindow.destroyed && cachedDetailWindow.visible !== false) {
+      return cachedDetailWindow;
+    }
+    cachedDetailWindow = resolveSkinDetailWindow(locator, globalObject);
+    return cachedDetailWindow;
+  }
+
   function tryInstallDetailButtons(): void {
     cleanupMisplacedDetailButtons(locator, globalObject);
-    const win = resolveSkinDetailWindow(locator, globalObject);
+    const win = resolveDetailWindow();
     if (!win || win.destroyed || win.visible === false || !isOn()) return;
     if (!isSkinDetailWindowCandidate(win)) return;
     const installed = installDetailButtons(win);
@@ -810,7 +819,7 @@ export function installSkinPaperController(
 
   function onSkinInfoWindow(): void {
     void tasks.poll(() => {
-      const win = resolveSkinDetailWindow(locator, globalObject);
+      const win = resolveDetailWindow();
       if (!win || win.destroyed || win.visible === false) return null;
       return win;
     }, 80, 120).then((win) => {
@@ -819,43 +828,28 @@ export function installSkinPaperController(
       tasks.later(() => tryInstallDetailButtons(), 250);
       tasks.later(() => tryInstallDetailButtons(), 800);
       tasks.later(() => tryInstallDetailButtons(), 1600);
+      startActiveDetailWatch();
     });
   }
 
-  let detailButtonPollStarted = false;
+  let detailWatchRunning = false;
+  let detailWatchRound = 0;
 
-  function startDetailButtonPoll(): void {
-    if (detailButtonPollStarted) return;
-    detailButtonPollStarted = true;
-    let idleRounds = 0;
-    let activeRounds = 0;
-    let probeCounter = 0;
+  /** 皮肤详情窗口打开期间的维护循环：每 700ms 复查按钮是否漂移/需要复位。 */
+  function startActiveDetailWatch(): void {
+    if (detailWatchRunning) return;
+    detailWatchRunning = true;
+    detailWatchRound = 0;
     const tick = () => {
-      if (!isOn()) {
-        tasks.later(tick, 2000);
-        return;
-      }
-      const probe: SkinDetailResolveProbe = { dictKeys: [], layerHits: 0, picked: '' };
-      const win = resolveSkinDetailWindow(locator, globalObject, probe);
+      const win = resolveDetailWindow();
       if (win && win.visible !== false && !win.destroyed) {
-        idleRounds = 0;
-        activeRounds += 1;
-        if (activeRounds % SKIN_DETAIL_BUTTON_RECHECK_ROUND_INTERVAL === 1) tryInstallDetailButtons();
+        detailWatchRound += 1;
+        if (detailWatchRound % SKIN_DETAIL_BUTTON_RECHECK_ROUND_INTERVAL === 1) tryInstallDetailButtons();
+        tasks.later(tick, 700);
       } else {
-        idleRounds += 1;
-        activeRounds = 0;
-        probeCounter += 1;
-        if (probeCounter % 6 === 0) {
-          skinTrace('skin-detail-probe', {
-            idleRounds,
-            layerHits: probe.layerHits,
-            picked: probe.picked,
-            scene: String(locator.scene()?.SceneName ?? '')
-          });
-        }
+        // 窗口关了，停止维护；再次打开由 watchWindowShow 事件驱动。
+        detailWatchRunning = false;
       }
-      const delay = idleRounds > 8 ? 2500 : 700;
-      tasks.later(tick, delay);
     };
     tasks.later(tick, 700);
   }
@@ -871,7 +865,6 @@ export function installSkinPaperController(
       gameplayReady: isXiaochaoGameplayUiReady(locator, globalObject)
     });
     watchWindowShow(locator, patcher, tasks, [...SKIN_DETAIL_WINDOW_NAMES], () => onSkinInfoWindow(), globalObject);
-    startDetailButtonPoll();
     tryInstallDetailButtons();
   }
 

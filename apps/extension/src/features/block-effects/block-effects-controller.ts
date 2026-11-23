@@ -571,7 +571,7 @@ export function installBlockEffectsController(
       ?? findMarqueeManagerFromPromptLayer(locator.layer('PromptLayer'));
   }
 
-  function syncManagedMarquee(): void {
+  function syncManagedMarquee(): boolean {
     const manager = resolveMarqueeManager();
     if (manager && !hookedMarqueeManagers.has(manager)) {
       hookedMarqueeManagers.add(manager);
@@ -590,6 +590,7 @@ export function installBlockEffectsController(
     if (isOn('block.noticeWindow')) {
       marqueeBlocker.sync(collectManagedMarqueeNodes(manager));
     }
+    return Boolean(manager);
   }
 
   function applyNoticeBlockState(): void {
@@ -600,14 +601,19 @@ export function installBlockEffectsController(
       marqueeBlocker.restoreAll();
       return;
     }
+    // 找到并 hook 跑马灯管理器后，后续显隐都由方法 hook 即时处理，不再 500ms 轮询。
+    if (syncManagedMarquee()) return;
     stopMarqueeSweep ??= everyInterval(
       '顶部跑马灯',
       MARQUEE_SWEEP_MS,
-      syncManagedMarquee,
+      () => {
+        if (!syncManagedMarquee()) return;
+        stopMarqueeSweep?.();
+        stopMarqueeSweep = undefined;
+      },
       { visualOnly: true },
       globalObject
     );
-    syncManagedMarquee();
   }
 
   let laoXianBlockInstalled = false;
@@ -1040,6 +1046,7 @@ export function installBlockEffectsController(
           if (sceneName === 'TableScene') installRecordViewTracker();
           installSceneEffectPatches();
           applyNoticeBlockState();
+          armAdBlock();
           mvpWindowBlock.ensureOpenWindowListener();
           mvpWindowBlock.ensureShowWindowHook();
           mvpWindowBlock.installPrototypePatches();
@@ -1472,6 +1479,7 @@ export function installBlockEffectsController(
       void Promise.resolve(install()).catch((error: unknown) => console.warn('[屏蔽设置] 安装失败:', error));
     });
     installSceneEffectPatches();
+    armAdBlock();
   });
 
   applyNoticeBlockState();

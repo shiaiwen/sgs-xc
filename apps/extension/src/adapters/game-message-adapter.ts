@@ -61,11 +61,14 @@ const SPELL_PUT_USED_ON_TOP = new Set([815, 14163]);
 const CARD_IDS_KEYS = ['CardIDs', 'CardIds', 'cardIDs', 'cardIds', 'Cards', 'card_ids', 'card_list', 'CardList'] as const;
 
 /** 一条协议可能对应多个业务事件（SpellOptRep = 看牌 + 临时区重排线索）。未知协议直接忽略。 */
-export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
-  const rawPayload = findMessagePayload(rawArguments);
+export function translateGameMessages(
+  rawArguments: unknown[],
+  prefound?: { payload: UnknownRecord; className: string } | null
+): GameEvent[] {
+  const rawPayload = prefound?.payload ?? findMessagePayload(rawArguments);
   if (!rawPayload) return [];
-  const payload = protocolBody(rawPayload);
-  const className = readString(payload, ['ClassName', 'className']);
+  // findMessagePayload 匹配的就是带 className 的对象；早退类消息只认类名，先不摊平字段。
+  const className = prefound?.className ?? readString(rawPayload, ['ClassName', 'className']);
   if (!className) return [];
   // 心跳不带座位。自动领取用它判断北京时间是否跨天。
   if (className === 'MsgHeartAliveRep') return [{ type: 'heart-alive' }];
@@ -81,6 +84,7 @@ export function translateGameMessages(rawArguments: unknown[]): GameEvent[] {
     return [{ type: 'game-ended', settled: true }];
   }
   if (GAME_OVER_MESSAGE_NAMES.has(className)) return [{ type: 'game-ended' }];
+  const payload = protocolBody(rawPayload);
   if (className === 'GsCUpdateHpNtf') {
     const hpEvent = translateHpUpdate(payload);
     const damageEvent = translateSpellDamage(payload);
@@ -508,16 +512,17 @@ function protocolBody(payload: UnknownRecord): UnknownRecord {
     asRecord(message?.protoObj),
     data,
     message
-  ].filter((record): record is UnknownRecord => record !== null && record !== payload);
-  if (!nestedRecords.length) return payload;
-  const merged: UnknownRecord = { ...payload };
+  ];
+  let merged: UnknownRecord | null = null;
   for (const nested of nestedRecords) {
+    if (nested === null || nested === payload) continue;
+    if (merged === null) merged = { ...payload };
     for (const [key, value] of Object.entries(nested)) {
       // 网页端外层常挂着空 CardIDs，真实牌号在 Protocol / ProtoObj。空列表不能挡住内层。
       if (merged[key] === undefined || isEmptyList(merged[key])) merged[key] = value;
     }
   }
-  return merged;
+  return merged ?? payload;
 }
 
 function isEmptyList(value: unknown): boolean {

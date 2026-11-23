@@ -87,6 +87,8 @@ export function createSkinBackgroundStore(
   const resourceKey = () => `${resolveAccountId()}${RESOURCE_SUFFIX}`;
   const favoritesKey = () => `${resolveAccountId()}${FAVORITES_SUFFIX}`;
   const listeners = new Set<() => void>();
+  let favoritesCache: { accountId: string; list: BackgroundFavorite[] } | null = null;
+  let resourceCache: { accountId: string; resource: Partial<BackgroundResource> } | null = null;
 
   function favoritesFromAccount(accountId: string): BackgroundFavorite[] {
     if (!accountId) return [];
@@ -105,13 +107,19 @@ export function createSkinBackgroundStore(
   }
 
   function favorites(): BackgroundFavorite[] {
-    return favoritesFromAccount(resolveAccountId());
+    const accountId = resolveAccountId();
+    if (favoritesCache && favoritesCache.accountId === accountId) return favoritesCache.list;
+    const list = favoritesFromAccount(accountId);
+    favoritesCache = { accountId, list };
+    return list;
   }
 
   function saveFavorites(list: BackgroundFavorite[]): void {
-    if (!resolveAccountId()) return;
+    const accountId = resolveAccountId();
+    if (!accountId) return;
     writeJson(storage, favoritesKey(), list);
-    patchSkinBackgroundDocument(storage, resolveAccountId(), { favorites: list });
+    patchSkinBackgroundDocument(storage, accountId, { favorites: list });
+    favoritesCache = { accountId, list };
     listeners.forEach((listener) => {
       try {
         listener();
@@ -158,11 +166,16 @@ export function createSkinBackgroundStore(
 
   return {
     loadResource() {
-      return readStoredResource();
+      const accountId = resolveAccountId();
+      if (resourceCache && resourceCache.accountId === accountId) return resourceCache.resource;
+      const resource = readStoredResource();
+      resourceCache = { accountId, resource };
+      return resource;
     },
     saveResource(resource) {
       const url = String(resource.url || '').trim();
-      if (!url || !resolveAccountId()) return;
+      const accountId = resolveAccountId();
+      if (!url || !accountId) return;
       let width = Number(resource.width);
       let height = Number(resource.height);
       if (!(width > 0 && height > 0)) {
@@ -176,12 +189,15 @@ export function createSkinBackgroundStore(
         height
       };
       writeJson(storage, resourceKey(), payload);
-      patchSkinBackgroundDocument(storage, resolveAccountId(), { paperResource: payload });
+      patchSkinBackgroundDocument(storage, accountId, { paperResource: payload });
+      resourceCache = { accountId, resource: payload };
     },
     clearResource() {
-      if (!resolveAccountId()) return;
+      const accountId = resolveAccountId();
+      if (!accountId) return;
       removeStored(storage, resourceKey());
-      clearSkinBackgroundPaperResource(storage, resolveAccountId());
+      clearSkinBackgroundPaperResource(storage, accountId);
+      resourceCache = { accountId, resource: {} };
     },
     favorites,
     isFavorite: (id) => Boolean(id) && favorites().some((item) => item.id === id),

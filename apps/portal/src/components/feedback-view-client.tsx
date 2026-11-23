@@ -8,6 +8,7 @@ export function FeedbackViewClient() {
   const searchParams = useSearchParams();
   const token = useMemo(() => String(searchParams.get("token") || "").trim(), [searchParams]);
   const isFresh = searchParams.get("new") === "1";
+  const uploadError = searchParams.get("uploadError") === "1";
 
   if (!token) {
     return (
@@ -18,5 +19,5 @@ export function FeedbackViewClient() {
     );
   }
 
-  return <FeedbackStatus token={token} isFresh={isFresh} />;
+  return <FeedbackStatus token={token} isFresh={isFresh} uploadError={uploadError} />;
 }

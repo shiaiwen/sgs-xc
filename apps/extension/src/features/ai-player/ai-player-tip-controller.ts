@@ -11,12 +11,6 @@ import {
 } from '../../runtime/game-native-dialog.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import { PLAY_NAME_DEBUG_LOG_MAX } from '../../const/play-name-sync.ts';
-import {
-  AI_PLAYER_SCAN_IN_GAME_MS,
-  AI_PLAYER_SCAN_OUT_OF_GAME_MS,
-  AI_PLAYER_SCAN_START_MS
-} from '../../const/poll-intervals.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { isAiClientId, playNameVisible, readNestedClientId } from './ai-client.ts';
 import {
   appendPlayNameDebugLog,
@@ -27,7 +21,6 @@ import {
 } from './play-name-sync.ts';
 
 type UnknownRecord = Record<string, unknown>;
-const AI_PLAYER_PERF_LABEL = '人机提示';
 
 export interface PlayNameDebugState {
   pauseSync: boolean;
@@ -146,38 +139,36 @@ export function installAiPlayerTipController(
   let profileTipId = 0;
   let aiTipShownThisGame = false;
   let gameEnded = false;
+  const gameStartedRetryTimers: number[] = [];
   const stopEvents = gameEvents.subscribe((event) => {
-    // 仅在结束后的下一局开始时解锁；启动轮询时收到的首个开始事件不重复弹。
-    if (event.type === 'game-started') {
+    // 仅在结束后的下一局开始时解锁；进入斗地主/排位/8人匹配时扫一次，不再轮询。
+    if (event.type === 'game-started' || event.type === 'game-reconnected') {
       if (gameEnded) aiTipShownThisGame = false;
       gameEnded = false;
       scan();
+      // 座位数据可能晚于开局事件几帧才就绪，重试几次即可。
+      for (const delay of [300, 800, 1500]) {
+        gameStartedRetryTimers.push(globalObject.setTimeout(() => {
+          if (!gameEnded) scan();
+        }, delay));
+      }
     } else if (event.type === 'game-ended') {
       gameEnded = true;
     }
   });
-  let pollIntervalMs = AI_PLAYER_SCAN_START_MS;
-  let stopScanning = everyInterval(AI_PLAYER_PERF_LABEL, pollIntervalMs, scan, {}, globalObject);
   scan();
 
   return () => {
     stopEvents();
-    stopScanning();
+    gameStartedRetryTimers.forEach((timer) => globalObject.clearTimeout(timer));
+    gameStartedRetryTimers.length = 0;
   };
 
-  function setPollInterval(nextMs: number): void {
-    if (nextMs === pollIntervalMs) return;
-    pollIntervalMs = nextMs;
-    stopScanning();
-    stopScanning = everyInterval(AI_PLAYER_PERF_LABEL, pollIntervalMs, scan, {}, globalObject);
-  }
-
   function scan(): void {
-    setPollInterval(locateGameScene(globalObject) ? AI_PLAYER_SCAN_IN_GAME_MS : AI_PLAYER_SCAN_OUT_OF_GAME_MS);
     if (shouldDeferSeatTopManagerSync(globalObject)) return;
     // 彼此独立扫描：座位 UI 尚未就绪或某一步访问异常时，也要继续挂资料页钩子。
-    try { scanSeats(); } catch { /* 下一轮重试 */ }
-    try { scanProfile(); } catch { /* 下一轮重试 */ }
+    try { scanSeats(); } catch { /* 数据未就绪 */ }
+    try { scanProfile(); } catch { /* 数据未就绪 */ }
   }
 
   /** 同步每个座位的名字；排位和斗地主里有人机时提示一次。 */

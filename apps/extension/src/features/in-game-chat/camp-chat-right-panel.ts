@@ -5,6 +5,7 @@
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { CAMP_CHAT_PANEL_SYNC_MS } from '../../const/poll-intervals.ts';
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 type UnknownRecord = Record<string, unknown>;
@@ -20,12 +21,15 @@ const RIGHT_VIEW_METHODS = [
 ] as const;
 
 export function installCampChatRightPanelController(
-  globalObject: GameRuntimeWindow = window
+  globalObject: GameRuntimeWindow = window,
+  gameEvents?: GameEventBus
 ): { dispose(): void } {
   const locator = createLayaObjectLocator(globalObject as LayaRuntimeWindow);
   const patcher = createMethodPatcher();
   let disposed = false;
   let prototypePatched = false;
+  let stopPolling: (() => void) | null = null;
+  let unsubscribeEvents: (() => void) | null = null;
 
   function asRecord(value: unknown): UnknownRecord | null {
     return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
@@ -106,13 +110,36 @@ export function installCampChatRightPanelController(
     syncCampChatPanel(gameScene as UnknownRecord);
   }
 
-  const stopPolling = everyInterval('阵营聊天', CAMP_CHAT_PANEL_SYNC_MS, tryInstall, {}, globalObject);
-  tryInstall();
+  function startPolling(): void {
+    if (disposed || stopPolling) return;
+    stopPolling = everyInterval('阵营聊天', CAMP_CHAT_PANEL_SYNC_MS, tryInstall, {}, globalObject);
+    tryInstall();
+  }
+
+  function stopPollingLoop(): void {
+    if (!stopPolling) return;
+    stopPolling();
+    stopPolling = null;
+  }
+
+  if (gameEvents) {
+    // 只在牌局里轮询：进局/重连开，结算停；大厅里不再空跑。
+    unsubscribeEvents = gameEvents.subscribe((event) => {
+      if (event.type === 'game-started' || event.type === 'game-reconnected') startPolling();
+      else if (event.type === 'game-ended') stopPollingLoop();
+    });
+    if (locateGameScene(globalObject) ?? locator.gameScene()) startPolling();
+  } else {
+    // 没传事件源时保持原有常驻行为。
+    startPolling();
+  }
 
   return {
     dispose() {
       disposed = true;
-      stopPolling();
+      unsubscribeEvents?.();
+      stopPolling?.();
+      stopPolling = null;
       patcher.restoreAll();
     }
   };

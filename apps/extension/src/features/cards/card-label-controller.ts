@@ -2,10 +2,8 @@
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
-import { CARD_LABEL_REFRESH_MS } from '../../const/poll-intervals.ts';
 import type { GameEvent, GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { getMingpaiCardTags } from '../mingpai/graph/card-graph.ts';
 import { HAND_LABEL_ALIASES } from '../mingpai/rules/hand-label-aliases.ts';
 import { readIncomingCardOwner } from '../mingpai/rules/hand-source-label.ts';
@@ -344,7 +342,6 @@ export function installCardLabelController(
     }
   });
   const stopConfig = configStore.subscribe('display.cardLabelsEnabled', refresh);
-  const stopPolling = everyInterval('卡牌标签', CARD_LABEL_REFRESH_MS, refresh, { visualOnly: true }, globalObject);
   refresh();
 
   return {
@@ -352,7 +349,6 @@ export function installCardLabelController(
     dispose() {
       stopEvents();
       stopConfig();
-      stopPolling();
       if (timer !== null) globalObject.clearTimeout(timer);
       activeLabels.clear();
       for (const [ui, button] of buttons) removeLabel(ui, button);

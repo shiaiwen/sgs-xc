@@ -197,9 +197,12 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     return locator.manager(name);
   }
 
+  let newFuLiManagerCache: UnknownRecord | null = null;
   function newFuLiManager(): UnknownRecord | null {
-    return manager('NewFuLiManager')
+    if (newFuLiManagerCache) return newFuLiManagerCache;
+    newFuLiManagerCache = manager('NewFuLiManager')
       ?? locator.findManagerByPredicate((item) => typeof item.SendSetOutRewardAllReq === 'function');
+    return newFuLiManagerCache;
   }
 
   function resolveMethod(target: UnknownRecord | null, owner: string, method: string): ((...args: unknown[]) => unknown) | null {
@@ -446,13 +449,16 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     }
   }
 
+  let questTaskManagerCache: UnknownRecord | null = null;
   function findQuestTaskManager(): UnknownRecord | null {
+    if (questTaskManagerCache) return questTaskManagerCache;
     const classic = manager('TaskManager');
-    return locator.findManagerByPredicate((item) => {
+    questTaskManagerCache = locator.findManagerByPredicate((item) => {
       if (item === classic) return false;
       const hasList = typeof (item.getTaskListFromServer ?? item.GetTaskListFromServer) === 'function';
       return hasList && item.allTasks != null;
     });
+    return questTaskManagerCache;
   }
 
   function taskSources(): Array<{ manager: UnknownRecord; owner: string }> {
@@ -855,7 +861,9 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     }
   }
 
+  let taskMainConfigCache: UnknownRecord | null = null;
   function locateTaskMainConfig(): UnknownRecord | null {
+    if (taskMainConfigCache) return taskMainConfigCache;
     const matchesTaskMain = (item: UnknownRecord) => {
       if (item.FileName === TASK_MAIN_CONFIG_FILE_NAME) return true;
       const vos = asRecord(item.StrongGeneralVos);
@@ -864,8 +872,9 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         || typeof item.InitLevelReward === 'function'
         || 'StrongGeneralNum' in item;
     };
-    return locator.managerFromList(matchesTaskMain)
+    taskMainConfigCache = locator.managerFromList(matchesTaskMain)
       ?? locator.findManagerByPredicate(matchesTaskMain);
+    return taskMainConfigCache;
   }
 
   function readStrongGeneralTabEntries(vos: UnknownRecord, tabIndex = 0): unknown[] | null {
@@ -1868,11 +1877,14 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     scheduleNewPrivilegeRetries();
   }
 
+  let blessNewManagerCache: UnknownRecord | null = null;
   function blessNewManager(): UnknownRecord | null {
-    return manager('BlessNewManager')
+    if (blessNewManagerCache) return blessNewManagerCache;
+    blessNewManagerCache = manager('BlessNewManager')
       ?? locator.findManagerByPredicate((item) => typeof item.sendQifuDrawReq === 'function'
         && typeof item.CanFreeBless === 'function'
         && item.infoDic != null);
+    return blessNewManagerCache;
   }
 
   function blessRoundIds(infoDic: unknown): number[] {
@@ -2308,7 +2320,10 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   }
 
   function runStep(name: string, step: () => Promise<void>): void {
-    step().catch((error) => console.warn(`[自动领取] ${name}失败:`, error));
+    // 拆到下一拍跑，别把各领取步骤的同步前缀堆在同一个回调里造成卡顿。
+    tasks.later(() => {
+      step().catch((error) => console.warn(`[自动领取] ${name}失败:`, error));
+    }, 0);
   }
 
   function runRewardFilterClaims(includeLowBean: boolean): void {
@@ -2374,11 +2389,12 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   return {
     runPass() {
       if (!active()) return;
+      // 新周卡/新军典会等回包，必须先挂监听，不能延后到下一拍以免漏掉已到达的列表。
       runClaimNewPrivilegeCards();
-      claimFreeBlessDraws(blessNewManager());
+      tasks.later(() => claimFreeBlessDraws(blessNewManager()), 0);
       runStep('武将福利', claimNewFuLiWelfare);
       runStep('任务', claimTasks);
-      runStep('活动', claimActivities);
+      claimActivities().catch((error) => console.warn('[自动领取] 活动失败:', error));
       runStep('邮件', claimMail);
       runStep('福利', claimWelfare);
       runStep('公会三敲', beatGuildDrums);

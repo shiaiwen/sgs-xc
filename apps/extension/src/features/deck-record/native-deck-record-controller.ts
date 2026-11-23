@@ -310,20 +310,41 @@ export function installNativeDeckRecordController(
     if (snapshot.activeList) clearHideTimer();
     syncPopup();
   });
-  const stopPolling = everyInterval('牌局记录', DECK_RECORD_SYNC_MS, () => {
-    if (configStore.get('display.deckHudEnabled')) sync();
-  }, { visualOnly: true });
   const unregisterPostGameTeardown = registerNativeHudPostGameTeardown(destroyOverlay);
+  const gameStartedRetryTimers: number[] = [];
+  let stopPolling: (() => void) | null = null;
+  const ensurePolling = () => {
+    if (stopped || stopPolling) return;
+    stopPolling = everyInterval('牌局记录', DECK_RECORD_SYNC_MS * 4, () => {
+      if (stopped || !locateGameScene(window)) return;
+      if (configStore.get('display.deckHudEnabled')) sync();
+    }, { visualOnly: true });
+  };
   const stopGameEvents = gameEvents?.subscribe((event) => {
-    if (event.type === 'game-ended') destroyOverlay();
+    if (event.type === 'game-started' || event.type === 'game-reconnected') {
+      ensurePolling();
+      sync();
+      // roundInfo 可能晚于开局事件几帧才建出来，重试几次。
+      for (const delay of [100, 300, 600, 1200, 2500]) {
+        gameStartedRetryTimers.push(window.setTimeout(sync, delay));
+      }
+    } else if (event.type === 'game-ended') {
+      stopPolling?.();
+      stopPolling = null;
+      destroyOverlay();
+    }
   });
+  // 慢速兜底：只在牌局内轮询，出牌局停掉。
+  ensurePolling();
   sync();
 
   return () => {
     stopped = true;
     unregisterPostGameTeardown();
     stopGameEvents?.();
-    stopPolling();
+    stopPolling?.();
+    gameStartedRetryTimers.forEach((timer) => window.clearTimeout(timer));
+    gameStartedRetryTimers.length = 0;
     clearHideTimer();
     stopStore();
     stopConfigEnabled();

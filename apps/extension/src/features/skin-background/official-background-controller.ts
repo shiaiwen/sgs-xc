@@ -10,7 +10,6 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   WALLPAPER_MENU_ATTACH_STAGE_DEPTH,
@@ -18,7 +17,6 @@ import {
   WALLPAPER_MENU_READY_POLL_ATTEMPTS,
   WALLPAPER_MENU_READY_POLL_MS,
   WALLPAPER_TOP_MENU_OPEN_METHODS,
-  WALLPAPER_MENU_STAGE_SEARCH_DEPTH,
   WALLPAPER_VISIBLE_MENU_POLL_ATTEMPTS,
   WALLPAPER_VISIBLE_MENU_POLL_MS
 } from '../../const/wallpaper-menu.ts';
@@ -160,13 +158,20 @@ export function installOfficialBackgroundController(
     return `${choiceAccountId()}${CHOICE_STORAGE_SUFFIX}`;
   }
 
+  let savedChoiceCache: { accountId: string; value: number } | null = null;
+
   function savedChoice(): number {
-    if (!choiceAccountId()) return 0;
+    const accountId = choiceAccountId();
+    if (!accountId) return 0;
+    if (savedChoiceCache && savedChoiceCache.accountId === accountId) return savedChoiceCache.value;
     const parsed = readJson<unknown>(storage, choiceStorageKey(), null);
     const id = Number(parsed && typeof parsed === 'object' ? (parsed as UnknownRecord).id : parsed);
-    if (Number.isFinite(id) && id > 0) return id;
-    // 单键没有时，账号文档里可能还留着（旧键迁进文档后会被删掉）。
-    return readOfficialBackgroundChoice(documentStorage(), choiceAccountId())?.id ?? 0;
+    const value = Number.isFinite(id) && id > 0
+      ? id
+      // 单键没有时，账号文档里可能还留着（旧键迁进文档后会被删掉）。
+      : readOfficialBackgroundChoice(documentStorage(), accountId)?.id ?? 0;
+    savedChoiceCache = { accountId, value };
+    return value;
   }
 
   function documentStorage(): Parameters<typeof readOfficialBackgroundChoice>[0] {
@@ -175,10 +180,12 @@ export function installOfficialBackgroundController(
 
   function saveChoice(value: unknown): boolean {
     const id = Number(value);
-    if (suppressChoiceSave || !Number.isFinite(id) || id <= 0 || !choiceAccountId()) return false;
+    const accountId = choiceAccountId();
+    if (suppressChoiceSave || !Number.isFinite(id) || id <= 0 || !accountId) return false;
     writeJson(storage, choiceStorageKey(), { id, savedAt: Date.now() });
     // 同时写进账号文档，文档一变才会触发上传。
-    saveOfficialBackgroundChoice(documentStorage(), choiceAccountId(), id);
+    saveOfficialBackgroundChoice(documentStorage(), accountId, id);
+    savedChoiceCache = { accountId, value: id };
     return true;
   }
 
@@ -841,12 +848,20 @@ export function installOfficialBackgroundController(
     return findHallWallPaperMenuHost(locator, globalObject);
   }
 
-  function tryAttachFromStage(): void {
+  function tryAttachFromStage(topMenu: UnknownRecord | null = null): void {
     if (!shouldSyncBackgroundUi()) return;
-    const menu = findWallPaperMenuOnStage(globalObject, WALLPAPER_MENU_STAGE_SEARCH_DEPTH);
+    // 顶栏已经挂着就绪面板时直接挂，别每次 sync 都深搜整棵舞台树（那是 31ms 尖峰来源）。
+    if (topMenu) {
+      const ready = menuReady(topMenu);
+      if (ready) {
+        applyMenuExtension(ready, topMenu);
+        return;
+      }
+    }
+    const menu = findWallPaperMenuOnStage(globalObject, WALLPAPER_MENU_ATTACH_STAGE_DEPTH);
     if (!menu) return;
     if (!wallPaperTabButtons(resolveWallPaperTabGroup(menu) ?? {}).length) return;
-    applyMenuExtension(menu, findTopMenu());
+    applyMenuExtension(menu, topMenu ?? findTopMenu());
   }
 
   /** 无 topMenu 或面板挂在舞台其它节点时，轮询挂上小抄页签。 */
@@ -902,7 +917,7 @@ export function installOfficialBackgroundController(
     }
     ensureTopMenuPatched(topMenu);
     tryEnsureWallPaperMenu(topMenu);
-    tryAttachFromStage();
+    tryAttachFromStage(topMenu);
   }
 
   function waitForTopMenu(): void {
@@ -940,20 +955,9 @@ export function installOfficialBackgroundController(
     leavingToLobby = false;
     settleWallpaper();
   }, globalObject, undefined, () => true);
-  const watchOpenMenu = () => {
-    if (isBackgroundUiScene(locator, globalObject) || locator.gameScene()) settleWallpaper();
-    if (shouldSyncBackgroundUi() && isBackgroundUiScene(locator, globalObject)) {
-      const menu = findWallPaperMenuOnStage(globalObject, WALLPAPER_MENU_STAGE_SEARCH_DEPTH);
-      const buttons = wallPaperTabButtons(resolveWallPaperTabGroup(menu) ?? {});
-      if (menu && menu.visible !== false && buttons.length) applyMenuExtension(menu, findTopMenu());
-    }
-  };
-  const stopWatchingMenu = everyInterval(tasks.label, WALLPAPER_VISIBLE_MENU_POLL_MS, watchOpenMenu);
-
   return {
     sync,
     dispose() {
-      stopWatchingMenu();
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       tasks.dispose();
       cleanups.splice(0).forEach((cleanup) => cleanup());

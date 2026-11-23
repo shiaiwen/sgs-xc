@@ -25,7 +25,7 @@ interface PendingExchange {
 
 /** 新键避免旧版“任意限购商品”的勾选在收窄范围后继续自动兑换。 */
 const STORAGE_KEY = 'XC_DDZ_AUTO_EXCHANGE_TARGETED';
-const POLL_MS = 1_000;
+const POLL_MS = 5_000;
 const REQUEST_COOLDOWN_MS = 15_000;
 const SHOP_WINDOW = 'DdzShopWindow';
 const DAILY_RECRUIT_TOKEN_ID = 8100201;
@@ -311,13 +311,24 @@ export function installDdzShopAutoExchange(options: DdzShopAutoExchangeOptions):
     renderShop(view);
   }
 
-  function tick(): void {
-    if (disposed) return;
-    patcher.wrap(locator.classPrototype(SHOP_WINDOW), 'initUI', (original) => function (this: RecordLike, ...args) {
+  let shopInitWrapped = false;
+
+  /** initUI 只包一次，别在每秒 tick 里反复 classPrototype + wrap。 */
+  function wrapShopInitOnce(): void {
+    if (shopInitWrapped || disposed) return;
+    const proto = locator.classPrototype(SHOP_WINDOW);
+    if (!proto) return;
+    const ok = patcher.wrap(proto, 'initUI', (original) => function (this: RecordLike, ...args) {
       const result = original.apply(this, args);
       bindShopView(record(this.shopView));
       return result;
     });
+    if (ok) shopInitWrapped = true;
+  }
+
+  function tick(): void {
+    if (disposed) return;
+    wrapShopInitOnce();
     const account = resolveGameAccountId(globalObject, locator);
     bindRuntime(account, locator.manager('ActivityGameDataManager'), locator.manager('ServerProxy'));
     const clock = beijingClock();

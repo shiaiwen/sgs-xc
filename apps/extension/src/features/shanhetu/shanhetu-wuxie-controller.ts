@@ -109,12 +109,31 @@ export function installShanhetuWuxieController(
   let disposed = false;
   let modeFromCardList: boolean | null = null;
 
+  let stopPolling: (() => void) | null = null;
+  const bindRetryTimers: number[] = [];
+  function clearBindRetries(): void {
+    bindRetryTimers.forEach((timer) => globalObject.clearTimeout(timer));
+    bindRetryTimers.length = 0;
+  }
+  function scheduleBindRetries(): void {
+    clearBindRetries();
+    // 操作栏可能晚于开局/卡表事件才挂到座位上，补几次绑定。
+    for (const delay of [100, 300, 600, 1200, 2500]) {
+      bindRetryTimers.push(globalObject.setTimeout(() => {
+        if (!disposed) bindUi();
+      }, delay) as unknown as number);
+    }
+  }
   const unsubscribe = options.gameEvents?.subscribe((event) => {
     if (event.type === 'card-list-ready') {
       modeFromCardList = event.cardIds.includes(SHANHETU_MODE_CARD_ID);
+      bindUi();
+      scheduleBindRetries();
       scheduleCheck();
     } else if (event.type === 'game-ended' && event.settled !== false) {
       modeFromCardList = null;
+      clearBindRetries();
+      patcher.restoreAll();
     }
   });
 
@@ -189,15 +208,21 @@ export function installShanhetuWuxieController(
     scheduleCheck();
   }
 
-  const stopPolling = everyInterval('山河图自动取消无懈', 250, () => {
-    if (disposed) return;
-    bindUi();
-    check();
-  }, {}, globalObject);
+  // 取消无懈是事件驱动：进局挂 UI 补丁，后续由 Show/Update 补丁触发 check，不轮询。
+  if (options.gameEvents) {
+    if (locateGameScene(globalObject) || locator.gameScene()) bindUi();
+  } else {
+    stopPolling = everyInterval('山河图自动取消无懈', 250, () => {
+      if (disposed) return;
+      bindUi();
+      check();
+    }, {}, globalObject);
+  }
   return () => {
     disposed = true;
     unsubscribe?.();
-    stopPolling();
+    stopPolling?.();
+    clearBindRetries();
     if (pending !== null) clearTimeout(pending);
     patcher.restoreAll();
   };

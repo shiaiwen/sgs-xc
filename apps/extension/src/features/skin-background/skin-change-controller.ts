@@ -2,7 +2,7 @@
  * 本地皮肤切换控制器：按设置改写他人/本家皮肤相关协议或资源。
  */
 
-import type { XiaochaoConfigStore } from '../../config/config-store.ts';
+import { CONFIG_ACCOUNT_SYNC_EVENT, type XiaochaoConfigStore } from '../../config/config-store.ts';
 import {
   createLayaObjectLocator,
   type LayaObjectLocator,
@@ -10,7 +10,6 @@ import {
 } from '../../adapters/laya-object-locator.ts';
 import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
 import { createMethodPatcher, type PatchableFunction } from '../../runtime/method-patch.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
@@ -25,7 +24,6 @@ import {
   OTHER_SKIN_BUTTON_FALLBACK_WIDTH,
   OTHER_SKIN_BUTTON_X
 } from '../../const/other-skin-button.ts';
-import { SKIN_CHOICE_ACCOUNT_CHECK_MS } from '../../const/poll-intervals.ts';
 import {
   asRecord,
   callMethod,
@@ -57,10 +55,10 @@ const SKIN_WINDOWS = ['ChangeSkinWindow', 'SelectSkinWindow'] as const;
 const LOCKED_ITEM_NODES = ['timeBg', 'composeBg', 'composeIcon', 'composeTxt1', 'composeTxt2', 'composeTxt', 'timeLimiteTxt'];
 /** 游戏查询座位正在用的皮肤时的两种回包。官方窗口里换上已拥有皮肤的回包不在其中。 */
 const SKIN_QUERY_TYPES: readonly number[] = [GENERAL_SKIN_QUERY_BY_PLAYER, GENERAL_SKIN_QUERY_BY_SEAT];
-const OTHER_BIND_DELAYS = [0, 50, 200, 600, 1500];
-const SELF_SKIN_APPLY_DELAYS = [0, 80, 250, 600, 1200];
+const OTHER_BIND_DELAYS = [0, 200, 800, 1500];
+const SELF_SKIN_APPLY_DELAYS = [0, 250, 800, 1200];
 const HP_REPAINT_DELAYS = [0, 80, 250, 600, 1200, 2000, 3500];
-const HP_SYNC_DELAYS = [0, 50, 150, 400];
+const HP_SYNC_DELAYS = [0, 150, 400];
 const OTHER_OPEN_TIMEOUT = 3000;
 const SEAT_SKIN_OVERRIDE_HOOK = '__xcSeatSetGeneralSkinOverrideHook';
 
@@ -1180,7 +1178,7 @@ export function installSkinChangeController(
       const ready = syncGameScene() > 0;
       if (ready) scheduleApplySavedSkinsForSelf();
       return ready;
-    }, 60, 500);
+    }, 300, 100);
   }
 
   // ---------- 换肤框原型：他人换肤接管初始化与确认 ----------
@@ -1290,7 +1288,14 @@ export function installSkinChangeController(
       syncGameScene();
       if (otherOn()) waitForSeats();
     }),
-    everyInterval(tasks.label, SKIN_CHOICE_ACCOUNT_CHECK_MS, () => choiceSync.checkAccount()),
+    // 账号变更由 configStore.syncAccount 派发事件，监听它即可，不再轮询。
+    (() => {
+      const onAccountSync = () => choiceSync.checkAccount();
+      globalObject.addEventListener?.(CONFIG_ACCOUNT_SYNC_EVENT, onAccountSync);
+      return () => {
+        globalObject.removeEventListener?.(CONFIG_ACCOUNT_SYNC_EVENT, onAccountSync);
+      };
+    })(),
     () => choiceSync.dispose()
   );
 
@@ -1307,6 +1312,7 @@ export function installSkinChangeController(
   }, Infinity, 1000).then((ready) => {
     if (!ready) return;
     preparePickerPrototype();
+    choiceSync.checkAccount();
     syncGameScene();
     if (locator.gameScene()) {
       waitForSeats();

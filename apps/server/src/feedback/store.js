@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeAttachmentList, toPublicAttachments } from './attachments.js';
 
 const filePath = path.join(process.cwd(), 'data', 'feedback-tickets.json');
 
@@ -68,7 +69,8 @@ export function createFeedbackTicket(input) {
     changelogUrl: '',
     internalNote: '',
     hidden: false,
-    notifyEmail: input.notifyEmail === true && input.contactType === 'email'
+    notifyEmail: input.notifyEmail === true && input.contactType === 'email',
+    attachments: []
   };
   const document = readFeedbackDocument();
   document.tickets.push(ticket);
@@ -115,9 +117,23 @@ export function toPublicTicket(ticket) {
     publicNote: ticket.publicNote || '',
     fixedVersion: ticket.fixedVersion || '',
     changelogUrl,
+    attachments: toPublicAttachments(ticket.token, ticket.attachments),
     submittedAt: ticket.createdAt,
     updatedAt: ticket.updatedAt
   };
+}
+
+export function appendFeedbackAttachment(token, attachment) {
+  const document = readFeedbackDocument();
+  const index = document.tickets.findIndex((item) => item.token === token);
+  if (index < 0) return null;
+  const current = document.tickets[index];
+  const attachments = normalizeAttachmentList(current.attachments);
+  attachments.push(attachment);
+  const next = { ...current, attachments, updatedAt: Date.now() };
+  document.tickets[index] = next;
+  saveTickets(document.tickets);
+  return next;
 }
 
 export function toAdminTicket(ticket) {
@@ -127,7 +143,8 @@ export function toAdminTicket(ticket) {
     contactType: ticket.contactType,
     contact: ticket.contact,
     internalNote: ticket.internalNote || '',
-    notifyEmail: ticket.notifyEmail === true
+    notifyEmail: ticket.notifyEmail === true,
+    attachments: normalizeAttachmentList(ticket.attachments)
   };
 }
 

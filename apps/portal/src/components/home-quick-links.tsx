@@ -45,9 +45,9 @@ const links = [
     ),
   },
   {
-    href: "/feedback/new",
+    href: "https://my.feishu.cn/share/base/form/shrcnkAw07JyIvNIkpNr4lgPJQf",
     label: "需求与 bug 反馈",
-    external: false,
+    external: true,
     primary: false,
     icon: (
       <>

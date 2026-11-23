@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import {
   fetchFeedbackTicket,
+  formatAttachmentSize,
   formatFeedbackTime,
+  resolveFeedbackAttachmentUrl,
   type FeedbackTicket,
 } from "@/lib/feedback-api";
 
@@ -11,7 +13,15 @@ function statusClass(status: FeedbackTicket["status"]): string {
   return `feedback-status__badge feedback-status__badge--${status}`;
 }
 
-export function FeedbackStatus({ token, isFresh }: { token: string; isFresh: boolean }) {
+export function FeedbackStatus({
+  token,
+  isFresh,
+  uploadError = false,
+}: {
+  token: string;
+  isFresh: boolean;
+  uploadError?: boolean;
+}) {
   const [ticket, setTicket] = useState<FeedbackTicket | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -57,6 +67,11 @@ export function FeedbackStatus({ token, isFresh }: { token: string; isFresh: boo
           <p className="feedback-status__success-lead">
             请收藏本页，或复制链接发到微信文件传输助手。查进度只靠这条链接。
           </p>
+          {uploadError ? (
+            <p className="feedback-status__upload-error">
+              附件没有传上去。文字反馈已经记下了，需要的话再发一次带截图的反馈。
+            </p>
+          ) : null}
           <button type="button" className="btn-primary" onClick={copyLink}>
             {copied ? "已复制" : "复制本页链接"}
           </button>
@@ -90,6 +105,22 @@ export function FeedbackStatus({ token, isFresh }: { token: string; isFresh: boo
           <h2>你的描述</h2>
           <p className="feedback-status__body">{ticket.body}</p>
         </section>
+
+        {ticket.attachments.length ? (
+          <section className="feedback-status__section">
+            <h2>附件</h2>
+            <ul className="feedback-status__attachments">
+              {ticket.attachments.map((item) => (
+                <li key={item.id}>
+                  <a href={resolveFeedbackAttachmentUrl(item.url)} target="_blank" rel="noreferrer">
+                    {item.name}
+                  </a>
+                  <span>{formatAttachmentSize(item.size)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         {ticket.publicNote ? (
           <section className="feedback-status__section">

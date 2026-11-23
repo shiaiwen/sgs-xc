@@ -5,8 +5,9 @@
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
-import { TIESUO_POLL_ACTIVE_MS, TIESUO_POLL_IDLE_MS } from '../../const/poll-intervals.ts';
+import { TIESUO_POLL_BACKUP_MS } from '../../const/poll-intervals.ts';
 
 type Node = Record<string, any>;
 const TIESUO_PERF_LABEL = '铁索重铸';
@@ -42,6 +43,7 @@ function looksOn(button: Node | null): boolean {
 
 /** 挂上铁索重铸：满足条件时把确定改成重铸。 */
 export function installTiesuoRecastController(
+  gameEvents: GameEventBus,
   runtime: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): () => void {
   const locator = createLayaObjectLocator(runtime);
@@ -139,33 +141,39 @@ export function installTiesuoRecastController(
     if (wrapped) patchedBarTarget = target;
   }
 
-  let pollIntervalMs = TIESUO_POLL_IDLE_MS;
-  let stopPolling = everyInterval(TIESUO_PERF_LABEL, pollIntervalMs, sync, {}, runtime);
-
-  function setPollInterval(nextMs: number): void {
-    if (stopped || nextMs === pollIntervalMs) return;
-    pollIntervalMs = nextMs;
-    stopPolling();
-    stopPolling = everyInterval(TIESUO_PERF_LABEL, pollIntervalMs, sync, {}, runtime);
-  }
-
   function sync(): void {
     if (stopped) return;
     const self = sceneSelf();
-    if (!self) {
-      setPollInterval(TIESUO_POLL_IDLE_MS);
-      return;
-    }
-    setPollInterval(TIESUO_POLL_ACTIVE_MS);
+    if (!self) return;
     ensureCallbackPatch();
     ensureBarUpdatePatch(self);
     lightOkIfRecastReady(self);
   }
 
+  let stopBackup: (() => void) | null = null;
+  const ensureBackupPolling = () => {
+    if (stopped || stopBackup) return;
+    stopBackup = everyInterval(TIESUO_PERF_LABEL, TIESUO_POLL_BACKUP_MS, () => {
+      if (stopped || !locateGameScene(runtime)) return;
+      sync();
+    }, {}, runtime);
+  };
+  // 开局/重连立刻装补丁；慢速兜底只在牌局内轮询，出牌局停掉。
+  const unsubscribe = gameEvents.subscribe((event) => {
+    if (event.type === 'game-started' || event.type === 'game-reconnected') {
+      sync();
+      ensureBackupPolling();
+    } else if (event.type === 'game-ended') {
+      stopBackup?.();
+      stopBackup = null;
+    }
+  });
+  ensureBackupPolling();
   sync();
   return () => {
     stopped = true;
-    stopPolling();
+    unsubscribe();
+    stopBackup?.();
     patcher.restoreAll();
     patchedTarget = null;
     patchedBarTarget = null;

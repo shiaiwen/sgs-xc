@@ -9,6 +9,7 @@ import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { HAND_SORT_SYNC_MS } from '../../const/poll-intervals.ts';
 import {
   isNativeHudSuspended,
@@ -633,7 +634,8 @@ function patchSeatPrototype(selfSeatUi: Node, patcher: ReturnType<typeof createM
 /** 把原生整理按钮换成类型、花色、点数三段；双击锁定后，手牌变化时自动整理。 */
 export function installHandSortController(
   store: XiaochaoConfigStore,
-  runtime: Window = window
+  runtime: Window = window,
+  gameEvents?: GameEventBus
 ): () => void {
   const patcher = createMethodPatcher();
   const laya = () => asRecord((runtime as Node).Laya);
@@ -668,14 +670,43 @@ export function installHandSortController(
     if (active) syncAutoSort(active);
   };
 
-  const stopPolling = everyInterval('手牌整理', HAND_SORT_SYNC_MS, sync, {}, runtime);
+  let stopPolling: (() => void) | null = null;
+  let unsubEvents: (() => void) | null = null;
+  const syncRetryTimers: number[] = [];
+
+  /** 座位 UI 可能晚于开局事件几帧才建出来，重试几次接住它再打原型补丁。 */
+  const scheduleSyncRetries = () => {
+    for (const delay of [100, 300, 600, 1200, 2500, 5000]) {
+      syncRetryTimers.push(runtime.setTimeout(sync, delay) as unknown as number);
+    }
+  };
+
+  if (gameEvents) {
+    // 事件驱动：进局/重连挂按钮；手牌变化走协议事件自动整理；结算清理。不再 500ms 轮询。
+    unsubEvents = gameEvents.subscribe((event) => {
+      if (event.type === 'game-started' || event.type === 'game-reconnected') {
+        sync();
+        scheduleSyncRetries();
+      } else if (event.type === 'cards-moved' || event.type === 'cards-used' || event.type === 'hand-cards-revealed') {
+        if (active) syncAutoSort(active);
+      } else if (event.type === 'game-ended') {
+        releaseHandSort();
+      }
+    });
+  } else {
+    stopPolling = everyInterval('手牌整理', HAND_SORT_SYNC_MS, sync, {}, runtime);
+  }
+
   const stopEnabled = store.subscribe('cards.handSortEnabled', sync);
   const stopLock = store.subscribe('cards.handSortLockedMode', sync);
   const unregisterPostGame = registerNativeHudPostGameTeardown(releaseHandSort);
   sync();
   return () => {
     unregisterPostGame();
-    stopPolling();
+    unsubEvents?.();
+    stopPolling?.();
+    syncRetryTimers.forEach((timer) => runtime.clearTimeout(timer));
+    syncRetryTimers.length = 0;
     stopEnabled();
     stopLock();
     patcher.restoreAll();

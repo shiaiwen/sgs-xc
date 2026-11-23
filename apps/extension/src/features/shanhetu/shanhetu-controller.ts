@@ -58,7 +58,8 @@ export function installShanhetuController(
   const map: ShanhetuMapController = installShanhetuMapController(configStore, {
     globalObject,
     locator,
-    cardConfigSource: options.cardConfigSource
+    cardConfigSource: options.cardConfigSource,
+    gameEvents: options.gameEvents
   });
   const story: ShanhetuStoryController = installShanhetuStoryController(configStore, {
     globalObject,
@@ -67,7 +68,8 @@ export function installShanhetuController(
   const shop: ShanhetuShopController = installShanhetuShopController({
     globalObject,
     locator,
-    cardConfigSource: options.cardConfigSource
+    cardConfigSource: options.cardConfigSource,
+    gameEvents: options.gameEvents
   });
   const names = options.cardConfigSource;
   const changeGeneral = names

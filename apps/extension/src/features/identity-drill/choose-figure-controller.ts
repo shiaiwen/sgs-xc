@@ -119,23 +119,44 @@ export function installChooseFigureController(
   let lastDebugSignature = '';
   let lastDebugAt = 0;
   const debug = createDebugState(globalObject);
-  const stopApplying = everyInterval('身份锁定', CHOOSE_FIGURE_APPLY_MS, applyChooseFigures, {}, globalObject);
+  let stopApplying: (() => void) | null = null;
+
+  function startApplying(): void {
+    if (stopApplying) return;
+    stopApplying = everyInterval('身份锁定', CHOOSE_FIGURE_APPLY_MS, applyChooseFigures, {}, globalObject);
+    applyChooseFigures();
+  }
+
+  function stopApplyingLoop(): void {
+    stopApplying?.();
+    stopApplying = null;
+  }
+
   const unsubscribe = gameEvents?.subscribe((event) => {
+    if (event.type === 'game-started') {
+      startApplying();
+      return;
+    }
     if (event.type === 'game-reconnected') {
       // 手里真有锁定才需要冻结。没有锁定可保的时候也冻结，会把之后每一局都锁死，
       // 只能退回按画面座位号猜，反而猜出第二个主公。
       if (lockedFigures.size || lockedByName.size || lockedBySeat.size) frozenAfterReconnect = true;
       recordDebug(debug, { event: 'game-reconnected', stableRoomKey, stableClientTokens: stableClientIds.map(clientToken) });
+      startApplying();
+      return;
     }
     if (event.type === 'game-ended' && event.settled) {
       // 断线、离桌、场景重建也会报一局结束，那些不能清。只有结算后下一局才重算。
       recordDebug(debug, { event: 'game-ended', stableRoomKey, stableClientTokens: stableClientIds.map(clientToken) });
       clearFigureLock();
+      stopApplyingLoop();
     }
   });
-  applyChooseFigures();
+  // 没传事件源时保持常驻；有事件源时只在对局内轮询，安装时先应用一次兜住已在局内的情况。
+  if (!gameEvents) startApplying();
+  else applyChooseFigures();
   return () => {
-    stopApplying();
+    stopApplyingLoop();
     unsubscribe?.();
   };
 

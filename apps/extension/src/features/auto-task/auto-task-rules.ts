@@ -240,12 +240,12 @@ export function collectTasks(access: TaskManagerAccess, context: TaskRuleContext
   for (const id of context.taskIds ?? []) add(lookupTask(access, id));
   for (const id of context.newFuliTaskIds ?? []) add(lookupTask(access, id));
   for (const id of context.returnUnlockTaskIds ?? []) add(lookupTask(access, id));
-  for (const key of ['allTasks', 'taskLocalConditionDict', 'typeTaskDict']) {
-    flattenGameCollection(access.manager[key]).forEach(add);
-  }
+  const collectionKeys = ['allTasks', 'taskLocalConditionDict', 'typeTaskDict'] as const;
+  const collections = collectionKeys.map((key) => flattenGameCollection(access.manager[key]));
+  collections.forEach((list) => list.forEach(add));
   if (!context.skipTavern) TAVERN_TASK_IDS.forEach((id) => add(lookupTask(access, id)));
-  for (const key of ['allTasks', 'taskLocalConditionDict', 'typeTaskDict']) {
-    for (const task of flattenGameCollection(access.manager[key])) {
+  for (const list of collections) {
+    for (const task of list) {
       const record = asRecord(task);
       if (!record || !taskCanAward(record)) continue;
       if (!isForcedGeneralWelfareTask(task, context)) continue;

@@ -4,7 +4,8 @@
 
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
+import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
+import { createTaskScope, watchSceneSwitch } from '../skin-background/skin-runtime.ts';
 import { locateSceneManager, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 
 type Node = Record<string, any>;
@@ -22,7 +23,8 @@ export function installClassicRoomFilterController(
   const win = options.globalObject ?? window as GameRuntimeWindow;
   const global = win as GameRuntimeWindow & Node;
   const patcher = createMethodPatcher();
-  const intervalMs = options.pollIntervalMs ?? 400;
+  const locator = createLayaObjectLocator(win as unknown as LayaRuntimeWindow);
+  const tasks = createTaskScope();
   let disposed = false;
   let currentRoomList: Node | null = null;
   let currentScene: Node | null = null;
@@ -31,9 +33,10 @@ export function installClassicRoomFilterController(
   let changeHandler: (() => void) | null = null;
   let replaying = false;
 
-  const stopPolling = everyInterval('房间过滤', intervalMs * 2, () => {
+  // 事件驱动：场景切换到大堂后同步；不再每 800ms 轮询找大厅场景。
+  watchSceneSwitch(locator, patcher, tasks, () => {
     try { sync(); } catch (error) { console.warn('[room-filter] sync failed', error); }
-  }, {}, global);
+  }, win as unknown as LayaRuntimeWindow);
   const unsubscribe = config.subscribe(CONFIG_KEY, () => replay());
   sync();
 
@@ -128,7 +131,7 @@ export function installClassicRoomFilterController(
   return {
     dispose() {
       disposed = true;
-      stopPolling();
+      tasks.dispose();
       unsubscribe();
       detachCheckbox();
       patcher.restoreAll();

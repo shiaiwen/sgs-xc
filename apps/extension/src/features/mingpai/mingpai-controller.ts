@@ -44,7 +44,7 @@ import {
 } from './graph/temporary-zone-grid.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { resolveSkillIds } from '../skill-assist/skill-visibility.ts';
-import { traceMingpai } from '../../runtime/mingpai-trace.ts';
+import { isMingpaiTraceEnabled, traceMingpai } from '../../runtime/mingpai-trace.ts';
 import { buildIncomingHandSourceLabel, isBachaoSpell, readIncomingCardOwner } from './rules/hand-source-label.ts';
 import {
   cancelMingpaiPostGameCleanup,
@@ -571,9 +571,33 @@ export function installMingpaiController(
     return { ...event, fromZone: EQUIP_ZONE };
   }
 
+  /** correctMoveCard 的查询/标记回调只建一次，避免每张牌移动都重新分配闭包。 */
+  const correctMoveCardHandlers = {
+    cardType,
+    isRedCard,
+    isJudgeRecoverySpell: (spellId: number) => spellId === JUDGE_RECOVERY_SPELL_ID || isJiaoyuSpell(spellId),
+    onJudgeCardRecovered: (seatId: number, cardIds: readonly number[]) => {
+      if (!Number.isInteger(seatId) || seatId < 0) return;
+      cardIds.filter((cardId) => cardId > 0).forEach(markJiaoyuCard);
+    },
+    zoneCardIds: (seatId: number, zone: number) => engine.getZoneCardIds(formatZoneId(seatId, zone)),
+    handCardIds: (seatId: number) => {
+      const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
+      const sceneIds = seat?.knownCards.map((card) => card.cardId).filter((cardId) => cardId > 0) ?? [];
+      const engineIds = engine.getHandCardIds(seatId).filter((cardId) => cardId > 0);
+      return [...new Set([...engineIds, ...sceneIds])];
+    },
+    equipmentCardIds: (seatId: number) => {
+      const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
+      const sceneIds = (seat?.equipmentCards ?? []).map((card) => card.cardId).filter((cardId) => cardId > 0);
+      const engineIds = engine.getZoneCardIds(formatZoneId(seatId, EQUIP_ZONE));
+      return [...new Set([...engineIds, ...sceneIds])];
+    }
+  };
+
   function handleCardsMoved(labelEvent: MoveCardEvent): void {
     const rawEvent = normalizeSnatchEquipSource(labelEvent);
-    if (rawEvent.fromZone === HAND_ZONE && rawEvent.toZone === HAND_ZONE) {
+    if (rawEvent.fromZone === HAND_ZONE && rawEvent.toZone === HAND_ZONE && isMingpaiTraceEnabled()) {
       const handMoveTrace = {
         spellId: rawEvent.spellId,
         moveType: rawEvent.moveType,
@@ -591,27 +615,7 @@ export function installMingpaiController(
       {
         myId: seatStateStore.getSnapshot().selfSeatId,
         nationWar: isNationWarMode(seatStateStore.getSnapshot().mode),
-        cardType,
-        isRedCard,
-        isJudgeRecoverySpell: (spellId) => spellId === JUDGE_RECOVERY_SPELL_ID || isJiaoyuSpell(spellId),
-        // 判定牌按颜色收进手牌时给这批牌打上椒遇标签，牌打出去后去掉。
-        onJudgeCardRecovered: (seatId, cardIds) => {
-          if (!Number.isInteger(seatId) || seatId < 0) return;
-          cardIds.filter((cardId) => cardId > 0).forEach(markJiaoyuCard);
-        },
-        zoneCardIds: (seatId, zone) => engine.getZoneCardIds(formatZoneId(seatId, zone)),
-        handCardIds: (seatId) => {
-          const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
-          const sceneIds = seat?.knownCards.map((card) => card.cardId).filter((cardId) => cardId > 0) ?? [];
-          const engineIds = engine.getHandCardIds(seatId).filter((cardId) => cardId > 0);
-          return [...new Set([...engineIds, ...sceneIds])];
-        },
-        equipmentCardIds: (seatId) => {
-          const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
-          const sceneIds = (seat?.equipmentCards ?? []).map((card) => card.cardId).filter((cardId) => cardId > 0);
-          const engineIds = engine.getZoneCardIds(formatZoneId(seatId, EQUIP_ZONE));
-          return [...new Set([...engineIds, ...sceneIds])];
-        }
+        ...correctMoveCardHandlers
       }
     );
     if (corrected.ignore) {
@@ -663,16 +667,18 @@ export function installMingpaiController(
       && (event.cardCount === zoneLength || isAllianceWholeHandMove(event));
     const hiddenHandDeparture = event.fromZone === HAND_ZONE
       && !recoveredCardIds.some((cardId) => cardId > 0);
-    traceMingpai('move', {
-      spellId: event.spellId,
-      moveType: event.moveType,
-      from: [event.fromZone, event.fromId, rawEvent.fromPosition],
-      to: [event.toZone, event.toId, event.toPosition],
-      count: event.cardCount,
-      rawIds: [...rawEvent.cardIds],
-      resolvedIds: [...recoveredCardIds],
-      remappedFromPosition: event.fromPosition !== rawEvent.fromPosition ? event.fromPosition : undefined
-    });
+    if (isMingpaiTraceEnabled()) {
+      traceMingpai('move', {
+        spellId: event.spellId,
+        moveType: event.moveType,
+        from: [event.fromZone, event.fromId, rawEvent.fromPosition],
+        to: [event.toZone, event.toId, event.toPosition],
+        count: event.cardCount,
+        rawIds: [...rawEvent.cardIds],
+        resolvedIds: [...recoveredCardIds],
+        remappedFromPosition: event.fromPosition !== rawEvent.fromPosition ? event.fromPosition : undefined
+      });
+    }
     // 引擎落位。牌离开手牌时协议没公开身份就不能泄露，展示与标签仍按控制器解析结果；
     // 从技能临时区、处理区出来时这些牌本来就在明面上，直接用引擎的落位结果。
     const leaveTopCard = recoveredCardIds.some((cardId, index) => cardId !== filledCardIds[index]);

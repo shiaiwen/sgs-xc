@@ -8,7 +8,7 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import type { XiaochaoConfigStore } from '../../config/config-store.ts';
+import { CONFIG_ACCOUNT_SYNC_EVENT, type XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
@@ -16,9 +16,7 @@ import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   accountScopedStorageKey,
   accountStorageKey,
-  createTaskScope,
-  isBackgroundUiScene,
-  watchSceneSwitch
+  createTaskScope
 } from '../skin-background/skin-runtime.ts';
 import { beijingDayIndex, createAutoTaskClaims } from './auto-task-claims.ts';
 import { createAutoTaskRunner, type AutoTaskOptions } from './auto-task-runner.ts';
@@ -66,15 +64,17 @@ export interface AutoTaskControllerOptions {
   now?: () => number;
 }
 
-const PASS_DELAYS = [1000, 5000, 20000];
+const PASS_DELAYS = [1000, 20000];
 const GUARD_EXTRA_MS = 20000;
 const POST_GAME_THROTTLE_MS = 30000;
 const MANAGER_WAIT_ATTEMPTS = 30;
 const MANAGER_WAIT_INTERVAL = 1000;
 const SCHEDULE_DELAY_MS = 2000;
+/** 登录轮等卡牌配置就绪的最长时间；到点配置还没来就先跑一轮（缺配置相关任务）。 */
+const LOGIN_CONFIG_WAIT_MS = 5000;
 const IMMEDIATE_CLAIM_DELAY_MS = 400;
 const ACCOUNT_POLL_MS = 1000;
-const PERIODIC_AUTO_TASK_MS = 10 * 60 * 1000;
+const PERIODIC_AUTO_TASK_MS = 5 * 60 * 1000;
 const PERIODIC_AUTO_TASK_FIRST_MS = 90 * 1000;
 const LAST_TASK_DATE_KEY = 'XC::lastTaskDate';
 
@@ -111,6 +111,12 @@ export function installAutoTaskController(
   let lastDayIndex = readStoredDayIndex();
   let loginAccountId = '';
   let lastPeriodicScheduleAt = 0;
+  /** 卡牌配置是否已加载完成；登录轮等它就绪后再跑。 */
+  let configReady = false;
+  /** 有登录轮在等配置。 */
+  let loginRoundPending = false;
+  /** 登录轮在配置没到时先跑过了，配置到齐后要补一轮。 */
+  let loginRoundPartial = false;
 
   function probeRuleContext(): TaskRuleContext {
     const data = options.cardConfigSource?.getAutoTaskData() ?? null;
@@ -303,12 +309,26 @@ export function installAutoTaskController(
     return true;
   }
 
-  function onCrossDay(reason: AutoTaskReason): void {
-    const day = beijingDayIndex(now());
-    if (day === lastDayIndex) return;
-    lastDayIndex = day;
-    writeStoredDayIndex(day);
-    if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule(reason, true);
+  /** 登录后要跑一整轮领取：等卡牌配置就绪再跑，配置迟迟不来就到点先跑一轮。 */
+  function requestLoginRound(): void {
+    if (tasks.disposed || !configStore.get(AUTO_TASK_ENABLED_KEY)) return;
+    if (!resolveGameAccountId(globalObject, locator)) return;
+    if (loginRoundPending) return;
+    loginRoundPending = true;
+    maybeStartLoginRound();
+    tasks.later(() => {
+      if (!loginRoundPending || tasks.disposed) return;
+      loginRoundPending = false;
+      loginRoundPartial = true;
+      if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('login', true);
+    }, LOGIN_CONFIG_WAIT_MS);
+  }
+
+  /** 配置就绪且有一轮登录领取在等，就现在跑；配置没到就继续等。 */
+  function maybeStartLoginRound(): void {
+    if (!loginRoundPending || tasks.disposed || !configReady) return;
+    loginRoundPending = false;
+    if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('login', true);
   }
 
   // 账号到了领一轮。同一账号不重复领，换号再领。
@@ -316,7 +336,7 @@ export function installAutoTaskController(
     const id = resolveGameAccountId(globalObject, locator);
     if (!id || id === loginAccountId) return;
     loginAccountId = id;
-    if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('login', true);
+    requestLoginRound();
   }
 
   function periodicAutoTask(): void {
@@ -336,7 +356,9 @@ export function installAutoTaskController(
   }
 
   function watchAccount(): void {
-    if (isBackgroundUiScene(locator, globalObject)) noteAccountArrival();
+    // noteAccountArrival 内部已处理「账号还没取到」的情况；这里不再额外做背景场景判断，
+    // 否则每 1s 都跑一次 resolveHallScene 的显示树兜底。
+    noteAccountArrival();
   }
 
   function onGameEnded(): void {
@@ -352,27 +374,34 @@ export function installAutoTaskController(
   }
 
   const onAutoTaskConfigReady = () => {
-    if (configStore.get(AUTO_TASK_ENABLED_KEY)) schedule('auto', true);
+    configReady = true;
+    maybeStartLoginRound();
+    // 配置没赶上登录轮时，登录轮会先空跑一次；这里补一轮拿全配置相关任务。
+    if (loginRoundPartial && configStore.get(AUTO_TASK_ENABLED_KEY) && resolveGameAccountId(globalObject, locator)) {
+      loginRoundPartial = false;
+      schedule('auto', true);
+    }
   };
   globalObject.addEventListener?.('xiaochao-autotask-config', onAutoTaskConfigReady);
   unsubscribes.push(() => globalObject.removeEventListener?.('xiaochao-autotask-config', onAutoTaskConfigReady));
 
   watchAccount();
-  unsubscribes.push(everyInterval(tasks.label, ACCOUNT_POLL_MS, watchAccount));
+  // 账号变更由 configStore.syncAccount 派发 xc:account-sync 事件，监听它即可；保留慢速兜底接住漏网情况。
+  const onAccountSync = () => watchAccount();
+  globalObject.addEventListener?.(CONFIG_ACCOUNT_SYNC_EVENT, onAccountSync);
+  unsubscribes.push(() => globalObject.removeEventListener?.(CONFIG_ACCOUNT_SYNC_EVENT, onAccountSync));
+  unsubscribes.push(everyInterval(tasks.label, ACCOUNT_POLL_MS * 5, watchAccount));
   armPeriodicAutoTask();
 
   if (configStore.get(AUTO_TASK_ENABLED_KEY) && resolveGameAccountId(globalObject, locator)) {
     tasks.later(() => {
       if (!configStore.get(AUTO_TASK_ENABLED_KEY) || tasks.disposed) return;
-      if (!resolveGameAccountId(globalObject, locator)) return;
-      schedule('auto', true);
+      noteAccountArrival();
     }, SCHEDULE_DELAY_MS);
   }
 
   unsubscribes.push(gameEvents.subscribe((event) => {
     if (event.type === 'game-ended') onGameEnded();
-    // 心跳到达后按北京时间看日期。变了才领，并写入 XC::lastTaskDate。
-    if (event.type === 'heart-alive') onCrossDay('heartbeat');
   }));
 
   ALL_AUTO_TASK_KEYS.forEach((key) => {
@@ -386,10 +415,6 @@ export function installAutoTaskController(
       }
     }));
   });
-
-  watchSceneSwitch(locator, patcher, tasks, () => {
-    if (configStore.get(AUTO_TASK_ENABLED_KEY)) runner.scheduleLowBeanFree('scene');
-  }, globalObject);
 
   return {
     schedule,

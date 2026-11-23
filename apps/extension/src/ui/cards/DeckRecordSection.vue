@@ -1,8 +1,10 @@
 <script setup lang="ts">
-/** 常规页牌局记录区块：本回合弃牌与牌堆两端的已知牌。 */
-import { computed, onBeforeUnmount, ref } from 'vue';
+/** 常规页牌局记录区块：本回合弃牌、牌堆两端已知牌与本家手牌。 */
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { XiaochaoConfigStore } from '../../config/config-store.ts';
 import type { DeckRecordStore } from '../../features/deck-record/deck-record-store.ts';
+import { readSelfHandCardIds } from '../../features/deck-record/self-hand-cards.ts';
+import { DECK_RECORD_SYNC_MS } from '../../const/poll-intervals.ts';
 import { isDianweiArmCardName, type GameCardCatalog } from '../../features/cards/game-card-catalog.ts';
 import ShoupaiCardFace from './ShoupaiCardFace.vue';
 
@@ -13,6 +15,7 @@ const props = defineProps<{
 }>();
 
 const snapshot = ref(props.deckRecordStore.getSnapshot());
+const selfHandCardIds = ref<number[]>([]);
 const enabled = ref(props.configStore.get('display.deckRecordEnabled'));
 const sortMode = ref(props.configStore.get('display.discardSortMode'));
 const stopStore = props.deckRecordStore.subscribe((nextSnapshot) => {
@@ -22,6 +25,7 @@ const stopConfig = props.configStore.subscribe(
   'display.deckRecordEnabled',
   ({ value }) => {
     enabled.value = value;
+    syncSelfHandCards();
   }
 );
 const stopSortConfig = props.configStore.subscribe(
@@ -30,15 +34,37 @@ const stopSortConfig = props.configStore.subscribe(
     sortMode.value = value;
   }
 );
+let selfHandTimer: ReturnType<typeof setInterval> | null = null;
+
+function syncSelfHandCards(): void {
+  if (!enabled.value) {
+    selfHandCardIds.value = [];
+    return;
+  }
+  selfHandCardIds.value = readSelfHandCardIds();
+}
+
+onMounted(() => {
+  syncSelfHandCards();
+  selfHandTimer = setInterval(syncSelfHandCards, DECK_RECORD_SYNC_MS);
+});
+
 onBeforeUnmount(() => {
   stopStore();
   stopConfig();
   stopSortConfig();
+  if (selfHandTimer) clearInterval(selfHandTimer);
 });
 
 const currentTurnDiscardCards = computed(() =>
   sortCards(snapshot.value.currentTurnDiscardCardIds)
 );
+const visibleSelfHandCardIds = computed(() =>
+  selfHandCardIds.value.filter(
+    (cardId) => cardId > 0 && !isDianweiArmCardName(props.gameCardCatalog.resolve(cardId).name)
+  )
+);
+
 const pileGroups = computed(() => [
   { id: 'top', title: '牌堆顶', cardIds: knownPileCards(snapshot.value.deckTopCardIds) },
   { id: 'bottom', title: '牌堆底', cardIds: knownPileCards(snapshot.value.deckBottomCardIds) },
@@ -144,6 +170,20 @@ function rankOrder(rank: string): number {
         <ShoupaiCardFace
           v-for="cardId in pile.cardIds"
           :key="cardId"
+          :card-id="cardId"
+          :game-card-catalog="gameCardCatalog"
+        />
+      </div>
+    </div>
+    <div class="xc-deck-record__group">
+      <h3 class="xc-deck-record__title">手牌</h3>
+      <div
+        class="xc-deck-record__cards"
+        :data-empty="visibleSelfHandCardIds.length ? undefined : '暂无手牌'"
+      >
+        <ShoupaiCardFace
+          v-for="(cardId, index) in visibleSelfHandCardIds"
+          :key="`hand-${cardId}-${index}`"
           :card-id="cardId"
           :game-card-catalog="gameCardCatalog"
         />

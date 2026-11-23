@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { FeedbackAuthorContact } from "@/components/feedback-author-contact";
 import { FeedbackViewClient } from "@/components/feedback-view-client";
 
 export const metadata: Metadata = {
@@ -19,6 +20,7 @@ export default function FeedbackViewPage() {
       <Suspense fallback={<p className="feedback-status__loading">加载中…</p>}>
         <FeedbackViewClient />
       </Suspense>
+      <FeedbackAuthorContact />
     </main>
   );
 }

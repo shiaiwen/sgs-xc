@@ -32,6 +32,9 @@ export const WALLPAPER_MENU_SA_POLL_ATTEMPTS = 50;
 export const WALLPAPER_VISIBLE_MENU_POLL_MS = 200;
 export const WALLPAPER_VISIBLE_MENU_POLL_ATTEMPTS = 30;
 
+/** 常驻兜底轮询：面板打开已由方法包装接住，这里只兜底漏网入口，不必 200ms 高频扫整棵舞台树。 */
+export const WALLPAPER_MENU_WATCH_POLL_MS = 5000;
+
 /** 静默建面板后从舞台找面板的浅层深度。 */
 export const WALLPAPER_MENU_ATTACH_STAGE_DEPTH = 8;
 

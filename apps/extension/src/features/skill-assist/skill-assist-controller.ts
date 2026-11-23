@@ -6,8 +6,6 @@ import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import type { GameSceneSeatSource } from '../seat-display/seat-game-adapter.ts';
 import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { SkillAssistStore } from './skill-assist-store.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
-import { SKILL_ASSIST_REFRESH_MS } from '../../const/poll-intervals.ts';
 
 export interface SkillAssistControllerOptions {
   pollIntervalMs?: number;
@@ -25,28 +23,42 @@ export function installSkillAssistController(
   { pollIntervalMs = 500 }: SkillAssistControllerOptions = {}
 ): () => void {
   let stopped = false;
+  let refreshPending = false;
   const refresh = () => {
     if (stopped) return;
     store.refreshVisibility(getScene());
   };
+  // 同一批事件只刷一次（防抖），不再 1s 轮询。
+  const scheduleRefresh = () => {
+    if (stopped || refreshPending) return;
+    refreshPending = true;
+    globalObject.setTimeout(() => {
+      refreshPending = false;
+      if (!stopped) refresh();
+    }, 50);
+  };
   const unsubscribe = gameEvents.subscribe((event) => {
     store.handleGameEvent(event, getScene());
-    if (
-      event.type === 'game-started'
-      || event.type === 'game-ended'
-      || event.type === 'turn-started'
-      || event.type === 'player-died'
-      || event.type === 'seat-state-changed'
-    ) {
-      refresh();
+    switch (event.type) {
+      case 'game-started':
+      case 'game-ended':
+      case 'game-reconnected':
+      case 'turn-started':
+      case 'phase-changed':
+      case 'cards-moved':
+      case 'cards-used':
+      case 'hp-updated':
+      case 'player-died':
+      case 'seat-state-changed':
+      case 'spell-data-updated':
+        scheduleRefresh();
+        break;
     }
   });
   refresh();
-  const stopRefreshing = everyInterval('技能辅助', SKILL_ASSIST_REFRESH_MS, refresh, {}, globalObject);
   return () => {
     if (stopped) return;
     stopped = true;
     unsubscribe();
-    stopRefreshing();
   };
 }

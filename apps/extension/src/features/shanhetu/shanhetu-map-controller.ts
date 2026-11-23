@@ -8,7 +8,6 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
 import {
   SHANHETU_MANAGER_RETRY_MS,
   SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS
@@ -20,6 +19,7 @@ import {
   type ShanhetuMapConfigSource
 } from './shanhetu-map-config-source.ts';
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { buildPanelDrafts } from './shanhetu-map-event-text.ts';
 import {
   cityImageReady,
@@ -71,8 +71,7 @@ export interface ShanhetuMapOptions {
   configSource?: ShanhetuMapConfigSource;
   /** 与卡牌配置同源；未显式传入 configSource 时使用。 */
   cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData'>;
-  /** 测试用：替换轮询定时器。 */
-  intervalMs?: number;
+  gameEvents?: GameEventBus;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -98,8 +97,6 @@ export function installShanhetuMapController(
   if (!configSource) {
     throw new Error('[xiaochao] 山河地图需要 cardConfigSource 或 configSource');
   }
-  const intervalMs = options.intervalMs ?? ROGUE_MAP_STYLE.pollMs;
-
   let disposed = false;
   let cities: RogueCitySpot[] = [];
   /** 已收到过 locations 同步后，禁止再用 manager 旧缓存把空列表填回来。 */
@@ -419,16 +416,24 @@ export function installShanhetuMapController(
     }
   }
 
-  const stopPolling = everyInterval('山河图地图', intervalMs * 2, () => {
-    if (!disposed) redraw();
-  }, {}, globalObject);
+  // 透视改为事件驱动：进山河图 / 每把结束的 decodeRogueLikeDataSync 回包会触发 redraw，
+  // 不再用固定间隔轮询，大厅里不空跑。
 
   const unsubscribe = configStore.subscribe(SHANHETU_MAP_KEY, ({ value }) => {
-    if (!value) clear();
-    else redraw(true);
+    if (!value) {
+      clear();
+    } else {
+      redraw(true);
+    }
   });
 
-  if (enabled()) redraw(true);
+  if (enabled()) {
+    redraw(true);
+  }
+
+  const stopGameEvents = options.gameEvents?.subscribe((event) => {
+    if (event.type === 'game-started' || event.type === 'game-reconnected') redraw(true);
+  }) ?? (() => {});
 
   return {
     filterMessage(payload, className) {
@@ -440,12 +445,17 @@ export function installShanhetuMapController(
       }
       runtime = extractRuntime(payload, runtime);
       syncInventoryRuntime(resolveRogueLikeSyncBody(payload));
-      if (enabled()) redraw(true);
+      if (enabled()) {
+        redraw(true);
+        // 地图场景可能晚于同步包就绪，稍后再补挂面板。
+        setTimeout(() => { if (!disposed) redraw(true); }, 600);
+        setTimeout(() => { if (!disposed) redraw(true); }, 1800);
+      }
     },
     dispose() {
       disposed = true;
+      stopGameEvents();
       unsubscribe();
-      stopPolling();
       clear();
       configSource.dispose();
     }

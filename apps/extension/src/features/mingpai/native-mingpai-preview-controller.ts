@@ -89,7 +89,7 @@ const POPUP_OFFSET = 14;
 const POPUP_CARD_SCALE = 0.85;
 const HIDE_DELAY_MS = 120;
 const STRIP_TILE_POINTER_BOUND = '__xcMingpaiStripTilePointerBound';
-const POLL_INTERVAL_MS = 500;
+const POLL_INTERVAL_MS = 1000;
 const POLL_INTERVAL_OUT_OF_GAME_MS = 2000;
 const PREVIEW_PERF_LABEL = '明牌小牌条';
 /** 同一次事件链可能同时触发座位状态、明牌引擎和游戏事件订阅；
@@ -710,6 +710,13 @@ export function installNativeMingpaiPreviewController(
     if (!host || !scene) return;
     const seatUis = readSeatUis(scene);
     const engineSnapshot = mingpaiEngine?.getSnapshot();
+    // 牌号 → 位置预建 Map，避免下面每张牌都线性 find 一遍 records。
+    const locationByCardId = new Map<number, { seatId: number; zone: number } | null>();
+    for (const record of engineSnapshot?.records ?? []) {
+      if (locationByCardId.has(record.cardId)) continue;
+      const loc = record.location;
+      locationByCardId.set(record.cardId, loc ? { seatId: loc.seatId, zone: loc.zone } : null);
+    }
     const activeSeatIds = new Set<number>();
     for (const seat of snapshot.seats) {
       const seatUi = seatUis.get(seat.seatId);
@@ -720,7 +727,7 @@ export function installNativeMingpaiPreviewController(
         continue;
       }
       const anchor = seatUi ? readAnchorRect(seatUi, host) : null;
-      syncShownHandCards(seat.seatId, seatUi, engineSnapshot);
+      syncShownHandCards(seat.seatId, seatUi, locationByCardId);
       // 明牌条只画引擎手牌区，不跟场景里的过期列表互相覆盖。
       const equipmentIds = new Set(
         (seat.equipmentCards ?? []).map((card) => card.cardId).filter((cardId) => cardId > 0)
@@ -731,11 +738,9 @@ export function installNativeMingpaiPreviewController(
       const skillZoneCardIds = new Set(zone4Partition.stripExcludeCardIds);
       const engineHandIds = (mingpaiEngine?.getHandCardIds(seat.seatId) ?? [])
         .filter((cardId) => cardId > 0 && !equipmentIds.has(cardId) && !skillZoneCardIds.has(cardId));
-      const engineHandLocation = (cardId: number): { seatId: number; zone: number } | null => {
-        const location = engineSnapshot?.records.find((record) => record.cardId === cardId)?.location;
-        if (!location) return null;
-        return { seatId: location.seatId, zone: location.zone };
-      };
+      const engineHandLocation = (cardId: number): { seatId: number; zone: number } | null => (
+        locationByCardId.get(cardId) ?? null
+      );
       const isCardInThisHand = (cardId: number): boolean => {
         const location = engineHandLocation(cardId);
         if (!location) return true;
@@ -895,7 +900,7 @@ export function installNativeMingpaiPreviewController(
   function syncShownHandCards(
     seatId: number,
     seatUi: UnknownRecord | undefined,
-    engineSnapshot: ReturnType<MingpaiEngine['getSnapshot']> | undefined
+    locationByCardId: Map<number, { seatId: number; zone: number } | null>
   ): void {
     if (!mingpaiEngine || !seatUi) return;
     const seat = asRecord(seatUi.seat);
@@ -920,7 +925,7 @@ export function installNativeMingpaiPreviewController(
       current.forEach((cardId) => next.add(cardId));
     }
     const placedOutsideThisHand = (cardId: number) => {
-      const location = engineSnapshot?.records.find((record) => record.cardId === cardId)?.location;
+      const location = locationByCardId.get(cardId);
       if (!location) return false;
       return location.zone !== HAND_ZONE || location.seatId !== seatId;
     };
@@ -1013,15 +1018,23 @@ export function installNativeMingpaiPreviewController(
 
   function adjustPollInterval() {
     const inGame = seatStateStore.getSnapshot().inGame && !previewSuspended && !isNativeHudSuspended();
-    const nextMs = inGame ? POLL_INTERVAL_MS : POLL_INTERVAL_OUT_OF_GAME_MS;
-    if (stopPolling && pollIntervalMs === nextMs) return;
+    if (!inGame) {
+      // 不在牌局时不轮询，靠 seatState / gameEvents / config 事件驱动清理与重建。
+      stopPolling?.();
+      stopPolling = null;
+      return;
+    }
+    if (stopPolling && pollIntervalMs === POLL_INTERVAL_MS) return;
     stopPolling?.();
-    pollIntervalMs = nextMs;
+    pollIntervalMs = POLL_INTERVAL_MS;
     stopPolling = everyInterval(PREVIEW_PERF_LABEL, pollIntervalMs, scheduleSync, { visualOnly: true });
   }
   let pollIntervalMs = POLL_INTERVAL_OUT_OF_GAME_MS;
 
-  const stopSeatState = seatStateStore.subscribe(scheduleSync);
+  const stopSeatState = seatStateStore.subscribe(() => {
+    adjustPollInterval();
+    scheduleSync();
+  });
   const stopMingpai = mingpaiEngine?.subscribe(scheduleSync);
   const stopGameEvents = gameEvents?.subscribe(onGameEvent);
   const stopConfig = configStore.subscribe('display.seatUiEnabled', scheduleSync);

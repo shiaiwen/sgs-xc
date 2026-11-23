@@ -50,6 +50,8 @@ export interface SecKillController {
   select(item: SecKillItem): void;
   cancel(): void;
   isSelected(actId: number, goodsId: number): boolean;
+  /** 面板展开时开列表刷新，收起时停，避免没人看还每秒拉列表。 */
+  setActive(active: boolean): void;
   dispose(): void;
 }
 
@@ -265,8 +267,17 @@ export function installSecKillController(options: SecKillControllerOptions = {})
     emit();
   }
 
-  stopRefresh = everyInterval('秒杀列表', SEC_KILL_REFRESH_MS, refresh, {}, globalObject);
-  refresh();
+  function startRefreshLoop(): void {
+    if (disposed || stopRefresh) return;
+    stopRefresh = everyInterval('秒杀列表', SEC_KILL_REFRESH_MS, refresh, {}, globalObject);
+    refresh();
+  }
+
+  function stopRefreshLoop(): void {
+    if (!stopRefresh) return;
+    stopRefresh();
+    stopRefresh = null;
+  }
 
   return {
     getSnapshot: () => ({
@@ -281,6 +292,11 @@ export function installSecKillController(options: SecKillControllerOptions = {})
     select,
     cancel,
     isSelected: (actId, goodsId) => selected?.actId === actId && selected?.goodsId === goodsId,
+    setActive(active: boolean) {
+      if (disposed) return;
+      if (active) startRefreshLoop();
+      else stopRefreshLoop();
+    },
     dispose() {
       disposed = true;
       cancel();

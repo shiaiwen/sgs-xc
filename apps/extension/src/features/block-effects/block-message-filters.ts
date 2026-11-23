@@ -128,6 +128,8 @@ function containsFactionSlogan(payload: UnknownRecord): boolean {
 function sloganText(chat: UnknownRecord): string {
   for (const value of Object.values(chat)) {
     if (typeof value !== 'string') continue;
+    // 最短口号 7 个字符，短字符串先跳过，别白跑两次正则。
+    if (value.length < 7) continue;
     const text = normalizeChatText(value);
     if (FACTION_SLOGANS.has(text)) return text;
   }
@@ -139,6 +141,8 @@ function chatRecords(payload: UnknownRecord): UnknownRecord[] {
   const seen = new Set<UnknownRecord>();
   const visit = (value: unknown, depth: number) => {
     if (!value || typeof value !== 'object' || seen.has(value as UnknownRecord) || depth > 3) return;
+    // 数组是牌列表等数据，不是聊天正文，别把每个元素都当成记录扫一遍。
+    if (Array.isArray(value)) return;
     const record = value as UnknownRecord;
     seen.add(record);
     records.push(record);

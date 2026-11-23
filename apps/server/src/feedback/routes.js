@@ -1,5 +1,12 @@
 import { Hono } from 'hono';
 import {
+  attachmentLimits,
+  readTicketAttachmentFile,
+  saveTicketAttachment,
+  toPublicAttachments
+} from './attachments.js';
+import {
+  appendFeedbackAttachment,
   createFeedbackTicket,
   findFeedbackTicket,
   listFeedbackTickets,
@@ -10,7 +17,7 @@ import {
 
 const VALID_TYPES = new Set(['bug', 'feature', 'other']);
 const VALID_STATUSES = new Set(['received', 'processing', 'fixed', 'rejected']);
-const VALID_PLATFORMS = new Set(['electron', 'userscript', 'unknown', '']);
+const VALID_PLATFORMS = new Set(['electron', 'userscript', '']);
 
 const rateBuckets = new Map();
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
@@ -82,7 +89,7 @@ export function createFeedbackRoutes() {
     const type = String(body?.type || '').trim();
     const text = String(body?.body || '').trim();
     const clientVersion = String(body?.clientVersion || '').trim().slice(0, 32);
-    const platform = String(body?.platform || 'unknown').trim();
+    const platform = String(body?.platform || 'electron').trim();
     const contact = normalizeContact(body);
     if (!VALID_TYPES.has(type) || text.length < 8 || text.length > 2000 || !contact) {
       return context.json({ error: 'invalid_payload' }, 400);
@@ -111,6 +118,73 @@ export function createFeedbackRoutes() {
     const ticket = findFeedbackTicket(context.req.param('token'));
     if (!ticket) return context.json({ error: 'not_found' }, 404);
     return context.json(toPublicTicket(ticket));
+  });
+
+  /** 工单已创建后上传附件；一次可带多个文件字段 files。 */
+  routes.post('/api/feedback/:token/attachments', async (context) => {
+    const token = context.req.param('token');
+    const ticket = findFeedbackTicket(token);
+    if (!ticket) return context.json({ error: 'not_found' }, 404);
+    if (!allowCreate(context)) {
+      return context.json({ error: 'rate_limited' }, 429);
+    }
+    const body = await context.req.parseBody({ all: true }).catch(() => null);
+    if (!body) return context.json({ error: 'invalid_payload' }, 400);
+    const rawFiles = body.files ?? body.file;
+    let files = [];
+    if (Array.isArray(rawFiles)) {
+      files = rawFiles;
+    } else if (rawFiles) {
+      files = [rawFiles];
+    }
+    if (!files.length) return context.json({ error: 'missing_files' }, 400);
+
+    const existingCount = Array.isArray(ticket.attachments) ? ticket.attachments.length : 0;
+    if (existingCount + files.length > attachmentLimits().maxCount) {
+      return context.json({ error: 'too_many', limits: attachmentLimits() }, 400);
+    }
+
+    const limits = attachmentLimits();
+    const saved = [];
+    let working = ticket;
+    for (const file of files) {
+      if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
+        return context.json({ error: 'invalid_payload' }, 400);
+      }
+      const countNow = Array.isArray(working.attachments) ? working.attachments.length : 0;
+      const result = await saveTicketAttachment(token, file, countNow);
+      if (result.error) {
+        return context.json({ error: result.error, limits }, result.status);
+      }
+      working = appendFeedbackAttachment(token, result.attachment) || working;
+      saved.push(result.attachment);
+    }
+    return context.json({
+      attachments: toPublicAttachments(token, working.attachments),
+      saved: toPublicAttachments(token, saved),
+      limits
+    });
+  });
+
+  routes.get('/api/feedback/:token/attachments/:attachmentId', (context) => {
+    const token = context.req.param('token');
+    const attachmentId = context.req.param('attachmentId');
+    const ticket = findFeedbackTicket(token);
+    if (!ticket) return context.json({ error: 'not_found' }, 404);
+    const attachment = (Array.isArray(ticket.attachments) ? ticket.attachments : [])
+      .find((item) => item.id === attachmentId);
+    if (!attachment) return context.json({ error: 'not_found' }, 404);
+    const file = readTicketAttachmentFile(token, attachment);
+    if (!file) return context.json({ error: 'not_found' }, 404);
+    const inline = String(file.contentType).startsWith('image/') || file.contentType === 'application/pdf';
+    return new Response(file.buffer, {
+      headers: {
+        'Content-Type': file.contentType,
+        'Content-Length': String(file.buffer.length),
+        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        'Cache-Control': 'private, max-age=3600'
+      }
+    });
   });
 
   routes.get('/admin/feedback', (context) => {

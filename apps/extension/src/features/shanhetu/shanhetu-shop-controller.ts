@@ -8,14 +8,13 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import {
   SHANHETU_MANAGER_RETRY_MS,
-  SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS,
-  SHANHETU_SHOP_SYNC_MS
+  SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS
 } from '../../const/poll-intervals.ts';
 import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { RoguePlotMeta } from './shanhetu-map-types.ts';
 
@@ -74,6 +73,7 @@ export interface ShanhetuShopOptions {
   globalObject?: LayaRuntimeWindow;
   locator?: LayaObjectLocator;
   cardConfigSource?: Pick<CardConfigSource, 'getShanhetuMapData'>;
+  gameEvents?: GameEventBus;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -129,6 +129,7 @@ function mergeUniqueItemIds(sources: unknown[][]): unknown[] {
 
 import {
   createRogueManagerLookup,
+  readRogueLikeAllData,
   readRogueMapLayoutFingerprint,
   readRogueRunFingerprint,
   extractRogueMapRuntime,
@@ -245,7 +246,6 @@ export function installShanhetuShopController(
   let lastShopDataRequestAt = 0;
   let requestedInCurrentScene = false;
   let wasInShanheScene = false;
-  let stopShopSync: (() => void) | null = null;
   let openWindowDispatcher: UnknownRecord | null = null;
   let openWindowHandler: ((event: unknown) => void) | null = null;
   let previewItems: ShanhetuShopPreviewItem[] = [];
@@ -508,31 +508,31 @@ export function installShanhetuShopController(
     syncShopPreviewFromSources(true);
   }
 
+  /** 只负责 ShowWindow 打开集市窗口，不弹提示。 */
+  function tryShowShopWindow(): boolean {
+    const dispatcher = locator.dispatcher();
+    if (!dispatcher) return false;
+    const showWindowName = locator.listShowWindowMethodNames(dispatcher)[0];
+    const method = showWindowName ? dispatcher[showWindowName] : null;
+    if (typeof method !== 'function') return false;
+    try {
+      method.call(dispatcher, ROGUE_SHOP_WINDOW);
+      return true;
+    } catch (error) {
+      console.warn('[山河图] 打开集市失败 via', showWindowName, error);
+      return false;
+    }
+  }
+
   function openShop(): boolean {
     if (!isShanHeTuMode(locator, globalObject)) {
       showToast('只有山河图里才能打开集市');
       return false;
     }
     enablePerspectiveFromManager();
-    const dispatcher = locator.dispatcher();
-    if (!dispatcher) {
-      showToast('游戏尚未就绪，稍后再打开集市');
-      return false;
-    }
-    const showWindowName = locator.listShowWindowMethodNames(dispatcher)[0];
-    const method = showWindowName ? dispatcher[showWindowName] : null;
-    if (typeof method !== 'function') {
-      showToast('无法打开集市窗口');
-      return false;
-    }
-    try {
-      method.call(dispatcher, ROGUE_SHOP_WINDOW);
-      return true;
-    } catch (error) {
-      console.warn('[山河图] 打开集市失败 via', showWindowName, error);
-      showToast('打开集市失败');
-      return false;
-    }
+    if (tryShowShopWindow()) return true;
+    showToast('打开集市失败');
+    return false;
   }
 
   function filterMessage(payload: UnknownRecord, className: string): void {
@@ -544,13 +544,11 @@ export function installShanhetuShopController(
     const shopFlag = hasRogueShopSyncFlag(payload);
     const shopData = readShopData(payload);
 
-    // dataMark bit4 且无 shopData 时发 RogueLikeDataReq 后返回。
-    if (shopFlag && !shopData) {
-      if (!requestedInCurrentScene && requestShopData()) requestedInCurrentScene = true;
+    // 尚无集市数据时触发一次同步：进山河图（justEnteredShanhe）会发 RogueLikeDataReq 拉数据。
+    if (!shopData) {
+      later(() => syncShopPreviewFromSources(), 0);
       return;
     }
-
-    if (!shopData) return;
     requestedInCurrentScene = true;
     managerShopUntrusted = false;
 
@@ -567,8 +565,12 @@ export function installShanhetuShopController(
   }
 
   ensureOpenWindowListener();
-  stopShopSync = everyInterval('山河集市透视', SHANHETU_SHOP_SYNC_MS, () => syncShopPreviewFromSources());
+  // 集市预览改为事件驱动：进山河图 / 每把结束的 RogueLikeDataSync 回包触发同步，不再轮询。
   syncShopPreviewFromSources();
+
+  const stopGameEvents = options.gameEvents?.subscribe((event) => {
+    if (event.type === 'game-started' || event.type === 'game-reconnected') syncShopPreviewFromSources();
+  }) ?? (() => {});
 
   // 购买成功提示在集市提前显示且原 bShow=false 时改写文案。
   void poll(() => {
@@ -616,8 +618,7 @@ export function installShanhetuShopController(
     filterMessage,
     dispose() {
       disposed = true;
-      stopShopSync?.();
-      stopShopSync = null;
+      stopGameEvents();
       unbindOpenWindowListener();
       timers.forEach((timer) => clearTimeout(timer));
       timers.clear();

@@ -231,26 +231,56 @@ export function installNativeHudPostGameGuard(
     });
   };
   const readSceneInGame = () => Boolean(readSeatStateFromGameScene(locateGameScene(globalObject)).inGame);
+  let openWindowHandler: ((event: unknown) => void) | null = null;
+  let openWindowDispatcher: Record<string, unknown> | null = null;
+
+  const isSettlementWindowName = (name: string): boolean => (
+    SETTLEMENT_WINDOW_NAMES.some((item) => name.includes(item)) || SETTLEMENT_NAME_PATTERN.test(name)
+  );
+
+  // 结算窗打开由 OPEN_WINDOW 事件驱动挂起，不再 1s 轮询扫窗。
+  const installOpenWindowListener = (): void => {
+    const dispatcher = asRecord(locator.dispatcher());
+    if (!dispatcher || typeof dispatcher.on !== 'function') return;
+    if (openWindowDispatcher === dispatcher && openWindowHandler) return;
+    const handler = (event: unknown): void => {
+      const rec = asRecord(event);
+      const name = String(rec?.WindowName ?? rec?.windowName ?? event ?? '');
+      if (name && isSettlementWindowName(name)) noteSuspended(true, globalObject);
+    };
+    try {
+      (dispatcher.on as (...args: unknown[]) => void).call(dispatcher, 'OPEN_WINDOW', null, handler);
+      openWindowHandler = handler;
+      openWindowDispatcher = dispatcher;
+    } catch { /* 分发器不可用时下一轮再挂 */ }
+  };
 
   const onPoll = () => {
     if (!sceneHookReady) installSceneLeaveScrub();
-    const settlementVisible = detectSettlementBlockingInput(globalObject);
-    if (settlementVisible) {
+    installOpenWindowListener();
+    // 不在牌局时没有结算窗，跳过窗口扫描；结算兜底只在牌局内做。
+    if (!readSceneInGame()) return;
+    if (detectSettlementBlockingInput(globalObject)) {
       noteSuspended(true, globalObject);
       return;
     }
-    // 连局时座位 inGame 可能一直为 true，只能靠结算窗判断局后；结算关闭且仍在牌局内时应恢复。
-    if (readSceneInGame()) suspended = false;
+    suspended = false;
   };
   const stopEvents = gameEvents.subscribe((event) => {
     if (event.type === 'game-ended') noteSuspended(true, globalObject);
     if (event.type === 'game-started') suspended = false;
   });
-  const stopPolling = everyInterval(POST_GAME_GUARD_LABEL, POST_GAME_GUARD_POLL_MS, onPoll, {}, globalObject);
+  // 慢速兜底：接住 OPEN_WINDOW 事件漏掉的结算窗，并负责挂监听与局后恢复。
+  const stopPolling = everyInterval(POST_GAME_GUARD_LABEL, POST_GAME_GUARD_POLL_MS * 5, onPoll, {}, globalObject);
   onPoll();
   return () => {
     stopEvents();
     stopPolling();
+    if (openWindowDispatcher && openWindowHandler) {
+      try {
+        (openWindowDispatcher.off as (...args: unknown[]) => void).call(openWindowDispatcher, 'OPEN_WINDOW', null, openWindowHandler);
+      } catch { /* ignore */ }
+    }
     patcher.restoreAll();
     suspended = false;
   };

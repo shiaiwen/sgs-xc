@@ -267,7 +267,15 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     });
   }
   if (event.type === 'card-list-ready') {
-    const cardIds = [...new Set(event.cardIds.map(normalizePositiveInteger).filter(isNumber))];
+    const seen = new Set<number>();
+    const cardIds: number[] = [];
+    for (const value of event.cardIds) {
+      const id = normalizePositiveInteger(value);
+      if (id !== null && !seen.has(id)) {
+        seen.add(id);
+        cardIds.push(id);
+      }
+    }
     if (!cardIds.length) return null;
     return Object.freeze({ type: event.type, cardIds: Object.freeze(cardIds) }) as Readonly<GameEvent>;
   }
@@ -277,8 +285,8 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     return Object.freeze({
       type: event.type,
       cardCount,
-      // 0 是服务端用于隐藏牌身份的有效占位，移动事件中必须保留。
-      cardIds: Object.freeze(event.cardIds.map(normalizeNonNegativeInteger).filter(isNumber)),
+      // translateCardMovement 已经归一化过 cardIds（非负整数或 0 占位），这里直接冻结即可。
+      cardIds: Object.freeze(event.cardIds),
       fromId: normalizeNonNegativeInteger(event.fromId) ?? 0,
       fromZone: normalizeNonNegativeInteger(event.fromZone) ?? 0,
       fromPosition: normalizeNonNegativeInteger(event.fromPosition) ?? 0,
@@ -346,7 +354,8 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
       type: event.type,
       seatId,
       dataId,
-      datas: Object.freeze(event.datas.map(Number).filter(Number.isFinite))
+      // translateSpellData 已做过 datas.map(Number)，这里只需过滤掉非有限数。
+      datas: Object.freeze(event.datas.filter(Number.isFinite))
     }) as Readonly<GameEvent>;
   }
   if (event.type === 'opt-target') {
@@ -410,9 +419,9 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     return Object.freeze({ type: event.type, seatId, used, limit });
   }
   if (event.type === 'hand-cards-revealed') {
-    const cardIds = [...new Set(event.cardIds.map(normalizePositiveInteger).filter(isNumber))];
-    if (!cardIds.length) return null;
-    return Object.freeze({ type: event.type, seatId, cardIds: Object.freeze(cardIds) }) as Readonly<GameEvent>;
+    // translateSingleMessage 已用 readCardIds 去重+取正数，这里直接冻结。
+    if (!event.cardIds.length) return null;
+    return Object.freeze({ type: event.type, seatId, cardIds: Object.freeze(event.cardIds) }) as Readonly<GameEvent>;
   }
   if (event.type === 'friend-hand-tags-updated') {
     const cardIds = [...new Set(event.cardIds.map(normalizePositiveInteger).filter(isNumber))];
@@ -420,8 +429,8 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     return Object.freeze({ type: event.type, seatId: event.seatId, cardIds: Object.freeze(cardIds) });
   }
   if (event.type === 'cards-used') {
-    const cardIds = [...new Set(event.cardIds.map(normalizePositiveInteger).filter(isNumber))];
-    if (!cardIds.length) return null;
+    // translateSingleMessage 已用 readCardIds 去重+取正数，这里直接冻结。
+    if (!event.cardIds.length) return null;
     const source = event.source === 'use-spell' ? 'use-spell' : 'use-card';
     const useType = event.useType === null || event.useType === undefined
       ? null
@@ -429,7 +438,7 @@ function normalizeGameEvent(event: GameEvent): Readonly<GameEvent> | null {
     return Object.freeze({
       type: event.type,
       seatId,
-      cardIds: Object.freeze(cardIds),
+      cardIds: Object.freeze(event.cardIds),
       source,
       useType,
       spellId: event.spellId === null || event.spellId === undefined

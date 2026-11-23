@@ -15,7 +15,11 @@
  */
 
 import { createLayaObjectLocator, type LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
-import { ROOM_SEAT_IP_GUARD_SCAN_MS } from '../../const/poll-intervals.ts';
+import {
+  ROOM_SEAT_DUPLICATE_DROP_DELAY_MS,
+  ROOM_SEAT_IP_GUARD_SCAN_MS,
+} from '../../const/poll-intervals.ts';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
 
@@ -30,7 +34,10 @@ export interface RoomSeatIpGuard {
   dispose(): void;
 }
 
-export function installRoomSeatIpGuard(globalObject: Window = window): RoomSeatIpGuard {
+export function installRoomSeatIpGuard(
+  globalObject: Window = window,
+  gameEvents?: GameEventBus
+): RoomSeatIpGuard {
   const locator = createLayaObjectLocator(globalObject as unknown as LayaRuntimeWindow);
   const patcher = createMethodPatcher();
   const ipOwners = new WeakMap<object, unknown>();
@@ -84,12 +91,11 @@ export function installRoomSeatIpGuard(globalObject: Window = window): RoomSeatI
     pendingSeatByClient = seatByClient.size ? seatByClient : null;
   }
 
-  /** 同一个人还占着回包里没写的另一个座位，那是上一桌留下的，删掉。 */
-  function dropDuplicateSeats(): void {
-    const manager = roomManager;
-    const seatByClient = pendingSeatByClient;
-    pendingSeatByClient = null;
-    if (!manager || !seatByClient || typeof manager.delSeatInfo !== 'function') return;
+  function runDuplicateSeatDrop(
+    manager: UnknownRecord,
+    seatByClient: Map<string, number>
+  ): void {
+    if (typeof manager.delSeatInfo !== 'function') return;
     const stale = seatInfos(manager)
       .filter((seat) => {
         const clientId = clientKey(seat.ClientId);
@@ -105,6 +111,29 @@ export function installRoomSeatIpGuard(globalObject: Window = window): RoomSeatI
         console.warn('[小抄] 删除上一桌留下的座位失败', seatId, error);
       }
     }
+  }
+
+  /** 同一个人还占着回包里没写的另一个座位，那是上一桌留下的，删掉。稍延后执行，避免卡在进房加载。 */
+  function dropDuplicateSeats(): void {
+    const manager = roomManager;
+    const seatByClient = pendingSeatByClient;
+    pendingSeatByClient = null;
+    if (!manager || !seatByClient) return;
+    const capturedManager = manager;
+    const capturedMap = new Map(seatByClient);
+    const laya = asRecord((globalObject as LayaRuntimeWindow).Laya);
+    const timer = laya?.timer as { once?: (delay: number, caller: unknown, handler: () => void) => void } | undefined;
+    if (typeof timer?.once === 'function') {
+      timer.once(ROOM_SEAT_DUPLICATE_DROP_DELAY_MS, null, () => {
+        if (roomManager !== capturedManager) return;
+        runDuplicateSeatDrop(capturedManager, capturedMap);
+      });
+      return;
+    }
+    globalObject.setTimeout(() => {
+      if (roomManager !== capturedManager) return;
+      runDuplicateSeatDrop(capturedManager, capturedMap);
+    }, ROOM_SEAT_DUPLICATE_DROP_DELAY_MS);
   }
 
   function isRoomManager(manager: UnknownRecord): boolean {
@@ -158,12 +187,32 @@ export function installRoomSeatIpGuard(globalObject: Window = window): RoomSeatI
   }
 
   scan();
-  const stopScanning = everyInterval('房间座位IP', ROOM_SEAT_IP_GUARD_SCAN_MS, scan);
+  let stopScanning: (() => void) | null = null;
+  const ensureScanning = () => {
+    if (stopScanning) return;
+    stopScanning = everyInterval('房间座位IP', ROOM_SEAT_IP_GUARD_SCAN_MS, () => {
+      scan();
+      // 找到并接管房间座位管理器后停掉轮询；进房后的座位变化由事件监听驱动。
+      if (roomManager) {
+        stopScanning?.();
+        stopScanning = null;
+      }
+    });
+  };
+  ensureScanning();
+  const stopGameEvents = gameEvents?.subscribe((event) => {
+    if (event.type !== 'game-ended') return;
+    pendingSeatByClient = null;
+    // 局后可能回大厅或换房，重新扫一次房间座位管理器。
+    detach();
+    ensureScanning();
+  }) ?? (() => {});
 
   return {
     filterMessage,
     dispose() {
-      stopScanning();
+      stopGameEvents();
+      stopScanning?.();
       detach();
     }
   };

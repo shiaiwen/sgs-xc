@@ -8,7 +8,7 @@ import {
   type LayaObjectLocator,
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
-import type { XiaochaoConfigStore } from '../../config/config-store.ts';
+import { CONFIG_ACCOUNT_SYNC_EVENT, type XiaochaoConfigStore } from '../../config/config-store.ts';
 import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import { AUTO_TASK_ENABLED_KEY } from '../auto-task/auto-task-settings.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
@@ -260,7 +260,13 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   }
 
   scheduleCurrentAccount();
-  stopPolling = everyInterval(tasks.label, ACCOUNT_POLL_MS * 2, scheduleCurrentAccount);
+  // 账号变更由事件驱动：登录后立即记 seenAt，再等账号稳定后兑换一次，去掉 2s 轮询驱动状态机；慢速兜底。
+  const onAccountSync = () => {
+    scheduleCurrentAccount();
+    tasks.later(() => scheduleCurrentAccount(), Math.max(loginDelayMs, ACCOUNT_STABLE_MS) + 500);
+  };
+  globalObject.addEventListener?.(CONFIG_ACCOUNT_SYNC_EVENT, onAccountSync);
+  stopPolling = everyInterval(tasks.label, ACCOUNT_POLL_MS * 10, scheduleCurrentAccount);
   if (configStore) {
     stopConfig = configStore.subscribe(AUTO_TASK_ENABLED_KEY, () => {
       if (autoTaskEnabled()) scheduleCurrentAccount();
@@ -268,6 +274,7 @@ export function installGiftCodeController(options: GiftCodeControllerOptions = {
   }
 
   return () => {
+    globalObject.removeEventListener?.(CONFIG_ACCOUNT_SYNC_EVENT, onAccountSync);
     stopPolling?.();
     stopPolling = null;
     stopConfig?.();

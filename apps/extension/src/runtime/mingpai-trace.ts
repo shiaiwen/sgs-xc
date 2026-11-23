@@ -20,9 +20,18 @@ declare global {
 const MAX_ENTRIES = 400;
 let sequence = 0;
 
+/** 明牌追踪默认关：只在显式设 window.__XIAOCHAO_MINGPAI_TRACE_ENABLED__ = true 时记录，避免热路径白分配。 */
+export function isMingpaiTraceEnabled(): boolean {
+  try {
+    return (globalThis as { __XIAOCHAO_MINGPAI_TRACE_ENABLED__?: boolean }).__XIAOCHAO_MINGPAI_TRACE_ENABLED__ === true;
+  } catch {
+    return false;
+  }
+}
+
 /** 开发时打印明牌追踪日志。 */
 export function traceMingpai(kind: string, detail: Record<string, unknown>): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || !isMingpaiTraceEnabled()) return;
   const buffer = window.__XIAOCHAO_MINGPAI_TRACE__ ??= [];
   sequence += 1;
   buffer.push({ seq: sequence, time: Date.now(), kind, detail });

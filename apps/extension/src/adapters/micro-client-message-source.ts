@@ -63,6 +63,7 @@ export function installMicroClientMessageSource(
     sourceCounts: Record<MessageSourceName, number>;
     emittedCount: number;
   }>();
+  let lastMovementCleanupAt = 0;
   const diagnostics: MessageSourceDiagnostics = {
     state: 'active',
     startedAt: Date.now(),
@@ -106,6 +107,8 @@ export function installMicroClientMessageSource(
   ): void {
     // console.log 劫持与协议钩子都在这条路径上，任一抛错都不能冒进游戏调用栈。
     try {
+      // 微端 console 大多是游戏自己的调试输出，没带协议对象直接跳过，别把它们算进协议解析。
+      if (source === 'console' && !findGameMessage(rawArguments)) return;
       measureXiaochao(PROTOCOL_PARSE_LABEL, () => deliverMeasured(rawArguments, fallbackClassName, source));
     } catch (error) {
       console.warn('[小抄] 协议解析抛错', fallbackClassName, error);
@@ -133,23 +136,25 @@ export function installMicroClientMessageSource(
           recentPayloadsClearPending = false;
         }, 0);
       }
-      if (className === 'PubGsCMoveCard') {
+      if (className === 'PubGsCMoveCard' && isMessageSourceDebug(globalObject)) {
         diagnostics.lastCardMovementInput = snapshotMovementPayload(payload, className);
       }
     }
-    translateGameMessages(rawArguments).forEach((event) => {
+    translateGameMessages(rawArguments, message).forEach((event) => {
       diagnostics.translatedEventCounts[event.type] = (diagnostics.translatedEventCounts[event.type] ?? 0) + 1;
       if (event.type === 'cards-moved') {
-        diagnostics.lastCardMovementEvent = {
-          at: Date.now(),
-          cardCount: event.cardCount,
-          cardIds: [...event.cardIds],
-          fromId: event.fromId,
-          fromZone: event.fromZone,
-          toId: event.toId,
-          toZone: event.toZone,
-          moveType: event.moveType
-        };
+        if (isMessageSourceDebug(globalObject)) {
+          diagnostics.lastCardMovementEvent = {
+            at: Date.now(),
+            cardCount: event.cardCount,
+            cardIds: [...event.cardIds],
+            fromId: event.fromId,
+            fromZone: event.fromZone,
+            toId: event.toId,
+            toZone: event.toZone,
+            moveType: event.moveType
+          };
+        }
         if (!shouldPublishCardMovement(event, source)) {
           diagnostics.duplicateCardMovementsSuppressed += 1;
           return;
@@ -168,9 +173,10 @@ export function installMicroClientMessageSource(
     source: MessageSourceName
   ): boolean {
     const now = Date.now();
-    const signature = JSON.stringify([
+    // 手拼去重键：牌移动是最高频协议之一，避免每条都跑 JSON.stringify。
+    const signature = [
       event.cardCount,
-      event.cardIds,
+      event.cardIds.join(','),
       event.fromId,
       event.fromZone,
       event.fromPosition,
@@ -181,11 +187,15 @@ export function installMicroClientMessageSource(
       event.toZoneParam,
       event.moveType,
       event.spellId,
-      event.srcSeatId ?? null
-    ]);
+      event.srcSeatId ?? ''
+    ].join('|');
     const duplicateWindowMs = 1000;
-    for (const [key, record] of recentCardMovements) {
-      if (now - record.startedAt > duplicateWindowMs) recentCardMovements.delete(key);
+    // 过期清理不必每条都全量扫 map，隔一个去重窗口扫一次即可。
+    if (now - lastMovementCleanupAt >= duplicateWindowMs) {
+      lastMovementCleanupAt = now;
+      for (const [key, record] of recentCardMovements) {
+        if (now - record.startedAt > duplicateWindowMs) recentCardMovements.delete(key);
+      }
     }
 
     const previous = recentCardMovements.get(signature);
@@ -228,8 +238,10 @@ export function installMicroClientMessageSource(
       diagnostics.serverProxy.protocolCalls += 1;
       diagnostics.serverProxy.lastEventName = className;
       diagnostics.protocolClassCounts[className] = (diagnostics.protocolClassCounts[className] ?? 0) + 1;
-      diagnostics.recentProtocolEvents.push(snapshotProtocolEvent(className, payload));
-      diagnostics.recentProtocolEvents = diagnostics.recentProtocolEvents.slice(-30);
+      if (isMessageSourceDebug(globalObject)) {
+        diagnostics.recentProtocolEvents.push(snapshotProtocolEvent(className, payload));
+        diagnostics.recentProtocolEvents = diagnostics.recentProtocolEvents.slice(-30);
+      }
       deliver([payload], className, 'server-proxy');
     }
   });
@@ -244,6 +256,18 @@ export function installMicroClientMessageSource(
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
+}
+
+/**
+ * 协议热路径上的诊断快照默认关：每条游戏消息都会经过这里，快照的对象分配
+ * 没必要在没人看的时候也一直产生。需要排查时设 window.__XIAOCHAO_MESSAGE_SOURCE_DEBUG__ = true。
+ */
+function isMessageSourceDebug(globalObject: MicroClientMessageWindow): boolean {
+  try {
+    return (globalObject as unknown as UnknownRecord).__XIAOCHAO_MESSAGE_SOURCE_DEBUG__ === true;
+  } catch {
+    return false;
+  }
 }
 
 /** 粗判是否为游戏协议事件名，避免把 UI 自定义事件当协议转发。 */

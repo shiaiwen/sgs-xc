@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 秒杀连点面板：点按展开/收起，列出当前秒杀商品，单选勾选后到点自动连点抢购。 */
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { SecKillController, SecKillItem, SecKillSnapshot } from '../../features/sec-kill/sec-kill-controller';
 
 const props = defineProps<{
@@ -12,7 +12,13 @@ const snapshot = ref<SecKillSnapshot>(props.secKillController.getSnapshot());
 const unsubscribe = props.secKillController.subscribe((next) => {
   snapshot.value = next;
 });
-onBeforeUnmount(() => unsubscribe());
+onBeforeUnmount(() => {
+  unsubscribe();
+  props.secKillController.setActive(false);
+});
+
+// 只在面板展开时拉列表，收起即停，不再常驻每秒轮询。
+watch(isOpen, (open) => props.secKillController.setActive(open));
 
 const hasItems = computed(() => snapshot.value.items.length > 0);
 const selectedCount = computed(() => (

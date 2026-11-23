@@ -8,7 +8,6 @@
 
 import { createLifecycle } from '../runtime/lifecycle.js';
 import { installStallMonitor } from '../runtime/perf-monitor';
-import { everyInterval } from '../runtime/shared-ticker';
 import { ACCOUNT_SESSION_SYNC_MS } from '../const/poll-intervals';
 import {
   getMissingGameRuntimeDependencies,
@@ -39,7 +38,6 @@ import { createRecentCardStore } from '../features/recent-cards/recent-card-stor
 import { installGameLifecycleEvents } from '../runtime/game-lifecycle-events';
 import { installNativeHudPostGameGuard } from '../runtime/native-hud-post-game-guard';
 import { installGameNativePopupProtector } from '../runtime/game-native-dialog';
-import { installGeneralSkillTipStayCoordinator } from '../runtime/general-skill-tip-stay-coordinator';
 import { disposeOrphanTipStayHooks } from '../runtime/dispose-orphan-game-ui-hooks';
 import { installMicroClientMessageSource } from '../adapters/micro-client-message-source';
 import { installMicroClientFocusBridge } from '../runtime/micro-client-focus';
@@ -120,7 +118,6 @@ function pageStorage(): Storage | undefined {
 interface XiaochaoCoreRuntime {
   mountPanelShell(layout?: XiaochaoPanelLayout): ReturnType<typeof mountXiaochaoApp> | undefined;
   teardownPanel(): void;
-  syncRuntimeSession(): void;
   startAccountActions(): void;
 }
 
@@ -215,7 +212,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
         return;
       }
       try {
-        const started = startXiaochaoCore(platform, lifecycle, configStore);
+        const started = startXiaochaoCore(platform, lifecycle, configStore, accountConfigSync);
         // 面板几何先用当前账号的本地值。云同步更新配置仓库时无需重挂面板。
         started.mountPanelShell();
         core = started;
@@ -231,10 +228,8 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     if (!tipHooksCleanedAfterRuntime) {
       tipHooksCleanedAfterRuntime = true;
       disposeOrphanTipStayHooks(window);
-      lifecycle.register(installGeneralSkillTipStayCoordinator(window));
     }
     core.mountPanelShell();
-    core.syncRuntimeSession();
     startupStatus.state = 'ready';
     if (configStore.account() !== NO_CONFIG_ACCOUNT && !accountConfigSync.awaitingServer()) {
       core.startAccountActions();
@@ -254,9 +249,7 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     startupTimer = undefined;
     if (lifecycle.disposed) return;
     syncAccountSession();
-    if (core) {
-      lifecycle.register(everyInterval('账号同步', ACCOUNT_SESSION_SYNC_MS, syncAccountSession));
-    } else if (!coreStartError) {
+    if (!core && !coreStartError) {
       startupTimer = window.setTimeout(checkStartup, PANEL_STARTUP_CHECK_MS);
     }
   }
@@ -265,6 +258,16 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
     if (startupTimer !== undefined) window.clearTimeout(startupTimer);
   });
   checkStartup();
+
+  // 页面回到前台时补一次账号同步与面板自愈，不再 1s 轮询。
+  const onVisibilityChange = () => {
+    if (document.visibilityState !== 'visible' || lifecycle.disposed || !core) return;
+    configStore.syncAccount();
+    accountConfigSync.checkAccount();
+    core.mountPanelShell();
+  };
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  lifecycle.register(() => document.removeEventListener('visibilitychange', onVisibilityChange));
 }
 
 /**
@@ -274,7 +277,8 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
 function startXiaochaoCore(
   platform: PlatformAdapter,
   lifecycle: ReturnType<typeof createLifecycle>,
-  configStore: ReturnType<typeof createConfigStore>
+  configStore: ReturnType<typeof createConfigStore>,
+  accountConfigSync: ReturnType<typeof startAccountConfigSync>
 ): XiaochaoCoreRuntime {
   const seatStateStore = createSeatStateStore();
   const gameEvents = createGameEventBus();
@@ -345,15 +349,14 @@ function startXiaochaoCore(
   lifecycle.register(installSeatDisplayVisibility(configStore));
   const classicRoomFilter = installClassicRoomFilterController(configStore);
   lifecycle.register(classicRoomFilter.dispose);
-  const roomSeatIpGuard = installRoomSeatIpGuard(window);
+  const roomSeatIpGuard = installRoomSeatIpGuard(window, gameEvents);
   lifecycle.register(roomSeatIpGuard.dispose);
-  lifecycle.register(installCampChatRightPanelController(window).dispose);
-  lifecycle.register(installSeatStateController(seatStateStore));
+  lifecycle.register(installCampChatRightPanelController(window, gameEvents).dispose);
+  lifecycle.register(installSeatStateController(seatStateStore, window, { gameEvents }));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
   lifecycle.register(gameEvents.subscribe((event) => {
     if (event.type === 'game-started') {
       disposeOrphanTipStayHooks(window);
-      lifecycle.register(installGeneralSkillTipStayCoordinator(window));
     }
   }));
   lifecycle.register(installNativeHudPostGameGuard(gameEvents, window));
@@ -361,12 +364,12 @@ function startXiaochaoCore(
   lifecycle.register(installMicroClientFocusBridge(window));
   lifecycle.register(mingpaiRuntime.dispose);
   lifecycle.register(installNativeMingpaiPreviewController(configStore, seatStateStore, gameCardCatalog, mingpaiEngine, gameEvents));
-  lifecycle.register(installCountdownSecondsController(configStore));
+  lifecycle.register(installCountdownSecondsController(configStore, window, gameEvents));
   lifecycle.register(cardLabels.dispose);
   lifecycle.register(installAiPlayerTipController(gameEvents, window));
   lifecycle.register(installChooseFigureController(window, gameEvents));
-  lifecycle.register(installHandSortController(configStore));
-  lifecycle.register(installTiesuoRecastController());
+  lifecycle.register(installHandSortController(configStore, window, gameEvents));
+  lifecycle.register(installTiesuoRecastController(gameEvents));
   const blockEffects = installBlockEffectsController(configStore, { gameEvents });
   lifecycle.register(blockEffects.dispose);
   const skinChange = installSkinChangeController(configStore, { gameEvents });
@@ -446,6 +449,15 @@ function startXiaochaoCore(
   }
   lifecycle.register(installMicroClientMessageSource(gameEvents, window, {
     mutateMessage: (payload, className) => {
+      // 登录协议回包：账号可能已切换，立刻同步账号配置，不再 1s 轮询。
+      if (/ClientLoginRep/i.test(className)) {
+        try {
+          configStore.syncAccount();
+          accountConfigSync.checkAccount();
+        } catch (error) {
+          console.warn('[xiaochao] 登录后账号同步失败', error);
+        }
+      }
       for (const filter of messageFilters) {
         try {
           filter(payload, className);
@@ -526,11 +538,7 @@ function startXiaochaoCore(
   return {
     mountPanelShell,
     teardownPanel,
-    startAccountActions,
-    syncRuntimeSession() {
-      blockEffects.armNoticeBlock();
-      blockEffects.armAdBlock();
-    }
+    startAccountActions
   };
 }
 

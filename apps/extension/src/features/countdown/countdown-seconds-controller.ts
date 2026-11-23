@@ -6,6 +6,8 @@
 import type { XiaochaoConfigStore } from '../../config/config-store';
 import { everyInterval } from '../../runtime/shared-ticker';
 import { COUNTDOWN_SYNC_MS } from '../../const/poll-intervals';
+import { locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator';
+import type { GameEventBus } from '../../runtime/game-event-bus.ts';
 
 interface CountdownTextNode {
   visible?: boolean;
@@ -58,7 +60,8 @@ interface CountdownRuntimeWindow extends Window {
  */
 export function installCountdownSecondsController(
   configStore: XiaochaoConfigStore,
-  globalObject: CountdownRuntimeWindow = window
+  globalObject: CountdownRuntimeWindow = window,
+  gameEvents?: GameEventBus
 ): () => void {
   let enabled = configStore.get('display.countdownEnabled');
   const secondsByCountdown = new Map<LayaDisplayNode, CountdownTextNode>();
@@ -118,11 +121,48 @@ export function installCountdownSecondsController(
     enabled = Boolean(value);
     synchronize();
   });
-  const stopSynchronizing = everyInterval('倒计时秒数', COUNTDOWN_SYNC_MS, synchronize, { visualOnly: true }, globalObject);
-  synchronize();
+
+  /** 每秒只做廉价更新：已定位的倒计时节点仍有效时直接改秒数，不做整树遍历。 */
+  const tickSeconds = () => {
+    if (!enabled) {
+      synchronize();
+      return;
+    }
+    const stage = globalObject.Laya?.stage;
+    if (!stage) return;
+    if (primaryCountdown && isVisiblyAttached(primaryCountdown, stage)) {
+      const secondsText = secondsByCountdown.get(primaryCountdown);
+      if (secondsText) updateSecondsText(secondsText, primaryCountdown.RemainValue as number);
+      return;
+    }
+    // 缓存的倒计时失效（切场景/阶段变化）才重新整树定位一次。
+    // 不在牌局时没有倒计时条，不做整树遍历。
+    if (!locateGameScene(globalObject as GameRuntimeWindow)) return;
+    synchronize();
+  };
+
+  let stopSynchronizing: (() => void) | null = null;
+  const ensureSynchronizing = () => {
+    if (stopSynchronizing) return;
+    stopSynchronizing = everyInterval('倒计时秒数', COUNTDOWN_SYNC_MS, tickSeconds, { visualOnly: true }, globalObject);
+  };
+  const stopGameEvents = gameEvents?.subscribe((event) => {
+    if (event.type === 'game-started' || event.type === 'game-reconnected') {
+      ensureSynchronizing();
+      synchronize();
+    } else if (event.type === 'game-ended') {
+      stopSynchronizing?.();
+      stopSynchronizing = null;
+      synchronize();
+    }
+  }) ?? (() => {});
+  // 没传事件源时保持常驻；有事件源时只在牌局内轮询，安装时先应用一次兜住已在局内的情况。
+  if (!gameEvents) ensureSynchronizing();
+  else synchronize();
 
   return () => {
-    stopSynchronizing();
+    stopSynchronizing?.();
+    stopGameEvents();
     unsubscribe();
     secondsByCountdown.forEach(destroyTextNode);
     secondsByCountdown.clear();

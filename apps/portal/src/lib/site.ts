@@ -15,3 +15,10 @@ export const site = {
   ],
   ogImage: "/og.jpg",
 };
+
+/** 反馈相关页展示：用户需要直接找维护者时用。 */
+export const maintainerContact = {
+  displayName: "上海一九四三",
+  qq: "2474577454",
+  qqQrImage: "/feedback/author-qq.png",
+} as const;

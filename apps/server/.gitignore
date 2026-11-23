@@ -5,3 +5,5 @@ data/gift-codes-upstream.json
 data/xiaochao-manifest.json
 data/xiaochao-userscript.js
 data/feedback-tickets.json
+# 本地/运行时工单附件，不入库、不随部署上传
+data/feedback-attachments/

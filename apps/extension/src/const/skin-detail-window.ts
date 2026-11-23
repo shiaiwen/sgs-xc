@@ -42,5 +42,8 @@ export const SKIN_DETAIL_FLAT_BUTTON_SKINS = [
 /** 皮肤详情窗口开着时，每隔几轮检查一次按钮是否还在。 */
 export const SKIN_DETAIL_BUTTON_RECHECK_ROUND_INTERVAL = 4;
 
+/** 皮肤详情窗口没开时，低频兜底探测的间隔：开窗已由事件驱动接住，这里只补漏网入口。 */
+export const SKIN_DETAIL_IDLE_PROBE_MS = 10_000;
+
 /** 参考包 myFuncBtn 高度。 */
 export const SKIN_DETAIL_BUTTON_HEIGHT = 50;

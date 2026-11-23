@@ -35,12 +35,13 @@ export function createAutoTaskWindows(
 
   function destroyInstance(name: string): void {
     const instance = instances.get(name);
+    if (name === 'WyqjBigView') {
+      // 离屏 WyqjBigView 构造很贵（一轮最多建 4 次），留着复用，不在这里释放；dispose 时统一清。
+      return;
+    }
     instances.delete(name);
     releaseTokens.delete(name);
     if (!instance || instance.parent) return;
-    if (name === 'WyqjBigView') {
-      return;
-    }
     try {
       if (typeof instance.Close === 'function') (instance.Close as () => void)();
       else if (typeof instance.destroy === 'function') (instance.destroy as () => void)();
@@ -122,6 +123,8 @@ export function createAutoTaskWindows(
     closeOpened,
     dispose() {
       [...instances.keys()].forEach(destroyInstance);
+      instances.clear();
+      releaseTokens.clear();
     }
   };
 }
