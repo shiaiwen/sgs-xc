@@ -193,7 +193,7 @@ export function installMingpaiController(
     }
     if (event.type === 'game-started') {
       cancelMingpaiPostGameCleanup();
-      // 开局一律丢掉上一局缓存。热重载恢复只留给 game-reconnected。
+      // 开局一律丢掉上一局缓存；断线重连仍沿用 game-reconnected 分支恢复。
       resetSpellMoveState();
       lastJiaoyuDatas = '';
       xinyouCardsBySeat.clear();

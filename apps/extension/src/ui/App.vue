@@ -19,7 +19,6 @@ import TooltipLayer from './tooltip/TooltipLayer.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import DisplaySettingsSection from './settings/DisplaySettingsSection.vue';
 import BlockSettingsSection from './settings/BlockSettingsSection.vue';
-import ClearRedDotSection from './settings/ClearRedDotSection.vue';
 import GuanxingEntry from './settings/GuanxingEntry.vue';
 import SkinBackgroundSettingsSection from './settings/SkinBackgroundSettingsSection.vue';
 import AutoTaskSettingsSection from './settings/AutoTaskSettingsSection.vue';
@@ -28,6 +27,8 @@ import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue'
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import VersionNoticeSection from './settings/VersionNoticeSection.vue';
 import AuthorTipSection from './settings/AuthorTipSection.vue';
+// @ts-expect-error Vue 单文件由项目运行时提供。
+import SecKillSection from './settings/SecKillSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import DeckRecordSection from './cards/DeckRecordSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -50,6 +51,7 @@ import type { SkillAssistStore } from '../features/skill-assist/skill-assist-sto
 import type { PeixiuRouteStore } from '../features/extra-assist/peixiu-route-store';
 import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
+import type { SecKillController } from '../features/sec-kill/sec-kill-controller';
 import type { XiaochaoPanelLayout } from './mount-xiaochao-app';
 import { showToast } from './toast/show-toast';
 import { resetXiaochaoUserData } from '../core/reset-xiaochao-user-data';
@@ -65,6 +67,7 @@ import { createUserscriptPlatform } from '../adapters/userscript-platform';
 import { constrainPanelPosition, FLOATING_PANEL_SAFE_MARGIN_PX, hasExceededDragThreshold, shouldSnapToRight } from './panel/panel-drag';
 import {
   getOwnedPanelLayoutValue,
+  releasePanelExpandSizeLimits,
   setOwnedPanelLayout
 } from './panel/panel-layout-ownership';
 import {
@@ -72,7 +75,6 @@ import {
   reserveGameAreaForDockedPanel,
   restoreFullGameArea
 } from './panel/game-layout-docking';
-
 const props = defineProps<{
   platform: 'electron' | 'userscript';
   layout: XiaochaoPanelLayout;
@@ -83,15 +85,16 @@ const props = defineProps<{
   skillAssistStore: SkillAssistStore;
   peixiuRouteStore: PeixiuRouteStore;
   turnStatusStore: TurnStatusStore;
-  clearRedDots: () => { found: boolean; count: number };
   shanhetuController: ShanhetuController | null;
   updateNoticeController: UpdateNoticeController | null;
+  secKillController: SecKillController | null;
 }>();
 /** 折叠态只保留标题栏，做成状态胶囊。 */
 const COLLAPSED_PANEL_HEIGHT = `${DOCK_COLLAPSED_PANEL_HEIGHT}px`;
 const COLLAPSED_PANEL_WIDTH = `${DOCK_COLLAPSED_PANEL_WIDTH}px`;
 const EXPANDED_PANEL_MIN_HEIGHT = 160;
 const DEFAULT_EXPANDED_PANEL_HEIGHT = 640;
+
 const savedTabId = props.configStore.get('panel.activeTab');
 const initialTabId: XiaochaoPanelTabId = XIAOCHAO_PANEL_TABS.some((tab) => tab.id === savedTabId)
   ? savedTabId
@@ -213,13 +216,10 @@ function toggleCollapsed(): void {
     expandedWidth = getOwnedPanelLayoutValue(shell, 'width') || props.layout.width;
     applyCollapsedDimensions(shell);
   } else {
+    releasePanelExpandSizeLimits(shell);
     setOwnedPanelLayout(shell, {
       height: expandedHeight,
-      width: expandedWidth,
-      minWidth: undefined,
-      maxWidth: undefined,
-      minHeight: undefined,
-      maxHeight: 'none'
+      width: expandedWidth
     });
   }
   panel.toggleCollapsed();
@@ -363,13 +363,10 @@ function expandCollapsedForDock(shell: HTMLElement): void {
   if (!panel.isCollapsed.value) return;
   const height = expandedHeight || `${resolveExpandedHeight(DEFAULT_EXPANDED_PANEL_HEIGHT)}px`;
   const width = expandedWidth || props.layout.width;
+  releasePanelExpandSizeLimits(shell);
   setOwnedPanelLayout(shell, {
     height,
-    width,
-    minWidth: undefined,
-    maxWidth: undefined,
-    minHeight: undefined,
-    maxHeight: 'none'
+    width
   });
   expandedHeight = height;
   expandedWidth = width;
@@ -435,11 +432,17 @@ function detachFromRightDock(shell: HTMLElement): void {
   if (panel.isCollapsed.value) applyCollapsedDimensions(shell);
   else {
     const savedHeight = Number.parseFloat(expandedHeight) || 0;
-    const height = Math.min(savedHeight > 0 ? savedHeight : 320, window.innerHeight);
+    const liveHeight = Math.round(shell.getBoundingClientRect().height);
+    const baseHeight = savedHeight > 0 ? savedHeight : liveHeight > 0 ? liveHeight : DEFAULT_EXPANDED_PANEL_HEIGHT;
+    const height = Math.min(
+      Math.max(baseHeight, EXPANDED_PANEL_MIN_HEIGHT),
+      window.innerHeight
+    );
+    expandedHeight = `${height}px`;
+    releasePanelExpandSizeLimits(shell);
     setOwnedPanelLayout(shell, {
       width: expandedWidth,
-      height: `${height}px`,
-      maxHeight: 'none'
+      height: expandedHeight
     });
   }
   props.configStore.set('panel.dockedRight', false);
@@ -634,17 +637,28 @@ function handleWidthResizeStart(event: PointerEvent): void {
   handle.addEventListener('lostpointercapture', finish);
 }
 
+function readPanelLayoutHeight(shell: HTMLElement): number {
+  const owned = Number.parseFloat(getOwnedPanelLayoutValue(shell, 'height'));
+  if (Number.isFinite(owned) && owned > 0) return Math.round(owned);
+  return Math.round(shell.getBoundingClientRect().height);
+}
+
 function handleResizeStart(event: PointerEvent): void {
   if (event.button !== 0 || !panelElement.value || isDockedRight.value || panel.isCollapsed.value) return;
   event.preventDefault();
   stopResizing?.();
   const shell = panelElement.value;
+  releasePanelExpandSizeLimits(shell);
   const handle = event.currentTarget as HTMLElement;
   const pointerId = event.pointerId;
   handle.setPointerCapture(pointerId);
   const startY = event.clientY;
-  const startHeight = shell.offsetHeight;
-  const maximumHeight = Math.max(EXPANDED_PANEL_MIN_HEIGHT, window.innerHeight - shell.offsetTop);
+  const startHeight = readPanelLayoutHeight(shell);
+  const panelTop = shell.getBoundingClientRect().top;
+  const maximumHeight = Math.max(
+    EXPANDED_PANEL_MIN_HEIGHT,
+    window.innerHeight - panelTop - FLOATING_PANEL_SAFE_MARGIN_PX
+  );
   let resizedHeight: number | undefined;
 
   const handleMove = (moveEvent: PointerEvent) => {
@@ -658,7 +672,11 @@ function handleResizeStart(event: PointerEvent): void {
       Math.max(EXPANDED_PANEL_MIN_HEIGHT, startHeight + moveEvent.clientY - startY)
     );
     expandedHeight = `${resizedHeight}px`;
-    setOwnedPanelLayout(shell, { height: expandedHeight, maxHeight: 'none' });
+    setOwnedPanelLayout(shell, {
+      height: expandedHeight,
+      minHeight: undefined,
+      maxHeight: undefined
+    });
   };
   const finish = () => stopResizing?.();
   const handlePointerEnd = (endEvent: PointerEvent) => {
@@ -667,7 +685,11 @@ function handleResizeStart(event: PointerEvent): void {
   const handleKeyDown = (keyEvent: KeyboardEvent) => {
     if (keyEvent.key !== 'Escape') return;
     expandedHeight = `${startHeight}px`;
-    setOwnedPanelLayout(shell, { height: expandedHeight, maxHeight: 'none' });
+    setOwnedPanelLayout(shell, {
+      height: expandedHeight,
+      minHeight: undefined,
+      maxHeight: undefined
+    });
     resizedHeight = undefined;
     finish();
   };
@@ -746,7 +768,6 @@ function handleResizeStart(event: PointerEvent): void {
         <BlockSettingsSection :config-store="configStore" />
         <SkinBackgroundSettingsSection :config-store="configStore" />
         <AutoTaskSettingsSection :config-store="configStore" />
-        <ClearRedDotSection :clear-red-dots="clearRedDots" />
       </div>
     </main>
     <main
@@ -762,6 +783,7 @@ function handleResizeStart(event: PointerEvent): void {
       <section class="xiaochao-settings-section" aria-label="工具栏">
         <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">
           <VersionNoticeSection :update-notice-controller="updateNoticeController" />
+          <SecKillSection v-if="secKillController" :sec-kill-controller="secKillController" />
           <AuthorTipSection />
           <GuanxingEntry :platform="platform" />
           <button

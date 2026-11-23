@@ -3,6 +3,7 @@
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import BlockCheck from '../BlockCheck.vue';
 import BaseDialog from '../dialog/BaseDialog.vue';
+import SettingsGroupTitle from './SettingsGroupTitle.vue';
 import {
   AUTO_TASK_ENABLED_KEY,
   AUTO_TASK_ENABLED_TOOLTIP,
@@ -78,7 +79,7 @@ function toggleClaims() {
       @close="isOpen = false"
     >
       <section class="xiaochao-block-group">
-        <h4 class="xiaochao-block-group__title">总开关</h4>
+        <SettingsGroupTitle title="总开关" />
         <div class="xiaochao-block-group__grid">
           <div
             class="xiaochao-block-switch"
@@ -102,8 +103,7 @@ function toggleClaims() {
         </div>
       </section>
       <section class="xiaochao-block-group">
-        <h4 class="xiaochao-block-group__title">
-          <span>领取项</span>
+        <SettingsGroupTitle title="领取项">
           <button
             type="button"
             class="xiaochao-block-select-btn"
@@ -112,7 +112,7 @@ function toggleClaims() {
           >
             {{ allClaimsSelected ? '反选' : '全选' }}
           </button>
-        </h4>
+        </SettingsGroupTitle>
         <div class="xiaochao-block-group__grid">
           <BlockCheck
             v-for="setting in AUTO_TASK_SKIP_SETTINGS"

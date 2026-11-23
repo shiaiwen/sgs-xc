@@ -47,3 +47,13 @@ export function getOwnedPanelLayoutValue(
 ): string {
   return panelElement.style.getPropertyValue(PANEL_LAYOUT_VARIABLES[property]).trim();
 }
+
+/** 去掉折叠/贴边留下的 min、max 锁，恢复可自由拉高拉宽。 */
+export function releasePanelExpandSizeLimits(panelElement: HTMLElement): void {
+  setOwnedPanelLayout(panelElement, {
+    minWidth: undefined,
+    maxWidth: undefined,
+    minHeight: undefined,
+    maxHeight: undefined
+  });
+}

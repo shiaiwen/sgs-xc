@@ -2,6 +2,7 @@
 /** 屏蔽设置：广告/MVP/特效/红点/阵营口号等开关列表。 */
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import BaseDialog from '../dialog/BaseDialog.vue';
+import SettingsGroupTitle from './SettingsGroupTitle.vue';
 import {
   ALL_BLOCK_SETTINGS,
   BLOCK_EFFECT_SETTINGS,
@@ -16,8 +17,8 @@ const props = defineProps({
 });
 
 const groups = [
-  { id: 'effect', title: '特效屏蔽（开启以屏蔽）', settings: BLOCK_EFFECT_SETTINGS },
-  { id: 'other', title: '其他屏蔽（开启以屏蔽）', settings: BLOCK_OTHER_SETTINGS },
+  { id: 'effect', title: '特效屏蔽', settings: BLOCK_EFFECT_SETTINGS },
+  { id: 'other', title: '其他屏蔽', settings: BLOCK_OTHER_SETTINGS },
 ];
 
 const isOpen = ref(false);
@@ -76,7 +77,7 @@ function toggleAll() {
       dialog-class="xiaochao-block-dialog"
       @close="isOpen = false"
     >
-      <div class="xiaochao-block-select-bar">
+      <template #header-actions>
         <button
           type="button"
           class="xiaochao-block-select-btn"
@@ -85,13 +86,13 @@ function toggleAll() {
         >
           {{ allSelected ? '一键关闭' : '一键开启' }}
         </button>
-      </div>
+      </template>
       <section
         v-for="group in groups"
         :key="group.id"
         class="xiaochao-block-group"
       >
-        <h4 class="xiaochao-block-group__title">{{ group.title }}</h4>
+        <SettingsGroupTitle :title="group.title" />
         <div class="xiaochao-block-group__grid">
           <div
             v-for="setting in group.settings"

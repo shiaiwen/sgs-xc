@@ -2,7 +2,12 @@
  * 山河同步包解析：与集市透视共用同一套 ProtoObj / data 嵌套路径。
  */
 
-import type { RogueCitySpot, RogueMapRuntime } from './shanhetu-map-types.ts';
+import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
+import {
+  EMPTY_ROGUE_MAP_RUNTIME,
+  type RogueCitySpot,
+  type RogueMapRuntime
+} from './shanhetu-map-types.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -10,6 +15,30 @@ function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizePlotInventoryId(value: unknown): string | number | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string' || typeof value === 'number') return value;
+  const record = asRecord(value);
+  if (!record) return null;
+  const id = record.id ?? record.Id ?? record.plot ?? record.Plot
+    ?? record.itemId ?? record.ItemId ?? record.plotId ?? record.PlotId
+    ?? record.plotID ?? record.PlotID ?? record.goodId ?? record.GoodId;
+  if (typeof id === 'string' || typeof id === 'number') return id;
+  return null;
+}
+
+function resolveGameData(payload: UnknownRecord): UnknownRecord | null {
+  const allData = readRogueLikeAllData(payload) ?? payload;
+  return asRecord(allData.gameData)
+    ?? asRecord(allData.GameData)
+    ?? asRecord(payload.gameData)
+    ?? asRecord(payload.GameData);
 }
 
 /**
@@ -43,6 +72,205 @@ export function readRogueLikeAllData(payload: UnknownRecord): UnknownRecord | nu
     ?? body;
 }
 
+function pushInventoryIds(
+  target: Array<string | number>,
+  seen: Set<string>,
+  entries: readonly unknown[]
+): void {
+  for (const entry of entries) {
+    const id = normalizePlotInventoryId(entry);
+    if (id == null) continue;
+    const key = String(id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    target.push(id);
+  }
+}
+
+function readGroupedInventoryIds(data: UnknownRecord): Array<string | number> {
+  const ids: Array<string | number> = [];
+  const seen = new Set<string>();
+  const pushEntries = (entries: unknown) => {
+    pushInventoryIds(ids, seen, asArray(entries));
+  };
+  for (const key of [
+    'itemId', 'ItemId', 'itemID', 'itemList', 'ItemList', 'plotList', 'PlotList',
+    'ShowItemList', 'showItemList', 'plotItems', 'PlotItems', 'zhanFaItems', 'ZhanFaItems',
+    'skillItems', 'SkillItems', 'rogueItems', 'RogueItems'
+  ]) {
+    pushEntries(data[key]);
+  }
+  for (const key of ['goodList', 'GoodList']) {
+    for (const group of asArray(data[key])) {
+      if (typeof group === 'number' || typeof group === 'string') {
+        pushEntries([group]);
+        continue;
+      }
+      const groupRecord = asRecord(group);
+      if (!groupRecord) continue;
+      pushEntries(groupRecord.items ?? groupRecord.list ?? groupRecord.goodList ?? groupRecord.GoodList);
+      for (const item of asArray(group)) {
+        const record = asRecord(item);
+        if (!record) continue;
+        pushEntries([
+          record.goodId ?? record.GoodId ?? record.plotId ?? record.PlotId
+            ?? record.plot ?? record.Plot ?? record.id ?? record.Id ?? record.itemId
+        ]);
+      }
+    }
+  }
+  return ids;
+}
+
+/** 从 gameData 读出当前持有的战法/技能等 plot id 列表。 */
+export function readRogueGameItemIds(gameData: UnknownRecord | null | undefined): Array<string | number> | null {
+  if (!gameData) return null;
+  const ids = readGroupedInventoryIds(gameData);
+  return ids.length > 0 ? ids : null;
+}
+
+/** 从同步包或 PveManager 缓存汇总玩家持有的 plot id，供失去战法名提示使用。 */
+export function mergeRogueInventoryPlotIds(payloads: readonly UnknownRecord[]): Array<string | number> | null {
+  const merged: Array<string | number> = [];
+  const seen = new Set<string>();
+  for (const payload of payloads) {
+    const part = collectRogueInventoryPlotIds(payload);
+    if (!part) continue;
+    for (const id of part) {
+      const key = String(id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(id);
+    }
+  }
+  return merged.length > 0 ? merged : null;
+}
+
+export function collectRogueInventoryPlotIds(payload: UnknownRecord): Array<string | number> | null {
+  const merged: Array<string | number> = [];
+  const seen = new Set<string>();
+  const allData = readRogueLikeAllData(payload) ?? asRecord(payload);
+  const shopData = allData
+    ? asRecord(allData.shopData) ?? asRecord(allData.ShopData)
+    : asRecord(resolveRogueLikeSyncBody(payload).shopData)
+      ?? asRecord(resolveRogueLikeSyncBody(payload).ShopData);
+  const candidates = [
+    resolveGameData(payload),
+    asRecord(allData),
+    shopData,
+    payload
+  ];
+  for (const record of candidates) {
+    if (!record) continue;
+    for (const id of readGroupedInventoryIds(record)) {
+      const key = String(id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(id);
+    }
+  }
+  return merged.length > 0 ? merged : null;
+}
+
+function readChapterLocationSignature(allData: UnknownRecord | null | undefined): string {
+  if (!allData) return '';
+  const chapter = asRecord(allData.chapterData) ?? asRecord(allData.ChapterData);
+  if (!chapter) return '';
+  const locations = asArray(chapter.locations ?? chapter.Locations);
+  return locations.map((entry) => {
+    const record = asRecord(entry) ?? {};
+    const cityId = record.location ?? record.Location ?? record.cityId ?? record.CityId;
+    const event = record.event ?? record.Event;
+    return `${cityId}:${event}`;
+  }).join(';');
+}
+
+/** 新开一局：赛季、章 id、对局种子。 */
+export function readRogueRunFingerprint(payload: UnknownRecord): string {
+  const body = resolveRogueLikeSyncBody(payload);
+  const runtime = extractRogueMapRuntime(body, EMPTY_ROGUE_MAP_RUNTIME);
+  const gameData = resolveGameData(body) ?? {};
+  const runToken = gameData.gameUID ?? gameData.GameUID ?? gameData.gameId ?? gameData.GameId;
+  const seedBlob = gameData.seedData ?? gameData.SeedData ?? gameData.seedItem ?? gameData.SeedItem;
+  const tail = runToken != null && runToken !== ''
+    ? String(runToken)
+    : JSON.stringify(seedBlob ?? '');
+  return [runtime.seasonId, runtime.chapterId, tail].join('|');
+}
+
+/** 地图城池事件组合；新开局布局不同，购买战法不改这一项。 */
+export function readRogueMapLayoutFingerprint(payload: UnknownRecord): string {
+  const allData = readRogueLikeAllData(resolveRogueLikeSyncBody(payload));
+  return readChapterLocationSignature(allData);
+}
+
+type RogueManagerLocator = Pick<LayaObjectLocator, 'manager' | 'findManagerByPredicate'>;
+
+function isRogueLikePveManager(manager: UnknownRecord): boolean {
+  return typeof manager.RogueLikeDataReq === 'function'
+    || typeof manager.decodeRogueLikeDataSync === 'function';
+}
+
+/** RogueLikePveManager 不是 window 全局量，需从协议监听者或 managerList 找回。 */
+export function findRogueLikePveManager(locator: RogueManagerLocator): UnknownRecord | null {
+  const direct = asRecord(locator.manager('RogueLikePveManager'));
+  if (direct) return direct;
+  return locator.findManagerByPredicate(isRogueLikePveManager);
+}
+
+/**
+ * 带缓存的山河管理器查找。找到后一直复用；找不到时隔一段时间才重扫，
+ * 大厅和普通对局里它一直不存在，每轮都扫全部事件监听会拖慢游戏。
+ */
+export function createRogueManagerLookup(
+  locator: RogueManagerLocator,
+  retryMs: number,
+  now: () => number = Date.now
+): { get(): UnknownRecord | null; peek(): UnknownRecord | null; reset(): void } {
+  let cached: UnknownRecord | null = null;
+  let lastMissAt = Number.NEGATIVE_INFINITY;
+  return {
+    get() {
+      if (cached && cached.destroyed !== true) return cached;
+      cached = null;
+      const direct = asRecord(locator.manager('RogueLikePveManager'));
+      if (direct) {
+        cached = direct;
+        return direct;
+      }
+      const time = now();
+      if (time - lastMissAt < retryMs) return null;
+      const found = locator.findManagerByPredicate(isRogueLikePveManager);
+      if (found) cached = found;
+      else lastMissAt = time;
+      return found;
+    },
+    peek() {
+      return cached;
+    },
+    reset() {
+      cached = null;
+      lastMissAt = Number.NEGATIVE_INFINITY;
+    }
+  };
+}
+
+export function collectRogueInventoryFromMapScene(
+  scene: UnknownRecord | null | undefined
+): Array<string | number> | null {
+  if (!scene) return null;
+  const nested = [
+    scene,
+    asRecord(scene.mapView),
+    asRecord(scene.MapView),
+    asRecord(scene.uiView),
+    asRecord(scene.UIView),
+    asRecord(scene.bottomView),
+    asRecord(scene.BottomView)
+  ].filter((entry): entry is UnknownRecord => Boolean(entry));
+  return mergeRogueInventoryPlotIds(nested);
+}
+
 export function extractRogueCitySpots(payload: UnknownRecord): RogueCitySpot[] | null {
   const allData = readRogueLikeAllData(payload);
   if (!allData) return null;
@@ -66,10 +294,10 @@ export function extractRogueCitySpots(payload: UnknownRecord): RogueCitySpot[] |
 }
 
 export function extractRogueMapRuntime(payload: UnknownRecord, previous: RogueMapRuntime): RogueMapRuntime {
-  const allData = readRogueLikeAllData(payload) ?? {};
+  const allData = readRogueLikeAllData(payload) ?? payload;
   const seasonData = asRecord(allData.seasonData) ?? asRecord(allData.SeasonData) ?? {};
   const chapterData = asRecord(allData.chapterData) ?? asRecord(allData.ChapterData) ?? {};
-  const gameData = asRecord(allData.gameData) ?? asRecord(allData.GameData) ?? {};
+  const gameData = resolveGameData(payload) ?? {};
   const seedData = asRecord(gameData.seedData) ?? asRecord(gameData.SeedData) ?? {};
   const difficulty = Number(seasonData.difficulty ?? seasonData.Difficulty);
   const seasonId = Number(seasonData.seasonId ?? seasonData.SeasonId ?? seasonData.seasonID);
@@ -83,21 +311,17 @@ export function extractRogueMapRuntime(payload: UnknownRecord, previous: RogueMa
     : Array.isArray(gameData.seedItem)
       ? gameData.seedItem
       : previous.seedItem;
-  const itemIds = Array.isArray(gameData.itemId) ? gameData.itemId : previous.itemIds;
+  const itemIds = collectRogueInventoryPlotIds(payload) ?? previous.itemIds;
   const eventData = asRecord(chapterData.curEventData) ?? asRecord(chapterData.CurEventData);
   const loseData = eventData?.loseData ?? eventData?.LoseData;
   const hasChapterData = allData.chapterData !== undefined || allData.ChapterData !== undefined;
-  const choiceLostResult = hasChapterData
-    ? Array.isArray(loseData) && loseData.length > 0
-      ? {
-          cityId: Number(chapterData.curLocation ?? chapterData.CurLocation),
-          effectId: Number(eventData?.eventId ?? eventData?.EventId),
-          itemIds: loseData.map((entry) => {
-            const item = asRecord(entry);
-            return item?.id ?? item?.Id;
-          }).filter((id): id is string | number => typeof id === 'string' || typeof id === 'number')
-        }
-      : null
+  const choiceLostResult = Array.isArray(loseData) && loseData.length > 0
+    ? {
+        cityId: Number(chapterData.curLocation ?? chapterData.CurLocation),
+        effectId: Number(eventData?.eventId ?? eventData?.EventId),
+        itemIds: loseData.map((entry) => normalizePlotInventoryId(entry))
+          .filter((id): id is string | number => id !== null)
+      }
     : previous.choiceLostResult;
   return {
     difficulty: Number.isFinite(difficulty) ? difficulty : previous.difficulty,

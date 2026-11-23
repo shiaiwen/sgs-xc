@@ -46,7 +46,7 @@ export function runSeatEquipMethod(
   return original.apply(thisArg, args);
 }
 
-/** 跨 patcher 识别包装函数；HMR 重装时剥到真实原方法再替换，禁止套娃 */
+/** 跨 patcher 识别包装函数；重复安装时剥到真实原方法再替换，禁止套娃 */
 const XC_METHOD_WRAP = Symbol.for('sgsxc.methodPatch.wrap');
 const XC_METHOD_ORIGINAL = Symbol.for('sgsxc.methodPatch.original');
 

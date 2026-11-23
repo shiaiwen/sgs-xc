@@ -67,6 +67,7 @@ export interface XiaochaoConfig {
   'autoTask.skipMail': boolean;
   'autoTask.skipDailyGeneralBag': boolean;
   'autoTask.skipSignTrialCard': boolean;
+  'autoTask.skipWyqjExperienceCard': boolean;
   'autoTask.skipDiJiaQuan': boolean;
   'autoTask.skipHuanLeDou': boolean;
   'autoTask.skipFreeBless': boolean;
@@ -250,6 +251,7 @@ export const CONFIG_SCHEMA: {
   'autoTask.skipMail': booleanDefinition(true, 'AUTO_TASK_SKIP_MAIL'),
   'autoTask.skipDailyGeneralBag': booleanDefinition(true, 'AUTO_TASK_SKIP_DAILY_WU_JIANG'),
   'autoTask.skipSignTrialCard': booleanDefinition(true, 'AUTO_SIGN_SKIP_SWITCH'),
+  'autoTask.skipWyqjExperienceCard': booleanDefinition(true),
   'autoTask.skipDiJiaQuan': booleanDefinition(true, 'AUTO_TASK_SKIP_DI_JIA_QUAN'),
   'autoTask.skipHuanLeDou': booleanDefinition(true, 'AUTO_TASK_SKIP_HUAN_LE_DOU'),
   'autoTask.skipFreeBless': booleanDefinition(true),

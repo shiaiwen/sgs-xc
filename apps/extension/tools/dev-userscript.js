@@ -42,14 +42,12 @@ const loaderUrl = `http://127.0.0.1:${INSTALL_HTTP_PORT}${USERSCRIPT_DEV_LOADER_
 const guideUrl = `https://127.0.0.1:${DEV_PORT}/userscript-simple`;
 
 console.log('\n【油猴开发 · 本地加载】');
-console.log('改代码保存后终端出现 built，游戏页会自己刷新，刷新后就是最新代码，不用在油猴里点更新。');
+console.log('改代码保存后终端出现 built，手动刷新游戏页即可加载最新代码。');
 console.log('第一次用时做一遍：');
 console.log('  1. 浏览器打开 chrome://extensions，点开油猴的「详细信息」，打开「允许访问文件网址」');
 console.log('  2. 油猴里删掉或关掉其它小抄脚本，包括线上的「三国杀小抄」和旧的「dev:三国杀小抄」');
 console.log(`  3. 打开 ${loaderUrl} ，在油猴页面点安装，装上「${USERSCRIPT_DEV_LOADER_NAME}」`);
-console.log(`  4. 打开 ${guideUrl} ，信任证书，游戏页才读得到构建号`);
-console.log('游戏页控制台应出现「自动刷新已监听构建号」；异常时看 __XIAOCHAO_STARTUP__.devReload');
-console.log('若要关掉自动刷新：游戏页 localStorage.xcDevAutoReload="0" 后 F5。\n');
+console.log(`  4. 打开 ${guideUrl} ，信任证书\n`);
 
 const accountServerPlan = await planLocalAccountServer(root);
 const accountServer = accountServerPlan

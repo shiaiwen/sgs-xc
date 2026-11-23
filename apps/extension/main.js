@@ -7,7 +7,7 @@
  * - 注册 IPC（窗口控制、共享设置、凭证、本地脚本读取、外链等）；
  * - Steam 渠道时初始化 steamworks 与微交易回调；
  * - 正式包启用 electron-updater 自动更新；
- * - 开发时监视 dist/electron/xiaochao.js 变更并通知渲染进程热重载。
+ * - 开发时监视 dist/electron/xiaochao.js 变更并清空脚本缓存，刷新游戏页后加载新构建。
  *
  * 本地脚本注入由 preload（electron_frame.js）通过 read-local-script 完成；
  * 网络层壁纸/贴图替换见 interceptor.js。
@@ -859,9 +859,11 @@ function readLocalScriptCached() {
 /** 监视开发产物 xiaochao.js，变更后清缓存；游戏页由玩家主动刷新。 */
 function startDevelopmentScriptWatcher() {
     if (developmentScriptWatcher) return;
-    if (!fs.existsSync(developmentScriptPath)) return;
+    if (process.env.XC_ELECTRON_DEV !== '1' && !fs.existsSync(developmentScriptPath)) return;
     try {
-        developmentScriptWatcher = fs.watch(path.dirname(developmentScriptPath), (eventType, filename) => {
+        const outputDirectory = path.dirname(developmentScriptPath);
+        fs.mkdirSync(outputDirectory, { recursive: true });
+        developmentScriptWatcher = fs.watch(outputDirectory, (eventType, filename) => {
             if (!filename || String(filename).toLowerCase() !== 'xiaochao.js') return;
             clearTimeout(developmentReloadTimer);
             developmentReloadTimer = setTimeout(() => {

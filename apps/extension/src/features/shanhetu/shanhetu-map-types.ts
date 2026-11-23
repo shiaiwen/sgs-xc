@@ -32,6 +32,8 @@ export interface RogueFightMeta {
   get?: string;
   lost?: string;
   fight?: string;
+  /** 开战前武将组原人数，用于 RnumGrow 缩放；与参考脚本 baseGenerals 对齐。 */
+  baseGenerals?: unknown[];
   generals?: unknown[];
   isSingle?: unknown;
   event?: string | number;

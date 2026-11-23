@@ -6,7 +6,8 @@
  * 同一领取用 claims 限流，避免窗口没关时重复请求。
  */
 
-import type { LayaObjectLocator } from '../../adapters/laya-object-locator.ts';
+import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-object-locator.ts';
+import { readUserDataSelf } from '../../runtime/game-account-session.ts';
 import type { MethodPatcher } from '../../runtime/method-patch.ts';
 import type { TaskScope } from '../skin-background/skin-runtime.ts';
 import { beijingDate, type AutoTaskClaims } from './auto-task-claims.ts';
@@ -36,6 +37,17 @@ import {
   type TaskManagerAccess,
   type TaskRuleContext
 } from './auto-task-rules.ts';
+import {
+  WYQJ_TRIAL_CARD_AFTER_SYNC_MS,
+  WYQJ_TRIAL_CARD_RETRY_DELAY_MS,
+  WYQJ_TRIAL_CARD_RETRY_MAX,
+  WYQJ_TRIAL_CARD_OPEN_WINDOW_MS,
+  WYQJ_TRIAL_CARD_DEFAULT_SEND_LIMIT,
+  WYQJ_TRIAL_VIEW_CLASS_NAMES,
+  WYQJ_VIEW_CELL_SCAN_MAX,
+  WYQJ_VIEW_DISPLAY_SCAN_MAX,
+  TASK_MAIN_CONFIG_FILE_NAME
+} from '../../const/wyqj-trial-card.ts';
 import type { AutoTaskSkipKey } from './auto-task-settings.ts';
 import type { AutoTaskWindows } from './auto-task-windows.ts';
 
@@ -55,6 +67,7 @@ export interface AutoTaskOptions {
   skipMail: boolean;
   skipDailyGeneralBag: boolean;
   skipSignTrialCard: boolean;
+  skipWyqjExperienceCard: boolean;
   skipDiJiaQuan: boolean;
   skipHuanLeDou: boolean;
   skipFreeBless: boolean;
@@ -160,6 +173,8 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
   let mailRunning = false;
   let generalBagTimerArmed = false;
   let goodsConfigLookup: ((id: unknown) => unknown) | null | undefined;
+  /** 取消上一轮体验卡重试，避免多轮自动领取叠很多延时任务。 */
+  let wyqjTrialClaimRunId = 0;
 
   const delay = (ms: number) => new Promise<void>((resolve) => tasks.later(resolve, ms));
   const active = () => !tasks.disposed && deps.enabled();
@@ -493,6 +508,11 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
         if (await requestTaskClaim(access, id, task, context)) await delay(600);
       }
     }
+    const activity = manager('ActivityManager');
+    if (taskManager && activity && !options.skipWyqjExperienceCard) {
+      await prepareWyqjTrialClaim(taskManager);
+      if (active()) claimWyqjTrialCard(activity, taskManager);
+    }
   }
 
   // ---------- 活动 ----------
@@ -644,20 +664,671 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     return run;
   }
 
-  function claimWyqjTrialCard(activity: UnknownRecord, taskManager: UnknownRecord): void {
-    if (!taskManager.canGetWYQJCard || !resolveMethod(activity, 'ActivityManager', 'SendGetWyqjTiyanCardReq')) return;
-    let generalIds: number[] = [];
+  async function prepareWyqjTrialClaim(taskManager: UnknownRecord): Promise<void> {
+    await refreshTaskListFromServer(taskManager, 'TaskManager');
+    if (!active()) return;
+    syncWyqjTrialFromActivity(manager('ActivityManager'));
+    refreshWyqjTrialCanGetMarker(taskManager);
+    await delay(WYQJ_TRIAL_CARD_AFTER_SYNC_MS);
+  }
+
+  function refreshWyqjTrialCanGetMarker(taskManager: UnknownRecord): void {
+    const lastExperienceTime = Number(
+      taskManager.want_strong_general_experience_time
+        ?? taskManager.wantStrongGeneralExperienceTime
+        ?? 0
+    );
     try {
-      const view = windows.get('WyqjSmallView', { NeedLevel: 0 });
-      const items = Array.isArray(view?.items) ? view.items as UnknownRecord[] : [];
-      generalIds = items.map((item) => Number(asRecord(item?.vo)?.generalId || 0)).filter((id) => id > 0);
+      taskManager.setWyqjTaskAwardShowRed = lastExperienceTime;
     } catch {
-      generalIds = [];
+      // 主章节信息未到齐时由后续重试再读红点。
+    }
+  }
+
+  /** 领取成功后立刻消红点：把 want_strong_general_experience_time 置成今天（秒）再触发红点重算。 */
+  function forceClearWyqjRedDot(taskManager: UnknownRecord): void {
+    try {
+      // 游戏红点 = !IsSameDay(LocalServerTime, want_strong_general_experience_time + TimezoneOffset)。
+      // 取服务端本地时间并回退时区偏移，使等式成立、红点消失。
+      const timeMgr = locator.findManagerByPredicate((item) => typeof (item as UnknownRecord)?.LocalServerTime === 'number');
+      const localServerTime = Number((timeMgr as UnknownRecord | null)?.LocalServerTime ?? Math.floor(Date.now() / 1000));
+      const offset = Number((timeMgr as UnknownRecord | null)?.TimezoneStaticOffsetSec ?? 0);
+      taskManager.want_strong_general_experience_time = localServerTime - offset;
+    } catch {
+      try {
+        taskManager.want_strong_general_experience_time = Math.floor(Date.now() / 1000);
+      } catch {
+        // 字段不可写时退回只刷新标记。
+      }
+    }
+    refreshWyqjTrialCanGetMarker(taskManager);
+  }
+
+  function taskManagerAllowsWyqjTrialCard(taskManager: UnknownRecord): boolean {
+    try {
+      const fromGetter = taskManager.getWyqjTaskAwardShowRed;
+      if (typeof fromGetter === 'boolean') return fromGetter;
+    } catch {
+      // 未挂载 getter 时走字段兜底。
+    }
+    const prototype = locator.classPrototype('TaskManager');
+    return Boolean(taskManager.canGetWYQJCard ?? prototype?.canGetWYQJCard);
+  }
+
+  function pushWyqjGeneralId(generalId: number, ids: number[], seen: Set<number>): void {
+    if (generalId > 0 && !seen.has(generalId)) {
+      seen.add(generalId);
+      ids.push(generalId);
+    }
+  }
+
+  function gameHasOwnedGeneral(generalId: number): boolean | null {
+    const generalManager = manager('GameGeneralManager');
+    if (typeof generalManager?.HasGeneral !== 'function') return null;
+    try {
+      return Boolean((generalManager.HasGeneral as (id: number) => boolean).call(generalManager, generalId));
+    } catch {
+      return null;
+    }
+  }
+
+  /** 强将列表子视图：右上角「武将体验」按钮绑定 onClickTiYanBtn。 */
+  function looksLikeWyqjSmallListView(view: UnknownRecord): boolean {
+    return typeof view.onClickTiYanBtn === 'function'
+      && Array.isArray(view.allDatas)
+      && view.tiyanBtn !== undefined;
+  }
+
+  function wyqjExperienceButtonReady(view: UnknownRecord): boolean {
+    const button = asRecord(view.tiyanBtn);
+    if (!button) return false;
+    if (button.visible === false) return false;
+    if (button.enabled === false) return false;
+    return true;
+  }
+
+  function looksLikeWyqjBigListView(view: UnknownRecord): boolean {
+    return typeof view.getTabInfo === 'function' && view.viewStack !== undefined;
+  }
+
+  function collectWyqjTrialIdsLikeGameButton(allDatas: unknown[]): number[] {
+    const limit = readWyqjTrialSendLimit();
+    const ids: number[] = [];
+    const seen = new Set<number>();
+    for (let index = 0; index < allDatas.length && ids.length < limit; index += 1) {
+      const generalId = Number(asRecord(allDatas[index])?.GeneralId ?? asRecord(allDatas[index])?.generalId ?? 0);
+      if (!(generalId > 0) || seen.has(generalId)) continue;
+      const owned = gameHasOwnedGeneral(generalId);
+      if (owned === true) continue;
+      seen.add(generalId);
+      ids.push(generalId);
+    }
+    return ids;
+  }
+
+  function inTableGameplay(): boolean {
+    return Boolean(locator.gameScene());
+  }
+
+  function wyqjTrialClaimStillCurrent(runId: number): boolean {
+    return runId === wyqjTrialClaimRunId && active() && !deps.options().skipWyqjExperienceCard;
+  }
+
+  function scanWyqjSmallListViews(): UnknownRecord[] {
+    const found: UnknownRecord[] = [];
+    const seenNode = new Set<unknown>();
+    const roots: UnknownRecord[] = [];
+    const layaStage = asRecord(
+      typeof window !== 'undefined'
+        ? (window as { Laya?: { stage?: unknown } }).Laya?.stage
+        : null
+    );
+    if (layaStage) roots.push(layaStage);
+    const windowLayer = locator.layer('WindowLayer');
+    if (windowLayer && windowLayer !== layaStage) roots.push(windowLayer);
+    const pushRoot = (view: UnknownRecord | null | undefined) => {
+      if (view && !view.destroyed) roots.push(view);
+    };
+    pushRoot(windows.opened('TaskWindow'));
+    pushRoot(locator.window('TaskWindow'));
+    pushRoot(windows.opened('WyqjBigView'));
+    for (const view of locator.findWindows('TaskWindow')) pushRoot(view);
+
+    const stack: UnknownRecord[] = [...roots];
+    let scanned = 0;
+    while (stack.length > 0 && scanned < WYQJ_VIEW_DISPLAY_SCAN_MAX) {
+      const node = stack.pop();
+      if (!node || node.destroyed || seenNode.has(node)) continue;
+      seenNode.add(node);
+      scanned += 1;
+      if (looksLikeWyqjSmallListView(node) && node.allDatas.length > 0) found.push(node);
+
+      const count = Number(node.numChildren ?? 0);
+      const getChildAt = node.getChildAt;
+      if (Number.isInteger(count) && typeof getChildAt === 'function') {
+        for (let index = 0; index < count; index += 1) {
+          const child = asRecord(getChildAt.call(node, index));
+          if (child) stack.push(child);
+        }
+      }
+      for (const key of Object.keys(node)) {
+        if (key === 'constructor' || key === 'parent' || key === 'scene') continue;
+        const value = node[key];
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            const record = asRecord(item);
+            if (record && !record.destroyed) stack.push(record);
+          }
+          continue;
+        }
+        const nested = asRecord(value);
+        if (nested && !nested.destroyed) stack.push(nested);
+      }
+    }
+    return found;
+  }
+
+  function pushWyqjGeneralIdsFromList(list: unknown, ids: number[], seen: Set<number>): void {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      const record = asRecord(asRecord(item)?.vo) ?? asRecord(item);
+      pushWyqjGeneralId(Number(record?.generalId ?? record?.GeneralId ?? 0), ids, seen);
+    }
+  }
+
+  function scanWyqjViewDisplayTree(view: UnknownRecord, ids: number[], seen: Set<number>): void {
+    const stack: UnknownRecord[] = [view];
+    let scanned = 0;
+    while (stack.length > 0 && scanned < WYQJ_VIEW_CELL_SCAN_MAX) {
+      const node = stack.pop();
+      if (!node || node.destroyed) continue;
+      scanned += 1;
+      const vo = asRecord(node.vo);
+      if (vo) pushWyqjGeneralId(Number(vo.generalId ?? vo.GeneralID ?? 0), ids, seen);
+      const count = Number(node.numChildren ?? 0);
+      const getChildAt = node.getChildAt;
+      if (!Number.isInteger(count) || typeof getChildAt !== 'function') continue;
+      for (let index = 0; index < count; index += 1) {
+        const child = asRecord(getChildAt.call(node, index));
+        if (child) stack.push(child);
+      }
+    }
+  }
+
+  function locateTaskMainConfig(): UnknownRecord | null {
+    const matchesTaskMain = (item: UnknownRecord) => {
+      if (item.FileName === TASK_MAIN_CONFIG_FILE_NAME) return true;
+      const vos = asRecord(item.StrongGeneralVos);
+      if (!vos || typeof vos !== 'object') return false;
+      return typeof item.InitTaskData === 'function'
+        || typeof item.InitLevelReward === 'function'
+        || 'StrongGeneralNum' in item;
+    };
+    return locator.managerFromList(matchesTaskMain)
+      ?? locator.findManagerByPredicate(matchesTaskMain);
+  }
+
+  function readStrongGeneralTabEntries(vos: UnknownRecord, tabIndex = 0): unknown[] | null {
+    const keys = vos.keys;
+    if (Array.isArray(keys) && keys.length > tabIndex) {
+      const key = keys[tabIndex];
+      const get = vos.get;
+      const getNumberKey = vos.getNumberKey;
+      let entries: unknown = typeof get === 'function' ? get.call(vos, key) : vos[key as string];
+      if (!Array.isArray(entries) && typeof getNumberKey === 'function') {
+        entries = getNumberKey.call(vos, key);
+      }
+      if (Array.isArray(entries) && entries.length > 0) return entries;
+    }
+    let first: unknown[] | null = null;
+    forEachStrongGeneralTab(vos, (entries) => {
+      if (!first?.length && entries.length > 0) first = entries;
+    });
+    return first;
+  }
+
+  function forEachStrongGeneralTab(
+    vos: UnknownRecord,
+    visit: (entries: unknown[]) => void
+  ): void {
+    const forEach = vos.forEach;
+    if (typeof forEach === 'function') {
+      try {
+        forEach.call(vos, (entries: unknown) => {
+          if (Array.isArray(entries)) visit(entries);
+        });
+        return;
+      } catch {
+        // 换 keys 遍历。
+      }
+    }
+    const keys = vos.keys;
+    if (!Array.isArray(keys)) return;
+    const get = vos.get;
+    const getNumberKey = vos.getNumberKey;
+    for (const key of keys) {
+      let entries: unknown = typeof get === 'function' ? get.call(vos, key) : vos[key as string];
+      if (!Array.isArray(entries) && typeof getNumberKey === 'function') {
+        entries = getNumberKey.call(vos, key);
+      }
+      if (Array.isArray(entries)) visit(entries);
+    }
+  }
+
+  function readWyqjTrialSendLimit(): number {
+    const config = locateTaskMainConfig();
+    const limit = Number(config?.StrongGeneralNum ?? 0);
+    if (Number.isFinite(limit) && limit > 0) return limit;
+    return WYQJ_TRIAL_CARD_DEFAULT_SEND_LIMIT;
+  }
+
+  function isWyqjNodeVisible(view: UnknownRecord): boolean {
+    let node: UnknownRecord | null = view;
+    while (node) {
+      if (node.visible === false) return false;
+      node = asRecord(node.parent);
+    }
+    return view.visible !== false;
+  }
+
+  function wyqjSmallViewFromViewStack(stack: UnknownRecord | null): UnknownRecord | null {
+    if (!stack) return null;
+    const selected = asRecord(stack.selectedChild);
+    if (selected && looksLikeWyqjSmallListView(selected) && Array.isArray(selected.allDatas) && selected.allDatas.length) {
+      return selected;
+    }
+    const index = Number(stack.selectedIndex ?? stack.selectedChildIndex ?? -1);
+    const dataList = stack.childInitDataList;
+    const childList = stack.childList;
+    if (
+      Number.isInteger(index)
+      && index >= 0
+      && Array.isArray(dataList)
+      && Array.isArray(childList)
+      && String(childList[index] ?? '').includes('WyqjSmall')
+      && Array.isArray(dataList[index])
+      && dataList[index].length > 0
+    ) {
+      const active = selected;
+      if (active && looksLikeWyqjSmallListView(active)) return active;
+    }
+    return null;
+  }
+
+  function resolveWyqjSmallFromTaskWindow(): UnknownRecord | null {
+    const task = windows.opened('TaskWindow') ?? locator.window('TaskWindow');
+    if (!task || task.destroyed) return null;
+    const outerStack = asRecord(task.viewStack);
+    let big = asRecord(outerStack?.selectedChild);
+    if (!big || !looksLikeWyqjBigListView(big)) {
+      const index = Number(outerStack?.selectedIndex ?? -1);
+      const childList = outerStack?.childList;
+      if (Array.isArray(childList) && index >= 0 && String(childList[index] ?? '').includes('WyqjBig')) {
+        big = asRecord(outerStack?.selectedChild);
+      }
+    }
+    if (!big || !looksLikeWyqjBigListView(big)) return null;
+    return wyqjSmallViewFromViewStack(asRecord(big.viewStack));
+  }
+
+  function readActiveWyqjSmallListView(): UnknownRecord | null {
+    const fromTask = resolveWyqjSmallFromTaskWindow();
+    if (fromTask) return fromTask;
+
+    // 一次同步调用里显示树不会变，扫一遍复用即可，避免反复全树遍历。
+    const scanned = scanWyqjSmallListViews();
+    const visible = scanned.filter((view) => {
+      if (!Array.isArray(view.allDatas) || !view.allDatas.length) return false;
+      return isWyqjNodeVisible(view);
+    });
+    if (visible.length === 1) return visible[0];
+    if (visible.length > 1) {
+      for (const view of visible) {
+        const button = asRecord(view.tiyanBtn);
+        if (button && button.visible !== false) return view;
+      }
+      return visible[0];
+    }
+
+    for (const view of scanned) {
+      if (Array.isArray(view.allDatas) && view.allDatas.length) return view;
+    }
+    return null;
+  }
+
+  function readPrimaryWyqjTabAllDatas(): unknown[] | null {
+    const active = readActiveWyqjSmallListView();
+    if (active && Array.isArray(active.allDatas) && active.allDatas.length) return active.allDatas;
+
+    let bigView: UnknownRecord | null = null;
+    try {
+      bigView = windows.get('WyqjBigView');
+      if (!bigView) {
+        console.warn('[自动领取][体验卡] 离屏 WyqjBigView 创建失败');
+        return null;
+      }
+      const getTabInfo = bigView.getTabInfo;
+      if (typeof getTabInfo !== 'function') {
+        console.warn('[自动领取][体验卡] WyqjBigView 没有 getTabInfo');
+        return null;
+      }
+      try {
+        getTabInfo.call(bigView);
+      } catch (error) {
+        console.warn('[自动领取][体验卡] getTabInfo 抛错:', error);
+        return null;
+      }
+      const stack = asRecord(bigView.viewStack);
+      const fromStack = wyqjSmallViewFromViewStack(stack);
+      if (fromStack && Array.isArray(fromStack.allDatas) && fromStack.allDatas.length) return fromStack.allDatas;
+      const dataList = stack?.childInitDataList;
+      const childList = stack?.childList;
+      if (Array.isArray(dataList) && Array.isArray(childList)) {
+        // 每日体验卡是「WyqjSmallView」标签；getTabInfo 会 ResetSelectedIndex，selectedIndex 可能是 -1，不能依赖。
+        const wyqjTabIndex = childList.findIndex((name) => String(name ?? '').includes('WyqjSmall'));
+        const tab = dataList[wyqjTabIndex >= 0 ? wyqjTabIndex : 0];
+        if (Array.isArray(tab) && tab.length) return tab;
+        console.warn('[自动领取][体验卡] childInitDataList 没取到');
+      }
+      const voDic = asRecord(bigView.voDic);
+      if (voDic) {
+        const entries = readStrongGeneralTabEntries(voDic, 0);
+        if (entries?.length) return entries;
+        console.warn('[自动领取][体验卡] voDic 读不到条目');
+      }
+    } finally {
+      windows.release('WyqjBigView');
+    }
+    const vos = asRecord(locateTaskMainConfig()?.StrongGeneralVos);
+    if (vos) return readStrongGeneralTabEntries(vos, 0);
+    return null;
+  }
+
+  /** 不开任务窗口时，把离屏读到的体验列表塞给离屏 WyqjSmallView，直接调游戏自己的「武将体验」点击逻辑发协议。 */
+  async function simulateWyqjTrialClick(): Promise<boolean> {
+    // 离屏读配置可能第一次不中就绪，短重试几次。
+    let tab: unknown[] | null = null;
+    for (let readAttempt = 0; readAttempt < 3 && !tab?.length; readAttempt += 1) {
+      tab = readPrimaryWyqjTabAllDatas();
+      if (!tab?.length && readAttempt < 2) await delay(600);
+    }
+    if (!tab?.length) {
+      console.warn('[自动领取][体验卡] 模拟点击: 体验列表为空');
+      return false;
+    }
+    const view = windows.get('WyqjSmallView', null);
+    if (!view) {
+      console.warn('[自动领取][体验卡] 模拟点击: 离屏 WyqjSmallView 创建失败');
+      return false;
+    }
+    if (typeof view.onClickTiYanBtn !== 'function') {
+      console.warn('[自动领取][体验卡] 模拟点击: onClickTiYanBtn 不是函数');
+      windows.release('WyqjSmallView');
+      return false;
+    }
+    try {
+      view.allDatas = tab;
+      view.onClickTiYanBtn();
+      return true;
+    } catch (error) {
+      console.warn('[自动领取][体验卡] 模拟点击失败:', error);
+      return false;
     } finally {
       windows.release('WyqjSmallView');
     }
+  }
+
+  /** 等同手动点强将页右上角「武将体验」，内部会组 general_list 并发协议。 */
+  function clickWyqjGeneralExperienceButton(): boolean {
+    const view = readActiveWyqjSmallListView();
+    if (!view || !wyqjExperienceButtonReady(view)) return false;
+    const click = view.onClickTiYanBtn;
+    if (typeof click !== 'function') return false;
+    try {
+      click.call(view);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function sendWyqjTrialLikeExperienceButton(activity: UnknownRecord, view: UnknownRecord): boolean {
+    const allDatas = view.allDatas;
+    if (!Array.isArray(allDatas) || !allDatas.length) return false;
+    const generalIds = collectWyqjTrialIdsLikeGameButton(allDatas);
+    if (!generalIds.length) return false;
+    sendWyqjTrialCardRequest(activity, generalIds);
+    return true;
+  }
+
+  function pushWyqjGeneralIdsFromView(view: UnknownRecord, ids: number[], seen: Set<number>): void {
+    for (const key of ['allDatas', 'nowDatas', 'items', 'itemList', 'list', 'dataList', 'data', 'generalList', 'cells']) {
+      pushWyqjGeneralIdsFromList(view[key], ids, seen);
+    }
+    const viewRecord = asRecord(view.vo) ?? view;
+    pushWyqjGeneralId(Number(viewRecord.generalId ?? viewRecord.GeneralID ?? 0), ids, seen);
+    scanWyqjViewDisplayTree(view, ids, seen);
+  }
+
+  function syncWyqjTrialFromActivity(activity: UnknownRecord | null): void {
+    if (!activity) return;
+    for (const key of Object.keys(activity)) {
+      if (!/wyqj|WYQJ|wantstrong|want_strong/i.test(key) || typeof activity[key] !== 'function') continue;
+      const name = key.toLowerCase();
+      if (!/(send|req|get|sync|info|data)/i.test(name)) continue;
+      try {
+        (activity[key] as () => void).call(activity);
+      } catch {
+        // 同步失败时继续尝试从已有界面读武将。
+      }
+    }
+  }
+
+  function ingestWyqjViewRoots(
+    view: UnknownRecord | null | undefined,
+    ingest: (candidate: UnknownRecord) => void,
+    seen: Set<unknown>
+  ): void {
+    if (!view || view.destroyed || seen.has(view)) return;
+    seen.add(view);
+    ingest(view);
+    const constructorName = String(asRecord(view.constructor)?.name ?? '');
+    const nodeName = String(view.name ?? '');
+    if (
+      looksLikeWyqjSmallListView(view)
+      || looksLikeWyqjBigListView(view)
+      || constructorName.includes('Wyqj')
+      || nodeName.includes('TaskWindow')
+      || constructorName === 'TaskWindow'
+    ) {
+      for (const key of Object.keys(view)) {
+        if (!/wyqj|small|big|item|list|cell|general|viewstack|stack|content|child|panel/i.test(key)) continue;
+        const nested = asRecord(view[key]);
+        if (nested && !nested.destroyed && typeof nested === 'object') ingest(nested);
+      }
+    }
+  }
+
+  function collectWyqjViewsFromDisplayTree(): UnknownRecord[] {
+    const layer = locator.layer('WindowLayer');
+    if (!layer) return [];
+    const classNames = new Set<string>(WYQJ_TRIAL_VIEW_CLASS_NAMES);
+    const found: UnknownRecord[] = [];
+    const stack: UnknownRecord[] = [layer];
+    let scanned = 0;
+    while (stack.length > 0 && scanned < WYQJ_VIEW_DISPLAY_SCAN_MAX) {
+      const node = stack.pop();
+      if (!node || node.destroyed) continue;
+      scanned += 1;
+      const constructorName = String(asRecord(node.constructor)?.name ?? '');
+      const nodeName = String(node.name ?? '');
+      if (
+        classNames.has(constructorName)
+        || classNames.has(nodeName)
+        || looksLikeWyqjSmallListView(node)
+        || looksLikeWyqjBigListView(node)
+      ) {
+        found.push(node);
+      }
+      const count = Number(node.numChildren ?? 0);
+      const getChildAt = node.getChildAt;
+      if (!Number.isInteger(count) || typeof getChildAt !== 'function') continue;
+      for (let index = 0; index < count; index += 1) {
+        const child = asRecord(getChildAt.call(node, index));
+        if (child) stack.push(child);
+      }
+    }
+    return found;
+  }
+
+  function collectWyqjGeneralIdFromTaskManager(taskManager: UnknownRecord): number[] {
+    const ids: number[] = [];
+    const seen = new Set<number>();
+    for (const key of Object.keys(taskManager)) {
+      if (!/wyqj|WYQJ|tiyan|Tiyan|experience.*card/i.test(key)) continue;
+      const value = taskManager[key];
+      if (typeof value === 'number' || typeof value === 'string') {
+        pushWyqjGeneralId(Number(value), ids, seen);
+        continue;
+      }
+      const record = asRecord(value);
+      if (!record) continue;
+      pushWyqjGeneralId(Number(record.generalId ?? record.GeneralID ?? 0), ids, seen);
+    }
+    return ids;
+  }
+
+  function collectWyqjGeneralIdFromActivity(activity: UnknownRecord): number[] {
+    const ids: number[] = [];
+    const seen = new Set<number>();
+    for (const key of Object.keys(activity)) {
+      if (!/wyqj|WYQJ|tiyan|Tiyan/i.test(key)) continue;
+      const value = activity[key];
+      if (typeof value === 'number' || typeof value === 'string') {
+        pushWyqjGeneralId(Number(value), ids, seen);
+        continue;
+      }
+      const record = asRecord(value);
+      if (!record) continue;
+      pushWyqjGeneralId(Number(record.generalId ?? record.GeneralID ?? 0), ids, seen);
+      if (Array.isArray(record.list)) pushWyqjGeneralIdsFromList(record.list, ids, seen);
+    }
+    return ids;
+  }
+
+  async function warmWyqjBigViewTabData(): Promise<void> {
+    let bigView: UnknownRecord | null = null;
+    try {
+      bigView = windows.get('WyqjBigView');
+      if (!bigView) return;
+      const getTabInfo = bigView.getTabInfo;
+      if (typeof getTabInfo === 'function') {
+        try {
+          getTabInfo.call(bigView);
+        } catch {
+          // 表未就绪时由重试流程再试。
+        }
+      }
+      await delay(WYQJ_TRIAL_CARD_OPEN_WINDOW_MS);
+    } finally {
+      windows.release('WyqjBigView');
+    }
+  }
+
+  function sendWyqjTrialCardRequest(activity: UnknownRecord, generalIds: number[]): void {
     if (!generalIds.length) return;
-    claims.throttled('activity:wyqj:card', () => invoke(activity, 'ActivityManager', 'SendGetWyqjTiyanCardReq', [generalIds[0]]));
+    const resolved = resolveMethod(activity, 'ActivityManager', 'SendGetWyqjTiyanCardReq');
+    if (resolved) {
+      resolved.call(activity, generalIds);
+      return;
+    }
+    if (typeof activity.SendGetWyqjTiyanCardReq === 'function') {
+      call(activity, 'SendGetWyqjTiyanCardReq', generalIds);
+    }
+  }
+
+  async function runWyqjTrialClaim(
+    activity: UnknownRecord,
+    taskManager: UnknownRecord,
+    attempt = 0,
+    runId = wyqjTrialClaimRunId
+  ): Promise<void> {
+    if (!wyqjTrialClaimStillCurrent(runId)) return;
+    if (inTableGameplay()) return;
+    const canSend = resolveMethod(activity, 'ActivityManager', 'SendGetWyqjTiyanCardReq')
+      ?? (typeof activity.SendGetWyqjTiyanCardReq === 'function' ? activity.SendGetWyqjTiyanCardReq : null);
+    if (!canSend) {
+      console.warn('[自动领取] 每日体验卡未触发: 没找到游戏的领取方法');
+      return;
+    }
+
+    const markerAllowsClaim = taskManagerAllowsWyqjTrialCard(taskManager);
+    const taskWindowOpen = Boolean(windows.opened('TaskWindow'));
+
+    if (clickWyqjGeneralExperienceButton()) return;
+
+    const activeView = readActiveWyqjSmallListView();
+    if (activeView && wyqjExperienceButtonReady(activeView) && sendWyqjTrialLikeExperienceButton(activity, activeView)) {
+      return;
+    }
+
+    if (attempt < WYQJ_TRIAL_CARD_RETRY_MAX && taskWindowOpen) {
+      await warmWyqjBigViewTabData();
+      if (!wyqjTrialClaimStillCurrent(runId) || inTableGameplay()) return;
+      if (clickWyqjGeneralExperienceButton()) return;
+      const viewAfterWarm = readActiveWyqjSmallListView();
+      if (viewAfterWarm && wyqjExperienceButtonReady(viewAfterWarm) && sendWyqjTrialLikeExperienceButton(activity, viewAfterWarm)) {
+        return;
+      }
+    }
+
+    if (!markerAllowsClaim) {
+      console.info('[自动领取] 每日体验卡: 游戏记录今天不能领，跳过');
+      return;
+    }
+
+    // 按游戏自己的逻辑：离屏 WyqjSmallView 调 onClickTiYanBtn（模拟点「武将体验」图标），
+    // 游戏内部会按 StrongGeneralNum 限数量，避免直发组错数量被服务端拒「不符合领取条件」。
+    if (await simulateWyqjTrialClick()) {
+      console.info('[自动领取] 每日体验卡: 已通过模拟点击领取');
+      // 领取成功后立刻把红点消掉：置今天的时间戳再触发 setWyqjTaskAwardShowRed 重算。
+      forceClearWyqjRedDot(taskManager);
+      return;
+    }
+
+    // 数据/视图可能还没就绪，短重试。
+    if (attempt < WYQJ_TRIAL_CARD_RETRY_MAX) {
+      tasks.later(() => {
+        void (async () => {
+          if (!wyqjTrialClaimStillCurrent(runId) || inTableGameplay()) return;
+          const freshActivity = manager('ActivityManager');
+          const freshTaskManager = manager('TaskManager');
+          if (!freshActivity || !freshTaskManager) return;
+          await prepareWyqjTrialClaim(freshTaskManager);
+          if (!wyqjTrialClaimStillCurrent(runId) || inTableGameplay()) return;
+          await runWyqjTrialClaim(freshActivity, freshTaskManager, attempt + 1, runId);
+        })();
+      }, WYQJ_TRIAL_CARD_RETRY_DELAY_MS);
+      return;
+    }
+
+    console.warn('[自动领取] 每日体验卡未触发: 模拟点击没成功', {
+      userLevel: typeof window !== 'undefined' ? readUserDataSelf(window as LayaRuntimeWindow)?.UserLevel : undefined
+    });
+  }
+
+  function claimWyqjTrialCard(
+    activity: UnknownRecord,
+    taskManager: UnknownRecord
+  ): void {
+    // 体验卡是「试到成功为止」的领取，靠游戏红点标记（markerAllowsClaim）停发，
+    // 不套每日 3 次的硬上限，否则几次重试后就静默不再尝试（表现为「没日志」）。
+    claims.throttled('activity:wyqj:trial:sync', () => {
+      const runId = ++wyqjTrialClaimRunId;
+      void runWyqjTrialClaim(activity, taskManager, 0, runId).catch((error) => {
+        console.warn('[自动领取] 每日体验卡失败:', error);
+      });
+    }, 60_000);
   }
 
   function claimInviteLogin(activity: UnknownRecord): void {
@@ -820,7 +1491,6 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
     call(activity, 'SendGetJDInfoReq');
     await claimNewJunDian(activity);
     if (!active()) return;
-    if (taskManager) claimWyqjTrialCard(activity, taskManager);
     claimInviteLogin(activity);
     claimLowBeanFree(manager('ActivityGameDataManager'));
     if (shouldClaimDdztllReward({
@@ -1677,6 +2347,16 @@ export function createAutoTaskRunner(deps: AutoTaskRunnerDeps): AutoTaskRunner {
       case 'autoTask.skipSignTrialCard':
         runStep('签到', claimSigns);
         return;
+      case 'autoTask.skipWyqjExperienceCard': {
+        void (async () => {
+          const activity = manager('ActivityManager');
+          const taskManager = manager('TaskManager');
+          if (!activity || !taskManager) return;
+          await prepareWyqjTrialClaim(taskManager);
+          if (active()) claimWyqjTrialCard(activity, taskManager);
+        })();
+        return;
+      }
       case 'autoTask.skipDiJiaQuan':
         runRewardFilterClaims(false);
         return;

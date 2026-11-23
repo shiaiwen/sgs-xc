@@ -179,7 +179,7 @@ const cachedSeatMenuRoot = new WeakMap<LayaRuntimeWindow, UnknownRecord>();
 const cachedUserInfoWindow = new WeakMap<LayaRuntimeWindow, UnknownRecord>();
 const USER_INFO_DISMISS_GUARD_MS = 2_500;
 const MENU_TO_USERINFO_GUARD_MS = 5000;
-/** 挂在 window 上，HMR 换模块后新旧钩子仍读同一截止时间 */
+/** 挂在 window 上，重复安装后新旧钩子仍读同一截止时间 */
 const USER_INFO_DISMISS_GUARD_UNTIL_KEY = '__xcUserInfoDismissGuardUntil';
 /** ShowUserOptMenu 刚打开后短时强拦 TipsHide，避免小抄误伤秒关；不碰原生 Hide/stageClick */
 const SEAT_MENU_TIPS_HOLD_UNTIL_KEY = '__xcSeatMenuTipsHoldUntil';

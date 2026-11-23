@@ -42,6 +42,7 @@ const MANAGER_LOOKUPS: Record<string, readonly [string, string?, string?]> = {
   MailManager: ['decodeClientGetMailNtf'],
   NewFuLiManager: ['decodeSetOutGiftInfoResp'],
   NewPrivilegeCardManager: ['decodeServerNewPrivilegeCardDataResp'],
+  NewSecKillManager: ['decodeClientNewSeckillInfoRep'],
   OfficerManager: ['ClientOfficerInfoRep'],
   RogueLikePveManager: ['decodeRogueLikeDataSync'],
   TaskManager: ['SmsgTaskFailed'],
@@ -68,7 +69,8 @@ const METHOD_SIGNATURES: Record<string, Record<string, string | readonly string[
     GetAllTaskDataByTaskID: ['allTasks.get(', '||'],
     GetNoGetTaskDataByTaskID: ['IsFromServer', 'encode', '!1'],
     RequestAcceptTask: ['quest_id', 'op_type', 'kOpAccept']
-  }
+  },
+  NewSecKillManager: { ReqBuySeckillGoods: 'newSecKill_baseID' }
 };
 
 /** 舞台子节点 layerOrder 与语义层名的对应；用于按层找窗口。 */

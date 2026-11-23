@@ -19,7 +19,7 @@ export interface ExtraAssistCharacterSetting {
 }
 
 export const EXTRA_ASSIST_CHARACTER_SETTINGS: readonly ExtraAssistCharacterSetting[] = [
-  { key: SUNQUAN_ASSIST_KEY, label: '孙权', tooltip: '显示权御增益状态' },
+  { key: SUNQUAN_ASSIST_KEY, label: '魔孙权', tooltip: '显示权御增益状态' },
   { key: PEIXIU_ASSIST_KEY, label: '裴秀', tooltip: '显示地图路线辅助' },
   { key: XUSHAO_ASSIST_KEY, label: '许邵', tooltip: '显示评鉴可连词框' }
 ];

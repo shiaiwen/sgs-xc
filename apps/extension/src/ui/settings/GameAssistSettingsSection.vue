@@ -39,8 +39,12 @@ function updateSetting(key, event) {
 </script>
 
 <template>
-  <section class="xiaochao-settings-section" aria-label="辅助功能">
+  <section
+    class="xiaochao-settings-section xiaochao-game-assist-section"
+    aria-label="辅助功能"
+  >
     <div class="xiaochao-settings-section__body">
+      <p class="xiaochao-game-assist-section__label">武将辅助</p>
       <div class="xiaochao-assist-characters">
         <BlockCheck
           v-for="setting in EXTRA_ASSIST_CHARACTER_SETTINGS"
@@ -55,21 +59,3 @@ function updateSetting(key, event) {
     </div>
   </section>
 </template>
-
-<style scoped>
-.xiaochao-assist-characters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  margin: 4px 8px 10px 14px;
-}
-
-.xiaochao-assist-character-check {
-  min-width: 0;
-}
-
-.xiaochao-assist-character-check :deep(.xiaochao-block-check__label) {
-  font-size: 12px;
-}
-
-</style>

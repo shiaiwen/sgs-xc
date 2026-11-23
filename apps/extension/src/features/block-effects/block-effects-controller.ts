@@ -27,7 +27,15 @@ import {
 } from '../skin-background/skin-runtime.ts';
 import type { BlockSettingKey } from './block-effect-settings.ts';
 import { applyBlockMessageFilters } from './block-message-filters.ts';
-import { collectManagedMarqueeNodes, createMarqueeVisibilityBlocker } from './marquee-visibility.ts';
+import { refreshGameEventDispatcher } from '../seat-display/game-scene-locator.ts';
+import {
+  collectManagedMarqueeNodes,
+  createMarqueeVisibilityBlocker,
+  findMarqueeManagerFromEvents,
+  findMarqueeManagerFromPromptLayer,
+  isMarqueeManager,
+  MARQUEE_MANAGER_SYNC_METHODS
+} from './marquee-visibility.ts';
 import {
   hasAnyEffectResourceBlock,
   replaceBlockedEffectUrl,
@@ -95,8 +103,6 @@ const CLOSE_BY_SWITCH: Partial<Record<BlockSettingKey, string>> = {
 export interface BlockEffectsController {
   /** 协议分发前调用，按开关改写击杀、皮肤状态与势力口号消息。 */
   filterMessage(payload: UnknownRecord, className: string): void;
-  /** 清掉红点树上仍亮着的叶子。 */
-  clearRedDots(): { found: boolean; count: number };
   /** 账号或场景就绪后重挂狗托屏蔽，配置已开时不必再拨开关。 */
   armNoticeBlock(): void;
   /** 配置已开时关闭大厅活动广告窗，进大厅后补一次。 */
@@ -131,6 +137,8 @@ export function installBlockEffectsController(
   const seatPatcher = createMethodPatcher();
   const seatEffectControllers = new Set<UnknownRecord>();
   const seatNamePatcher = createMethodPatcher();
+  // 技能特效补丁挂在每局新创建的特效实例上，换局时整批撤掉，不攥着上一局的特效实例。
+  const skillEffectPatcher = createMethodPatcher();
   let seatPatchScene: UnknownRecord | null = null;
   let manualRecordView = false;
   let disposed = false;
@@ -156,6 +164,7 @@ export function installBlockEffectsController(
   if (options.gameEvents) {
     unsubscribes.push(options.gameEvents.subscribe((event) => {
       if (event.type === 'game-ended') {
+        skillEffectPatcher.restoreAll();
         skillEffects.clear();
         if (isOn('block.mvpWindow')) {
           for (const name of MVP_BLOCK_WINDOW_NAMES) {
@@ -555,14 +564,19 @@ export function installBlockEffectsController(
     marqueeBlocker.restoreAll();
   });
 
+  function resolveMarqueeManager(): UnknownRecord | null {
+    const dispatcher = locator.dispatcher() ?? refreshGameEventDispatcher(globalObject);
+    return findMarqueeManagerFromEvents(dispatcher)
+      ?? locator.findManagerByPredicate(isMarqueeManager)
+      ?? findMarqueeManagerFromPromptLayer(locator.layer('PromptLayer'));
+  }
+
   function syncManagedMarquee(): void {
-    const manager = locator.findManagerByPredicate((candidate) =>
-      typeof candidate.ShowMarquee === 'function' && typeof candidate.HideAllMarquee === 'function'
-    );
+    const manager = resolveMarqueeManager();
     if (manager && !hookedMarqueeManagers.has(manager)) {
       hookedMarqueeManagers.add(manager);
       // 保留原方法的队列与计时器，在它创建展示节点后立即同步显隐。
-      for (const key of ['ShowMarquee', 'intActDataMarquee', 'ShowNextActMarquee']) {
+      for (const key of MARQUEE_MANAGER_SYNC_METHODS) {
         if (typeof manager[key] !== 'function') continue;
         patcher.wrap(manager, key, (original) => function (this: UnknownRecord, ...args: unknown[]) {
           const result = original.apply(this, args);
@@ -573,7 +587,9 @@ export function installBlockEffectsController(
         });
       }
     }
-    marqueeBlocker.sync(collectManagedMarqueeNodes(manager));
+    if (isOn('block.noticeWindow')) {
+      marqueeBlocker.sync(collectManagedMarqueeNodes(manager));
+    }
   }
 
   function applyNoticeBlockState(): void {
@@ -750,7 +766,7 @@ export function installBlockEffectsController(
         const wrapSkill = (target: UnknownRecord | null) => {
           if (!target) return;
           skillEffects.add(target);
-          patcher.wrap(target, 'PlayTriggerEffect', (play) => function (this: unknown, ...playArgs) {
+          skillEffectPatcher.wrap(target, 'PlayTriggerEffect', (play) => function (this: unknown, ...playArgs) {
             if (locator.gameScene() && isOn('block.skillEffect')) return undefined;
             return play.apply(this, playArgs);
           });
@@ -1470,14 +1486,6 @@ export function installBlockEffectsController(
     filterMessage,
     armNoticeBlock: applyNoticeBlockState,
     armAdBlock,
-    clearRedDots() {
-      const manager = taskRedDotManager();
-      if (typeof manager?.setNodeState !== 'function') return { found: false, count: 0 };
-      const nodes = activeRedDotNodes(asRecord(manager.tree)?.Root);
-      for (const node of nodes) callMethod(manager, 'setNodeState', node, 0);
-      refreshHallRedDots();
-      return { found: true, count: nodes.length };
-    },
     dispose() {
       disposed = true;
       timers.forEach((timer) => clearTimeout(timer));
@@ -1488,6 +1496,9 @@ export function installBlockEffectsController(
       seatEffectControllers.clear();
       seatPatchScene = null;
       seatNamePatcher.restoreAll();
+      skillEffectPatcher.restoreAll();
+      skillEffects.clear();
+      effectControllers.clear();
       patcher.restoreAll();
     }
   };

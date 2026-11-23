@@ -3,7 +3,7 @@
  * 本地小抄脚本注入，以及登录页密码管理助手。
  *
  * 主要块：
- * 1. 开发态构建后清脚本缓存，玩家主动刷新时再注入新版
+ * 1. 开发态构建后清脚本缓存，刷新游戏页后再注入新版
  * 2. 运行时全局兼容层（remote.getGlobal / getPath 的 IPC 降级）
  * 3. 读取并注入本地小抄脚本（userData 或主进程 read-local-script）
  * 4. 壳层 UI：最大化/最小化/关闭、全屏、更新进度、大区切换
@@ -27,14 +27,6 @@ let localScriptResponseCache = null;
 /** 已转义可 executeJavaScript 的注入代码缓存（与原文成对）。 */
 let localScriptInjectCache = null;
 let developmentWebviewReady = false;
-
-// 构建和登录可能同时发生；刷新游戏页会使刚拿到的登录凭证失效。
-// 只清注入缓存，下一次主动打开/刷新游戏页时使用新脚本。
-ipcRenderer.on('xiaochao-dev-script-changed', () => {
-    localScriptResponseCache = null;
-    localScriptInjectCache = null;
-    console.info('[xiaochao-dev] source changed; refresh the game manually to apply it');
-});
 
 /**
  * 在游戏页内安装 postMessage 桥：页面请求打开小抄原生报告窗口时，
@@ -668,11 +660,11 @@ function initElectronFrame() {
 
 /** 登录页、4399 区等地址；游戏内大厅不再重复注入密码助手。 */
 function isLikelyLoginPageUrl(url) {
-    const text = String(url || '').toLowerCase();
-    return text.includes('login')
-        || text.includes('4399.com')
-        || text.includes('kuaiwan.com')
-        || text.includes('wd-home');
+    const address = String(url || '').split(/[?#]/, 1)[0].toLowerCase();
+    return address.includes('login')
+        || address.includes('4399.com')
+        || address.includes('kuaiwan.com')
+        || address.includes('wd-home');
 }
 
 ipcRenderer.on('set-video-path', (event, url) => {

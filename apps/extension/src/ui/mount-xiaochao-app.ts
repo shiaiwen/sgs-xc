@@ -17,6 +17,7 @@ import type { PeixiuRouteStore } from '../features/extra-assist/peixiu-route-sto
 import type { TurnStatusStore } from '../features/turn-status/turn-status-store';
 import type { ShanhetuController } from '../features/shanhetu';
 import type { UpdateNoticeController } from '../features/update-notice';
+import type { SecKillController } from '../features/sec-kill/sec-kill-controller';
 
 export interface XiaochaoPanelLayout {
   top: number;
@@ -44,9 +45,9 @@ export function mountXiaochaoApp(
   skillAssistStore: SkillAssistStore,
   peixiuRouteStore: PeixiuRouteStore,
   turnStatusStore: TurnStatusStore,
-  clearRedDots: () => { found: boolean; count: number } = () => ({ found: false, count: 0 }),
   shanhetuController: ShanhetuController | null = null,
-  updateNoticeController: UpdateNoticeController | null = null
+  updateNoticeController: UpdateNoticeController | null = null,
+  secKillController: SecKillController | null = null
 ): MountedXiaochaoApp {
   const removePanelShellStyles = installPanelShellStyles();
   let dialogHost = document.getElementById(XIAOCHAO_DIALOG_HOST_ID);
@@ -68,9 +69,9 @@ export function mountXiaochaoApp(
     skillAssistStore,
     peixiuRouteStore,
     turnStatusStore,
-    clearRedDots,
     shanhetuController,
-    updateNoticeController
+    updateNoticeController,
+    secKillController
   });
   app.mount(rootElement);
   const panelElement = rootElement.querySelector<HTMLElement>('#createIframe');

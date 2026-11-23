@@ -40,6 +40,7 @@ let nativeClearTips2: NativeFn | null = null;
 /** onCheckStaticTip2 / userClosing 期间放行 clearTips2 */
 let allowClearStayedSkillTip = false;
 let cachedTipManager: UnknownRecord | null = null;
+let cachedPromptLayer: UnknownRecord | null = null;
 
 type UnknownRecord = Record<string, unknown>;
 type NativeFn = (...args: unknown[]) => unknown;
@@ -136,47 +137,71 @@ function stackSummary(limit = 800): string {
 }
 
 function readPromptLayer(globalObject: LayaRuntimeWindow): UnknownRecord | null {
+  const cached = cachedPromptLayer;
+  if (cached && cached.destroyed !== true
+    && ('currentTip' in cached || typeof cached.ShowTip === 'function')) {
+    return cached;
+  }
+  cachedPromptLayer = null;
+
+  let found: UnknownRecord | null = null;
   try {
     const locator = createLayaObjectLocator(globalObject);
     // prompt 层常见名
     for (const name of ['PromptLayer', 'promptLayer', 'hKi']) {
       try {
         const layer = asRecord(locator.layer?.(name));
-        if (layer && ('currentTip' in layer || typeof layer.ShowTip === 'function')) return layer;
+        if (layer && ('currentTip' in layer || typeof layer.ShowTip === 'function')) {
+          found = layer;
+          break;
+        }
       } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
-  try {
-    const getClass = globalObject.Laya?.ClassUtils?.getClass;
-    if (typeof getClass === 'function') {
-      for (const name of ['hKi', 'PromptLayer']) {
-        const ctor = getClass.call(globalObject.Laya?.ClassUtils, name) as { I?: () => unknown } | undefined;
-        const inst = asRecord(typeof ctor?.I === 'function' ? ctor.I() : null);
-        if (inst && ('currentTip' in inst || typeof inst.ShowTip === 'function')) return inst;
+  if (!found) {
+    try {
+      const getClass = globalObject.Laya?.ClassUtils?.getClass;
+      if (typeof getClass === 'function') {
+        for (const name of ['hKi', 'PromptLayer']) {
+          const ctor = getClass.call(globalObject.Laya?.ClassUtils, name) as { I?: () => unknown } | undefined;
+          const inst = asRecord(typeof ctor?.I === 'function' ? ctor.I() : null);
+          if (inst && ('currentTip' in inst || typeof inst.ShowTip === 'function')) {
+            found = inst;
+            break;
+          }
+        }
       }
-    }
-  } catch { /* ignore */ }
-  try {
-    const stage = asRecord(globalObject.Laya?.stage);
-    const n = Number(stage?.numChildren ?? 0);
-    const getAt = stage && (stage as { getChildAt?: (i: number) => unknown }).getChildAt;
-    if (typeof getAt === 'function') {
-      for (let i = 0; i < n && i < 40; i += 1) {
-        const ch = asRecord(getAt.call(stage, i));
-        if (ch && 'currentTip' in ch && typeof ch.ShowTip === 'function') return ch;
+    } catch { /* ignore */ }
+  }
+  if (!found) {
+    try {
+      const stage = asRecord(globalObject.Laya?.stage);
+      const n = Number(stage?.numChildren ?? 0);
+      const getAt = stage && (stage as { getChildAt?: (i: number) => unknown }).getChildAt;
+      if (typeof getAt === 'function') {
+        for (let i = 0; i < n && i < 40; i += 1) {
+          const ch = asRecord(getAt.call(stage, i));
+          if (ch && 'currentTip' in ch && typeof ch.ShowTip === 'function') {
+            found = ch;
+            break;
+          }
+        }
       }
-    }
-  } catch { /* ignore */ }
-  // 从 tip manager 事件/全局单例旁路：有 ShowTip 的节点
-  try {
-    const locator = createLayaObjectLocator(globalObject);
-    const found = locator.findManagerByPredicate((candidate) => {
-      const rec = asRecord(candidate);
-      return Boolean(rec && 'currentTip' in rec && typeof rec.ShowTip === 'function' && typeof rec.stageTipClickHandler === 'function');
-    });
-    if (found) return found;
-  } catch { /* ignore */ }
-  return null;
+    } catch { /* ignore */ }
+  }
+  if (!found) {
+    // 从 tip manager 事件/全局单例旁路：有 ShowTip 的节点
+    try {
+      const locator = createLayaObjectLocator(globalObject);
+      const byPredicate = locator.findManagerByPredicate((candidate) => {
+        const rec = asRecord(candidate);
+        return Boolean(rec && 'currentTip' in rec && typeof rec.ShowTip === 'function' && typeof rec.stageTipClickHandler === 'function');
+      });
+      if (byPredicate) found = byPredicate;
+    } catch { /* ignore */ }
+  }
+  cachedPromptLayer = found;
+  return found;
 }
 
 function collectSkillTipsWide(
@@ -784,6 +809,7 @@ export function installGeneralSkillTipStayCoordinator(
   const tipProtosReady = new WeakSet<object>();
   let managerProtoReady = false;
   cachedTipManager = null;
+  cachedPromptLayer = null;
 
   function rebindStayStateListeners(manager: UnknownRecord, wrappedOnChange: NativeFn): void {
     const locator = createLayaObjectLocator(globalObject);
@@ -1067,6 +1093,7 @@ export function installGeneralSkillTipStayCoordinator(
     nativeClearTips2 = null;
     allowClearStayedSkillTip = false;
     cachedTipManager = null;
+    cachedPromptLayer = null;
     if (bag.__xcGeneralSkillTipStayDispose === dispose) {
       delete bag.__xcGeneralSkillTipStayDispose;
     }

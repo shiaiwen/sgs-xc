@@ -147,17 +147,97 @@ export function createMarqueeVisibilityBlocker() {
 }
 
 /** 只收集管理器持有的跑马灯，禁止从舞台或聊天容器推断。 */
+const MARQUEE_EVENTS = ['CHAT_MARQUEE_ADD', 'CHAT_MARQUEE2023_ADD', 'CHAT_MARQUEE2023_ACT_ADD'];
+
+/** 创建或刷新跑马灯后要立刻藏掉时，在这些方法外包一层。 */
+export const MARQUEE_MANAGER_SYNC_METHODS = [
+  'ShowMarquee',
+  'ShowOldMarquee',
+  'ShowNewMarquee',
+  'intActDataMarquee',
+  'ShowNextActMarquee'
+] as const;
+
+/** 从 PromptLayer 显示树里找跑马灯管理器时的节点上限。 */
+const PROMPT_LAYER_MARQUEE_SCAN_MAX = 96;
+
+export function isMarqueeManager(candidate?: UnknownRecord | null): candidate is UnknownRecord {
+  return typeof candidate?.ShowMarquee === 'function' && typeof candidate.HideAllMarquee === 'function';
+}
+
+export function findMarqueeManagerFromEvents(dispatcher: UnknownRecord | null): UnknownRecord | null {
+  const events = asRecord(dispatcher?._events);
+  if (!events) return null;
+  for (const name of MARQUEE_EVENTS) {
+    const bucket = events?.[name];
+    if (!bucket) continue;
+    for (const listener of Array.isArray(bucket) ? bucket : [bucket]) {
+      const caller = asRecord(asRecord(listener)?.caller);
+      if (isMarqueeManager(caller)) return caller;
+    }
+  }
+  for (const key of Object.keys(events)) {
+    if (!/MARQUEE/i.test(key)) continue;
+    const bucket = events[key];
+    for (const listener of Array.isArray(bucket) ? bucket : [bucket]) {
+      const caller = asRecord(asRecord(listener)?.caller);
+      if (isMarqueeManager(caller)) return caller;
+    }
+  }
+  return null;
+}
+
+/** 浏览器里分发器监听未必可读时，从 PromptLayer 子树按方法特征找回管理器。 */
+export function findMarqueeManagerFromPromptLayer(promptLayer: UnknownRecord | null): UnknownRecord | null {
+  if (!promptLayer || promptLayer.destroyed) return null;
+  const stack: UnknownRecord[] = [promptLayer];
+  const seen = new Set<unknown>();
+  let scanned = 0;
+  while (stack.length > 0 && scanned < PROMPT_LAYER_MARQUEE_SCAN_MAX) {
+    const node = stack.pop();
+    if (!node || node.destroyed || seen.has(node)) continue;
+    seen.add(node);
+    scanned += 1;
+    if (isMarqueeManager(node)) return node;
+    const childCount = Number(node.numChildren ?? 0);
+    const getChildAt = node.getChildAt;
+    if (Number.isInteger(childCount) && typeof getChildAt === 'function') {
+      for (let index = 0; index < childCount; index += 1) {
+        const child = asRecord(getChildAt.call(node, index));
+        if (child) stack.push(child);
+      }
+    }
+  }
+  return null;
+}
+
+function pushMarqueeDisplayNode(found: Set<UnknownRecord>, node: UnknownRecord | null): void {
+  if (!node || node.destroyed) return;
+  try {
+    if (typeof node.visible !== 'boolean' && typeof node._visible !== 'boolean') return;
+  } catch {
+    return;
+  }
+  found.add(node);
+}
+
 export function collectManagedMarqueeNodes(manager?: UnknownRecord | null): Set<UnknownRecord> {
   const found = new Set<UnknownRecord>();
-  if (typeof manager?.ShowMarquee !== 'function' || typeof manager.HideAllMarquee !== 'function') return found;
+  if (!isMarqueeManager(manager)) return found;
   for (const value of [
     manager.marqueeUI,
     ...marqueeListItems(manager.marqueeUIList),
     ...marqueeListItems(manager.marqueeUIActList)
   ]) {
-    const node = asRecord(value);
-    if (node && !node.destroyed && (typeof node.visible === 'boolean' || typeof node._visible === 'boolean')) {
-      found.add(node);
+    pushMarqueeDisplayNode(found, asRecord(value));
+  }
+  const childCount = Number(manager.numChildren ?? 0);
+  const getChildAt = manager.getChildAt;
+  if (Number.isInteger(childCount) && typeof getChildAt === 'function') {
+    for (let index = 0; index < childCount; index += 1) {
+      const child = asRecord(getChildAt.call(manager, index));
+      if (!child || child.destroyed) continue;
+      if (typeof child.ShowMsg === 'function') pushMarqueeDisplayNode(found, child);
     }
   }
   return found;

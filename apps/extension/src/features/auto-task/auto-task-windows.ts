@@ -38,11 +38,14 @@ export function createAutoTaskWindows(
     instances.delete(name);
     releaseTokens.delete(name);
     if (!instance || instance.parent) return;
+    if (name === 'WyqjBigView') {
+      return;
+    }
     try {
       if (typeof instance.Close === 'function') (instance.Close as () => void)();
       else if (typeof instance.destroy === 'function') (instance.destroy as () => void)();
-    } catch (error) {
-      console.warn('[自动领取] 释放窗口失败:', name, error);
+    } catch {
+      // 离屏窗口未完全初始化时 Close 可能抛错，丢弃缓存引用即可。
     }
   }
 

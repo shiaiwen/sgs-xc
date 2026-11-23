@@ -81,10 +81,12 @@ import { installAutoHgController } from '../features/auto-hg';
 import { installAutoBotController } from '../features/auto-bot';
 import { installUpdateNoticeController } from '../features/update-notice';
 import { installGiftCodeController } from '../features/gift-code';
+import { installSecKillController } from '../features/sec-kill/sec-kill-controller';
 import { installRuntimeSearchController } from '../features/runtime-search';
 import { installHandSortController } from '../features/cards/hand-sort-controller';
 import { installTiesuoRecastController } from '../features/cards/tiesuo-recast-controller';
 import { installClassicRoomFilterController } from '../features/room-filter/classic-room-filter-controller';
+import { installRoomSeatIpGuard } from '../features/room-filter/room-seat-ip-guard.ts';
 import { installCampChatRightPanelController } from '../features/in-game-chat/camp-chat-right-panel';
 import {
   ensureSkinTraceDiagnostics,
@@ -126,7 +128,7 @@ interface XiaochaoCoreRuntime {
 export function bootstrapXiaochao(platform: PlatformAdapter): void {
   const bootBag = window as unknown as Record<string, unknown>;
   const prevBootDispose = bootBag.__xcXiaochaoBootstrapDispose;
-  // Vite/monkey HMR 会再次执行入口；先拆掉上一轮生命周期，避免 ShowWindow/_ 重复包装栈溢出
+  // 入口被重复执行时先拆掉上一轮生命周期，避免 ShowWindow/_ 重复包装栈溢出
   if (typeof prevBootDispose === 'function') {
     try { (prevBootDispose as () => void)(); } catch (error) {
       console.error('[xiaochao] previous bootstrap dispose failed', error);
@@ -142,11 +144,13 @@ export function bootstrapXiaochao(platform: PlatformAdapter): void {
   }
   disposeOrphanTipStayHooks(window);
   const lifecycle = createLifecycle();
-  bootBag.__xcXiaochaoBootstrapDispose = () => lifecycle.dispose();
   lifecycle.register(installStallMonitor(window));
   // popup protector：只卸旧守卫；技能 tip 停驻等进大厅后再挂，避免登录初始化链被打断
   lifecycle.register(installGameNativePopupProtector(window));
   const configStore = createConfigStore(createPlatformConfigStorage(platform));
+  bootBag.__xcXiaochaoBootstrapDispose = () => {
+    lifecycle.dispose();
+  };
   const accountConfigSync = startAccountConfigSync({
     configStore,
     storage: pageStorage(),
@@ -341,6 +345,8 @@ function startXiaochaoCore(
   lifecycle.register(installSeatDisplayVisibility(configStore));
   const classicRoomFilter = installClassicRoomFilterController(configStore);
   lifecycle.register(classicRoomFilter.dispose);
+  const roomSeatIpGuard = installRoomSeatIpGuard(window);
+  lifecycle.register(roomSeatIpGuard.dispose);
   lifecycle.register(installCampChatRightPanelController(window).dispose);
   lifecycle.register(installSeatStateController(seatStateStore));
   lifecycle.register(installGameLifecycleEvents(seatStateStore, gameEvents));
@@ -390,6 +396,8 @@ function startXiaochaoCore(
   });
   lifecycle.register(officialBackground.dispose);
   lifecycle.register(installRuntimeSearchController());
+  const secKill = installSecKillController();
+  lifecycle.register(secKill.dispose);
   const extraAssist = installExtraAssistController(configStore, {
     getExtraAssistData: () => cardConfigSource.getExtraAssistData(),
     getSpellExtendRaw: () => cardConfigSource.getSpellExtendRaw(),
@@ -411,7 +419,8 @@ function startXiaochaoCore(
     blockEffects.filterMessage,
     skinChange.filterMessage,
     skinPaper.filterMessage,
-    shanhetu.filterMessage
+    shanhetu.filterMessage,
+    roomSeatIpGuard.filterMessage
   ];
   let accountActionsStarted = false;
   function startAccountActions(): void {
@@ -485,9 +494,9 @@ function startXiaochaoCore(
       skillAssistStore,
       peixiuRouteStore,
       turnStatusStore,
-      () => blockEffects.clearRedDots(),
       shanhetu,
-      updateNotice
+      updateNotice,
+      secKill
     );
     lifecycle.register(mountedApp.unmount);
     return mountedApp;

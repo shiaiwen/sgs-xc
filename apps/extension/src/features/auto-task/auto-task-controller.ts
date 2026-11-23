@@ -154,6 +154,7 @@ export function installAutoTaskController(
       skipMail: configStore.get('autoTask.skipMail'),
       skipDailyGeneralBag: configStore.get('autoTask.skipDailyGeneralBag'),
       skipSignTrialCard: configStore.get('autoTask.skipSignTrialCard'),
+      skipWyqjExperienceCard: configStore.get('autoTask.skipWyqjExperienceCard'),
       skipDiJiaQuan: configStore.get('autoTask.skipDiJiaQuan'),
       skipHuanLeDou: configStore.get('autoTask.skipHuanLeDou'),
       skipFreeBless: configStore.get('autoTask.skipFreeBless'),

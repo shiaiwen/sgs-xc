@@ -10,15 +10,74 @@ import {
   type ShanhetuMapConfigData,
   type RogueMapPanelLayout,
   type RogueMapRuntime,
-  type RoguePanelLine
+  type RoguePanelLine,
+  type RoguePlotMeta
 } from './shanhetu-map-types.ts';
 import {
   formatGeneralName,
   formatGeneralWarningSkills,
-  formatGeneralStatsLine
+  formatGeneralStatsLine,
+  resolveRogueFightScaleMeta
 } from './shanhetu-map-general-stats.ts';
 
 type UnknownRecord = Record<string, unknown>;
+
+function findPlotMeta(
+  config: ShanhetuMapConfigData,
+  id: string | number
+): RoguePlotMeta | undefined {
+  const direct = config.Rplot[String(id)];
+  if (direct) return direct;
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) return undefined;
+  for (const meta of Object.values(config.Rplot)) {
+    if (Number(meta.spellid) === numericId) return meta;
+  }
+  return undefined;
+}
+
+function plotNamesByIds(
+  config: ShanhetuMapConfigData,
+  ids: readonly (string | number)[]
+): string[] {
+  return ids
+    .map((id) => findPlotMeta(config, id)?.name?.trim() ?? '')
+    .filter(Boolean);
+}
+
+function parseLostTierLine(lost: string): { rarity: string; kind: string; head: string } | null {
+  const head = (lost.split(/[,，]/)[0] ?? lost).trim();
+  const match = /^失去\s*(普通|稀有|史诗|传说)\s*(战法|技能|手牌|装备)/.exec(head);
+  if (!match) return null;
+  return { rarity: match[1], kind: match[2], head };
+}
+
+function plotMatchesLostTier(
+  item: RoguePlotMeta | undefined,
+  wantedTypes: number[],
+  wantedLevel: number
+): boolean {
+  if (!item) return false;
+  const itemType = Number(item.type);
+  const itemLevel = Number(item.level);
+  return wantedTypes.includes(itemType) && itemLevel === wantedLevel;
+}
+
+/** 表意是「失去普通战法」时，服务器未下发 loseData 时只取背包 itemId 顺序里第一件同品第一件。 */
+function firstInventoryLostName(
+  config: ShanhetuMapConfigData,
+  itemIds: readonly (string | number)[] | undefined,
+  wantedTypes: number[],
+  wantedLevel: number
+): string {
+  for (const id of itemIds ?? []) {
+    const item = findPlotMeta(config, id);
+    if (!plotMatchesLostTier(item, wantedTypes, wantedLevel)) continue;
+    const name = item?.name?.trim() ?? '';
+    if (name) return name;
+  }
+  return '';
+}
 
 function lostItemNames(
   config: ShanhetuMapConfigData,
@@ -27,21 +86,21 @@ function lostItemNames(
   cityId: string | number | undefined,
   choiceId: string | number
 ): string {
-  const match = /^失去 (普通|稀有|史诗|传说)(战法|技能|手牌|装备)$/.exec(lost);
-  if (!match) return '';
-  const actual = runtime.choiceLostResult;
-  if (actual && actual.cityId === Number(cityId) && actual.effectId === Number(choiceId)) {
-    return actual.itemIds.map((id) => config.Rplot[String(id)]?.name ?? '').filter(Boolean).join('、');
-  }
+  const parsed = parseLostTierLine(lost);
+  if (!parsed) return '';
   const types: Record<string, number[]> = { 战法: [2], 技能: [3], 手牌: [4], 装备: [5, 6, 7] };
   const level: Record<string, number> = { 普通: 1, 稀有: 2, 史诗: 3, 传说: 4 };
-  for (const id of runtime.itemIds ?? []) {
-    const item = config.Rplot[String(id)];
-    if (item && types[match[2]].includes(Number(item.type)) && Number(item.level) === level[match[1]]) {
-      return item.name || '';
-    }
+  const wantedTypes = types[parsed.kind];
+  const wantedLevel = level[parsed.rarity];
+  const actual = runtime.choiceLostResult;
+  if (
+    actual
+    && actual.cityId === Number(cityId)
+    && actual.effectId === Number(choiceId)
+  ) {
+    return plotNamesByIds(config, actual.itemIds).join('、');
   }
-  return '';
+  return firstInventoryLostName(config, runtime.itemIds, wantedTypes, wantedLevel);
 }
 
 function generalLine(general: UnknownRecord, config: ShanhetuMapConfigData, runtime: RogueMapRuntime): RoguePanelLine | null {
@@ -165,7 +224,7 @@ export function buildEventLines(
             general,
             config,
             runtime,
-            choice as UnknownRecord,
+            resolveRogueFightScaleMeta(config, event, choice as UnknownRecord),
             cityId
           );
           if (stats) lines.push({ kind: 'stats', text: stats });
@@ -174,8 +233,10 @@ export function buildEventLines(
       const chunk: string[] = [];
       if (!choice.generals?.length && choice.lost) {
         const lost = String(choice.lost);
+        const parsedLost = parseLostTierLine(lost);
+        const lostHead = parsedLost?.head ?? lost.split(/[,，]/)[0]?.trim() ?? lost;
         const name = lostItemNames(config, lost, runtime, cityId, choiceId);
-        chunk.push(name ? `${lost} ${name}` : lost);
+        chunk.push([lostHead, name].filter(Boolean).join(' '));
       }
       if (choice.get) chunk.push(String(choice.get));
       if (chunk.length) lines.push({ kind: 'reward', text: chunk.join(ROGUE_LINE_BREAK) });
@@ -192,7 +253,13 @@ export function buildEventLines(
     if (!general) continue;
     const heading = generalLine(general, config, runtime);
     if (heading) lines.push(heading);
-    const stats = formatGeneralStatsLine(general, config, runtime, fight as UnknownRecord, cityId);
+    const stats = formatGeneralStatsLine(
+      general,
+      config,
+      runtime,
+      resolveRogueFightScaleMeta(config, event, fight as UnknownRecord),
+      cityId
+    );
     if (stats) lines.push({ kind: 'stats', text: stats });
   }
   if (fight.get) {

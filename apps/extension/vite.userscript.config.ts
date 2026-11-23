@@ -4,12 +4,6 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import { defineConfig, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import monkey from 'vite-plugin-monkey';
-import {
-  createUserscriptDevBuildIdPlugin,
-  userscriptDevBuildPollUrl,
-  userscriptDevInstallUrl,
-  userscriptDevReloadEnabled
-} from './src/runtime/userscript-dev-build-id-plugin.ts';
 import { patchUserscriptDevInstallMount } from './tools/patch-userscript-dev-install.js';
 import { buildUserscriptPayload, wrapUserscriptWithPayloadLoader } from './tools/userscript-payload-prelude.ts';
 import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
@@ -406,14 +400,13 @@ const baseXiaochaoVersion = String(
 const xiaochaoVersion = isDevUserscriptBundle ? `${baseXiaochaoVersion}-dev.${Date.now()}` : baseXiaochaoVersion;
 
 const devPort = Number(process.env.XC_USERSCRIPT_DEV_PORT || 5173);
-/** tools/dev-userscript.js 会注入端口，走 Vite 模块热更。 */
+/** tools/dev-userscript.js 会注入端口，本地 Vite 提供构建产物。 */
 const isLocalUserscriptServe = process.env.XC_USERSCRIPT_DEV_PORT !== undefined
   && process.env.XC_USERSCRIPT_BUNDLE_DEV !== '1';
 /** tools/dev-userscript-bundle.js：监听打包 + preview 整份 user.js。 */
 const isBundleDevServe = process.env.XC_USERSCRIPT_BUNDLE_DEV === '1';
 const useLocalHttps = isLocalUserscriptServe || isBundleDevServe;
-const devAutoReloadEnabled = userscriptDevReloadEnabled(isLocalUserscriptServe, isBundleDevServe);
-/** 油猴里装的是本地加载器，刷新页面就会读到最新打包，不用再弹油猴更新页。 */
+/** 油猴里装的是本地加载器，手动刷新游戏页即加载最新打包。 */
 const usesLocalLoader = process.env.XC_USERSCRIPT_LOCAL_LOADER === '1';
 const installHttpPort = Number(process.env.XC_USERSCRIPT_INSTALL_HTTP_PORT || 0);
 const localUserscriptUrl = installHttpPort
@@ -427,13 +420,7 @@ export default defineConfig({
     __XIAOCHAO_ACCOUNT_CONFIG_URL__: JSON.stringify(
       isDevUserscriptBundle ? ACCOUNT_CONFIG_LOCAL_URL : ACCOUNT_CONFIG_REMOTE_URL
     ),
-    __XIAOCHAO_BUILD_STAMP__: JSON.stringify(`${xiaochaoVersion}-panel-gate`),
-    __XIAOCHAO_DEV_BUILD_POLL_URL__: JSON.stringify(
-      userscriptDevBuildPollUrl(devAutoReloadEnabled, useLocalHttps, devPort, installHttpPort)
-    ),
-    __XIAOCHAO_DEV_INSTALL_URL__: JSON.stringify(
-      usesLocalLoader ? '' : userscriptDevInstallUrl(devAutoReloadEnabled, installHttpPort, devPort)
-    )
+    __XIAOCHAO_BUILD_STAMP__: JSON.stringify(`${xiaochaoVersion}-panel-gate`)
   },
   server: {
     host: '127.0.0.1',
@@ -441,14 +428,7 @@ export default defineConfig({
     strictPort: true,
     https: useLocalHttps,
     open: false,
-    hmr: useLocalHttps
-      ? {
-          protocol: 'wss',
-          host: '127.0.0.1',
-          port: devPort,
-          clientPort: devPort
-        }
-      : undefined
+    hmr: false
   },
   preview: {
     host: '127.0.0.1',
@@ -458,7 +438,6 @@ export default defineConfig({
     open: isBundleDevServe ? '/userscript-simple' : false
   },
   plugins: [
-    ...(devAutoReloadEnabled ? [createUserscriptDevBuildIdPlugin()] : []),
     ...(useLocalHttps ? [basicSsl()] : []),
     ...(isBundleDevServe ? [serveUserscriptInstallFile(), devUserscriptSimplePage(devPort)] : []),
     vue(),

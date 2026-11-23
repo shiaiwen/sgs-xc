@@ -9,7 +9,12 @@ import {
   type LayaRuntimeWindow
 } from '../../adapters/laya-object-locator.ts';
 import { everyInterval } from '../../runtime/shared-ticker.ts';
+import {
+  SHANHETU_MANAGER_RETRY_MS,
+  SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS
+} from '../../const/poll-intervals.ts';
 import { SHANHETU_MAP_KEY } from './shanhetu-settings.ts';
+import { ROGUE_SHOP_DATA_REQ_MARK } from './shanhetu-shop-controller.ts';
 import {
   createShanhetuMapConfigSourceFromCardConfig,
   type ShanhetuMapConfigSource
@@ -42,8 +47,12 @@ import {
   mountCityOverlays
 } from './shanhetu-map-view.ts';
 import {
+  collectRogueInventoryFromMapScene,
+  createRogueManagerLookup,
   extractRogueCitySpots,
-  extractRogueMapRuntime
+  extractRogueMapRuntime,
+  mergeRogueInventoryPlotIds,
+  resolveRogueLikeSyncBody
 } from './shanhetu-rogue-sync.ts';
 
 const MAP_SCENE_NAMES = ['RogueSmallMapScene', 'RogueLikeBigMapScene'] as const;
@@ -100,6 +109,8 @@ export function installShanhetuMapController(
   let drawToken = 0;
   /** 离开地图后 findCityView 为空，靠这个清掉已挂的面板。 */
   let lastCityView: UnknownRecord | null = null;
+  let lastRogueSyncBody: UnknownRecord | null = null;
+  let lastInventoryRequestAt = 0;
 
   function enabled(): boolean {
     return configStore.get(SHANHETU_MAP_KEY) === true;
@@ -146,6 +157,68 @@ export function installShanhetuMapController(
     return readCityViewFromScene(scene);
   }
 
+  const rogueManager = createRogueManagerLookup(locator, SHANHETU_MANAGER_RETRY_MS);
+
+  function roguePveManager(): UnknownRecord | null {
+    return rogueManager.get();
+  }
+
+  function inventoryPayloads(extra: UnknownRecord | null = null): UnknownRecord[] {
+    const manager = roguePveManager();
+    const mapScene = findMapScene();
+    return [
+      lastRogueSyncBody,
+      extra,
+      manager,
+      asRecord(manager?.allData),
+      asRecord(manager?.AllData),
+      asRecord(manager?.data),
+      asRecord(manager?.gameData),
+      asRecord(manager?.GameData),
+      mapScene
+    ].filter((entry): entry is UnknownRecord => Boolean(entry));
+  }
+
+  function syncInventoryRuntime(extra: UnknownRecord | null = null): void {
+    const payloads = inventoryPayloads(extra);
+    for (const payload of payloads) {
+      runtime = extractRogueMapRuntime(payload, runtime);
+    }
+    const inventorySources = [...payloads];
+    const sceneIds = collectRogueInventoryFromMapScene(findMapScene());
+    if (sceneIds?.length) inventorySources.push({ itemId: sceneIds });
+    const inventory = mergeRogueInventoryPlotIds(inventorySources);
+    if (inventory?.length) {
+      runtime = { ...runtime, itemIds: inventory };
+    }
+  }
+
+  /** 背包仍空时向山河管理器要一次全量同步，与集市透视同掩码。 */
+  function requestRogueInventoryIfNeeded(): void {
+    if (runtime.itemIds?.length) return;
+    const now = Date.now();
+    if (now - lastInventoryRequestAt < SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS) return;
+    const manager = roguePveManager();
+    const method = manager?.RogueLikeDataReq;
+    if (typeof method !== 'function') return;
+    try {
+      lastInventoryRequestAt = now;
+      method.call(manager, ROGUE_SHOP_DATA_REQ_MARK);
+    } catch {
+      // 请求失败时等下一轮轮询。
+    }
+  }
+
+  function extractCities(payload: UnknownRecord): RogueCitySpot[] | null {
+    return extractRogueCitySpots(resolveRogueLikeSyncBody(payload));
+  }
+
+  function extractRuntime(payload: UnknownRecord, previous: RogueMapRuntime): RogueMapRuntime {
+    const body = resolveRogueLikeSyncBody(payload);
+    lastRogueSyncBody = body;
+    return extractRogueMapRuntime(body, previous);
+  }
+
   /** 漏接同步包时，从 PveManager / 地图场景缓存回填或对齐 cities。 */
   function pullCitiesFromRuntime(mode: 'fill-empty' | 'reconcile'): void {
     if (mode === 'fill-empty') {
@@ -154,15 +227,9 @@ export function installShanhetuMapController(
       // 重新进入地图时走 reconcile / allow 分支。
       if (citiesSynced) return;
     }
-    const manager = asRecord(locator.manager('RogueLikePveManager'));
-    const candidates = [
-      manager,
-      asRecord(manager?.allData),
-      asRecord(manager?.AllData),
-      asRecord(manager?.data),
-      asRecord(manager?.gameData),
-      asRecord(findMapScene())
-    ];
+    // 不在山河地图时没有城池可回填，也不去找山河管理器。
+    if (!findMapScene()) return;
+    const candidates = inventoryPayloads();
     for (const candidate of candidates) {
       if (!candidate) continue;
       const next = extractRogueCitySpots(candidate);
@@ -173,6 +240,11 @@ export function installShanhetuMapController(
       runtime = extractRogueMapRuntime(candidate, runtime);
       return;
     }
+  }
+
+  function syncRuntimeFromManager(): void {
+    requestRogueInventoryIfNeeded();
+    syncInventoryRuntime();
   }
 
   function recoverCitiesFromRuntime(allowWhenSyncedEmpty = false): void {
@@ -270,6 +342,7 @@ export function installShanhetuMapController(
     const raid = readRaidObstacle(cityView);
     if (raid) obstacles.push(raid);
 
+    syncRuntimeFromManager();
     const drafts = buildPanelDrafts(config, activeCities, runtime);
     if (!drafts.length) {
       clear(cityView);
@@ -335,8 +408,11 @@ export function installShanhetuMapController(
         enabled: enabled(),
         cityCount: cities.length,
         synced: citiesSynced,
-        difficulty: runtime.difficulty,
-        ...detail
+      difficulty: runtime.difficulty,
+      inventoryCount: runtime.itemIds?.length ?? 0,
+      rogueManagerFound: Boolean(rogueManager.peek()),
+      hasLastRogueSync: Boolean(lastRogueSyncBody),
+      ...detail
       };
     } catch {
       // 忽略异常
@@ -363,6 +439,7 @@ export function installShanhetuMapController(
         citiesSynced = true;
       }
       runtime = extractRuntime(payload, runtime);
+      syncInventoryRuntime(resolveRogueLikeSyncBody(payload));
       if (enabled()) redraw(true);
     },
     dispose() {

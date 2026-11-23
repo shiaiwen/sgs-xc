@@ -27,8 +27,13 @@ export const AUTO_TASK_SKIP_SETTINGS: readonly AutoTaskSkipSetting[] = [
   { key: 'autoTask.skipFreeBless', label: '免费祈福', tooltip: '免费祈福出现红点时自动祈一次，不消耗祈福灯' },
   {
     key: 'autoTask.skipSignTrialCard',
-    label: '体验卡',
+    label: '签到体验卡',
     tooltip: '签到里的体验武将会进将池，勾选才会自动领'
+  },
+  {
+    key: 'autoTask.skipWyqjExperienceCard',
+    label: '每日体验卡',
+    tooltip: '你每天手动点任务里「武将体验」领的那张卡，自动帮你发同一条领取协议\n不要和签到里的「签到体验卡」搞混'
   },
   { key: 'autoTask.skipDiJiaQuan', label: '抵价券', tooltip: '领取含抵价券的奖励' },
   {

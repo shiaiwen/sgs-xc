@@ -45,6 +45,12 @@ export const SHANHETU_SHOP_SYNC_MS = 2000;
 /** 山河集市缺少 shopData 时重复请求 RogueLikeDataReq 的最小间隔。 */
 export const SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS = 12_000;
 
+/** 没找到山河管理器后，隔这么久才重新扫一遍游戏事件监听。不在山河图时一直找不到，扫得太勤会卡。 */
+export const SHANHETU_MANAGER_RETRY_MS = 5000;
+
+/** 找房间座位管理器，用来清掉换人后留在座位上的旧 IP。 */
+export const ROOM_SEAT_IP_GUARD_SCAN_MS = 2000;
+
 /** 铁索重铸：自己座位还没出来时。 */
 export const TIESUO_POLL_IDLE_MS = 500;
 

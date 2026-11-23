@@ -11,11 +11,13 @@ let localScriptResponseCache = null;
 let localScriptInjectCache = null;
 let developmentWebviewReady = false;
 
-ipcRenderer.on('xiaochao-dev-script-changed', () => {
-    localScriptResponseCache = null;
-    localScriptInjectCache = null;
-    console.info('[xiaochao-dev] source changed; refresh the game manually to apply it');
-});
+function isLikelyLoginPageUrl(url) {
+    const address = String(url || '').split(/[?#]/, 1)[0].toLowerCase();
+    return address.includes('login')
+        || address.includes('4399.com')
+        || address.includes('kuaiwan.com')
+        || address.includes('wd-home');
+}
 
 function getReportWindowPageBridgeScript() {
     return `(() => {

@@ -2,6 +2,7 @@
 /** 皮肤与背景设置：本地皮肤、官方壁纸、皮肤纸等。 */
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
 import BaseDialog from '../dialog/BaseDialog.vue';
+import SettingsGroupTitle from './SettingsGroupTitle.vue';
 import {
   ALL_SKIN_BACKGROUND_SETTINGS,
   BACKGROUND_SETTINGS,
@@ -64,7 +65,7 @@ function updateSetting(key, event) {
         :key="group.id"
         class="xiaochao-block-group"
       >
-        <h4 class="xiaochao-block-group__title">{{ group.title }}</h4>
+        <SettingsGroupTitle :title="group.title" />
         <div class="xiaochao-block-group__grid">
           <template v-for="setting in group.settings" :key="setting.key">
             <div

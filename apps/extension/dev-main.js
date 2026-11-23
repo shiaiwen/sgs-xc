@@ -16,12 +16,20 @@ const root = import.meta.dirname;
 // 尽早关掉 Chromium 文件日志，避免在仓库里生成 debug.log
 app.commandLine.appendSwitch('disable-logging');
 app.commandLine.appendSwitch('log-file', process.platform === 'win32' ? 'NUL' : '/dev/null');
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-http-cache');
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+}
 // 默认保留硬件加速（游戏 WebGL 需要）；仅诊断 GPU 问题时再开软件渲染。
 if (process.env.SGSOL_SOFTWARE_RENDERING === '1') app.disableHardwareAcceleration();
 process.chdir(root);
 const data = path.join(root, '.dev-data');
 fs.mkdirSync(path.join(data, 'xiaochao'), { recursive: true });
 app.setPath('userData', data);
+if (!app.requestSingleInstanceLock()) {
+  console.error('[dev] 已有微端正在使用此开发配置目录，请先关闭旧实例。');
+  process.exit(1);
+}
 const configPath = path.join(data, 'xiaochao/config.json');
 /** 为 1 时启用 webview 健康探针、明牌/皮肤 trace 与 probe.js 热执行。 */
 const diagnosticsEnabled = process.env.SGSOL_DIAGNOSTICS === '1';

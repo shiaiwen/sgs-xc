@@ -16,6 +16,7 @@ const ATTR_META = Object.freeze({
 } as const);
 
 const EXTRA_ATTR_FIELDS = ['att_ZD', 'att_KN', 'att_EM', 'att_LY'] as const;
+const EXTRA_ATTR_CACHE_KEY = '__xcRogueAttExtra';
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
@@ -32,9 +33,40 @@ function num(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function isHiddenGeneral(general: UnknownRecord): boolean {
+  return num(general.hide ?? general.Hide) === 1;
+}
+
+function generalStartChapter(general: UnknownRecord): number {
+  return num(general.startChapter ?? general.StartChapter);
+}
+
+function fightIsSingle(fight: UnknownRecord): boolean {
+  return num(fight.isSingle ?? fight.IsSingle) === 1;
+}
+
+/** RnumGrow 人数缩放依赖开战配置的 baseGenerals / isSingle，奇遇选项会缺字段，回填 Rfight。 */
+export function resolveRogueFightScaleMeta(
+  config: ShanhetuMapConfigData,
+  event: string | number | undefined,
+  fightLike: UnknownRecord
+): UnknownRecord {
+  const parent = event == null ? null : config.Rfight[String(event)];
+  const baseFromFight = asArray(fightLike.baseGenerals);
+  const baseFromParent = parent ? asArray(parent.baseGenerals) : [];
+  const baseGenerals = baseFromFight.length ? baseFromFight : baseFromParent;
+  if (!parent && !baseGenerals.length) return fightLike;
+  return {
+    ...(parent as UnknownRecord ?? {}),
+    ...fightLike,
+    baseGenerals: baseGenerals.length ? baseGenerals : asArray(fightLike.generals ?? parent?.generals),
+    isSingle: fightLike.isSingle ?? fightLike.IsSingle ?? parent?.isSingle ?? parent?.IsSingle
+  };
+}
+
 function scaleAdd(raw: number): number {
   if (raw >= 1) return Math.floor(raw);
-  if (raw >= 0) return Math.round(raw);
+  if (raw >= 0) return Math.ceil(raw);
   return Math.floor(raw);
 }
 
@@ -51,6 +83,12 @@ function readExtraAttrs(
   bigDif: number,
   difficulty: number
 ): Record<string, number> {
+  const cacheRoot = asRecord(general[EXTRA_ATTR_CACHE_KEY]) ?? {};
+  const cacheKey = `${bigDif}_${difficulty}`;
+  const cached = cacheRoot[cacheKey];
+  if (cached && typeof cached === 'object') {
+    return cached as Record<string, number>;
+  }
   const result: Record<string, number> = {};
   for (let index = 0; index < bigDif && index < EXTRA_ATTR_FIELDS.length; index += 1) {
     for (const part of String(general[EXTRA_ATTR_FIELDS[index]] ?? '').split(';')) {
@@ -70,6 +108,8 @@ function readExtraAttrs(
       }
     }
   }
+  cacheRoot[cacheKey] = result;
+  general[EXTRA_ATTR_CACHE_KEY] = cacheRoot;
   return result;
 }
 
@@ -127,14 +167,19 @@ function buildGrowContext(
   const difficulty = num(runtime.difficulty);
   const seasonId = String(runtime.seasonId || config.RcurSeason || 1);
   const diffs = config.Rdiff[seasonId] ?? {};
-  const diffRow = asRecord(diffs[String(difficulty)]) ?? asRecord(diffs[difficulty]) ?? null;
+  const diffRow = asRecord(diffs[difficulty as unknown as string])
+    ?? asRecord(diffs[String(difficulty)])
+    ?? null;
   const bigDif = Math.max(1, num(diffRow?.bdif, 1));
   const chapter = num(runtime.passChapter) + 1;
   const accday = num(runtime.accday);
   const growRow = asRecord(config.Rgrow[`${accday}_${difficulty}`]) ?? null;
   const diffGrowRow = asRecord(config.RdiffGrow[`${bigDif}_${chapter}`]) ?? null;
-  const bosses = config.RchapBoss[seasonId] ?? {};
-  const bossLocation = num(bosses[String(runtime.chapterId)] ?? bosses[runtime.chapterId]);
+  const bosses = config.RchapBoss[seasonId] ?? config.RchapBoss[String(seasonId)] ?? {};
+  const bossLocation = num(
+    bosses[String(runtime.chapterId)]
+    ?? bosses[runtime.chapterId as unknown as string]
+  );
   return {
     difficulty,
     chapter,
@@ -153,15 +198,15 @@ function readNumGrowRow(
   cityId: string | number | undefined,
   grow: GrowContext
 ): UnknownRecord | null {
-  const generals = asArray(fight.generals ?? fight.baseGenerals);
+  const generals = asArray(fight.baseGenerals ?? fight.generals);
   const visible = generals.filter((entry) => {
     const general = asRecord(entry);
-    if (!general || Number(general.hide) === 1) return false;
-    return num(general.startChapter) <= grow.chapter;
+    if (!general || isHiddenGeneral(general)) return false;
+    return generalStartChapter(general) <= grow.chapter;
   });
   const mode = cityId != null && grow.bossLocation === Number(cityId)
     ? 1
-    : Number(fight.isSingle ?? fight.issingle) === 1
+    : fightIsSingle(fight)
       ? 2
       : 3;
   return asRecord(config.RnumGrow[`${mode}_${visible.length}`]) ?? null;
@@ -178,7 +223,7 @@ export function formatGeneralStatsLine(
   const grow = buildGrowContext(config, runtime);
   const numGrow = readNumGrowRow(config, fight, cityId, grow);
   const hp = readAttr(general, 4, grow, numGrow);
-  const maxHp = Math.max(1, num(general.maxhp) + hp.add + num(hp.extra.maxhp));
+  const maxHp = Math.max(1, num(general.maxhp ?? general.maxHp) + hp.add + num(hp.extra.maxhp));
   const cards = readAttr(general, 5, grow, numGrow).value;
   const draw = readAttr(general, 1, grow, numGrow).value;
   const sha = 1 + readAttr(general, 2, grow, numGrow).value;
@@ -200,12 +245,21 @@ export function formatGeneralName(general: UnknownRecord): string {
   return general.start ? `[先手]${name}` : name;
 }
 
-/** 逆向版本只将这组需要特别留意的敌方技能标红。 */
+/** 地图透视里需要标红的敌方技能名，与官网脚本警戒表一致。 */
 const WARNING_SPELLS = new Set([
   '巳蛇', '灵动', '八门', '智迟', '持盈', '卫主', '不死', '刚烈', '觉醒', '悲鸣',
   '断肠', '节命', '先机', '忘魂', '雅士', '挥泪', '不屈', '封冻', '灵躯', '武魂',
   '已蛇', '邪徒', '魅步', '雷击', '恢拓', '夺炁', '恩怨', '鸡肋', '反击'
 ]);
+
+/** 难度档对应的 getspell 字段，下标即档位序号。 */
+const GENERAL_SPELL_FIELDS_BY_DIFFICULTY = [
+  'getspell',
+  'getspell_ZD',
+  'getspell_KN',
+  'getspell_EM',
+  'getspell_LY'
+] as const;
 
 export function formatGeneralWarningSkills(
   general: UnknownRecord,
@@ -215,16 +269,16 @@ export function formatGeneralWarningSkills(
   const seasonId = String(runtime.seasonId || config.RcurSeason || 1);
   const diff = config.Rdiff[seasonId]?.[String(runtime.difficulty)];
   const bigDif = Math.max(1, num(diff?.bdif, 1));
-  const fields = ['getspell_PT', 'getspell_ZD', 'getspell_KN', 'getspell_EM', 'getspell_LY'];
-  let ids: string[] = [];
+  let spellIds: string[] = [];
   const apply = (value: string): void => {
     for (const id of value.split(';').filter(Boolean)) {
-      if (id.startsWith('_')) ids = ids.filter((existing) => existing !== id.slice(1));
-      else ids.push(id);
+      if (id.startsWith('_')) spellIds = spellIds.filter((existing) => existing !== id.slice(1));
+      else spellIds.push(id);
     }
   };
-  apply(String(general.getspell ?? ''));
-  for (const field of fields.slice(0, bigDif)) apply(String(general[field] ?? ''));
+  for (const field of GENERAL_SPELL_FIELDS_BY_DIFFICULTY.slice(0, bigDif)) {
+    apply(String(general[field] ?? ''));
+  }
   if (runtime.difficulty > 100) {
     const field = hardExtraField(runtime.difficulty, 'getspell_JJ');
     for (const part of String(field ? general[field] ?? '' : '').split(';')) {
@@ -233,7 +287,10 @@ export function formatGeneralWarningSkills(
       for (const change of changes) apply(change);
     }
   }
-  // 原生敌方技能面板在山河技能列表为空时回退到武将自带技能。
-  const skillIds = ids.length ? ids : config.RgeneralSpellIds?.[String(general.generalID)] ?? [];
-  return skillIds.map((id) => config.RspellNames?.[id] ?? '').filter((name) => WARNING_SPELLS.has(name));
+  const warnings: string[] = [];
+  for (const id of spellIds) {
+    const name = config.RspellNames?.[id] ?? '';
+    if (name && WARNING_SPELLS.has(name)) warnings.push(name);
+  }
+  return warnings;
 }

@@ -128,8 +128,6 @@ mountXiaochaoApp(
     subscribe: emptySubscribe({ active: false, mapName: '', variants: [] })
   } as unknown as PeixiuRouteStore,
   turnStatusStore,
-  null,
-  () => ({ found: true, count: 3 }),
   {
     openShop: () => {
       window.alert('沙盒：打开集市（无游戏）');

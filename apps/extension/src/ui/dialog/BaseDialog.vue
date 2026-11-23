@@ -128,6 +128,7 @@ const dialogStyle = computed(() => {
     >
       <header class="xiaochao-dialog__header">
         <h2 :id="titleId" class="xiaochao-dialog__title">{{ title }}</h2>
+        <slot name="header-actions" />
         <button
           type="button"
           class="xiaochao-dialog__close"

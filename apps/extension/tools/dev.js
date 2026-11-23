@@ -140,7 +140,7 @@ if (!resolved) {
 }
 
 console.log(`[dev] Electron(${resolved.kind}): ${resolved.path}`);
-console.log('[dev] 快速 watch：不压缩、不每次清空 dist/electron，改 TS/Vue 保存后等终端 built 再刷新微端');
+console.log('[dev] 保存 TS/Vue 后自动构建。构建完成后，手动刷新游戏页即可加载新版小抄。');
 
 /**
  * @param {string} command
@@ -196,14 +196,14 @@ run(process.execPath, [
 ]);
 // Chromium 开关必须放在应用路径之前，否则仍会在仓库里写 debug.log
 const electronLogSink = process.platform === 'win32' ? 'NUL' : '/dev/null';
-const DEV_REMOTE_DEBUGGING_PORT = 9333;
+const debugPort = env.SGSOL_DEV_DEBUG_PORT;
 const electron = run(
   resolved.path,
   [
     '--trace-warnings',
     '--disable-logging',
     `--log-file=${electronLogSink}`,
-    `--remote-debugging-port=${DEV_REMOTE_DEBUGGING_PORT}`,
+    ...(debugPort ? [`--remote-debugging-port=${debugPort}`] : []),
     root
   ],
   { pipeConsole: true }

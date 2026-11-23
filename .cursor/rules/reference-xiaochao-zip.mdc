@@ -1,5 +1,5 @@
 ---
-description: 逆向对照小抄脚本时只看仓库内指定压缩包里的 1.6.50
+description: 逆向对照时使用指定微端包及其对应的官方经典版脚本
 alwaysApply: true
 ---
 
@@ -7,9 +7,9 @@ alwaysApply: true
 
 对照小抄脚本行为时，只读这个压缩包：
 
-`D:\workspace\sgs-xc\apps\extension\.reference\xiaochao-1.6.50-weiduan-1.1.82.zip`
+`D:\workspace\sgs-xc\apps\extension\.reference\xiaochao-weiduan-1.1.94.zip`
 
-包内是 `app.zip`，脚本路径是 `app/xiaochao.js`，版本 `1.6.50`。
+包内是 `app.zip`；如果没有 `app/xiaochao.js`，刷新工具会按官网经典版清单下载并校验脚本。脚本版本、来源和 SHA256 以 `REFERENCE_MANIFEST.json` 为准，不要把下载的脚本称为从 zip 内提取。
 
 不要用 `apps/extension/.reference/app-bak/xiaochao.js`。那份是 `1.5.71`。
 

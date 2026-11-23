@@ -217,6 +217,7 @@ function buildRfight(
     if (fightID == null) continue;
     const groupKey = String(record.Ggroup ?? record.ggroup ?? '');
     const generals = [...(generalGroups[groupKey] ?? [])].map((item) => ({ ...item }));
+    const baseGenerals = generals.map((item) => ({ ...item }));
     if (record.startnum) {
       const starter = generals.find((item) => item.generalID == record.startnum || item.generalId == record.startnum);
       if (starter) starter.start = true;
@@ -234,6 +235,7 @@ function buildRfight(
       .join(ROGUE_LINE_BREAK);
     table[String(fightID)] = {
       ...record,
+      baseGenerals,
       generals: sink.generals,
       fight: sink.fight,
       lost: sink.lost.trim(),

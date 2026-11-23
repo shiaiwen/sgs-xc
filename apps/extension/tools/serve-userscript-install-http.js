@@ -10,7 +10,6 @@ import { patchUserscriptDevInstallMount } from './patch-userscript-dev-install.j
 import { USERSCRIPT_DEV_LOADER_PATH } from '../src/const/userscript-meta.ts';
 
 const INSTALL_PATH = '/xiaochao-dev.user.js';
-const BUILD_ID_PATH = '/xiaochao-dev-build-id';
 
 export function fetchTextUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 5000;
@@ -68,7 +67,6 @@ export function startUserscriptInstallHttpServer(options) {
   const port = options.port ?? 5174;
   const host = options.host ?? '127.0.0.1';
   const userscriptFile = path.join(root, 'dist/userscript/xiaochao.user.js');
-  const buildIdFile = path.join(root, 'dist/userscript/xiaochao-dev-build-id.txt');
   const proxyHttpsUrl = options.proxyHttpsUrl;
   const installUrl = `http://${host}:${port}${INSTALL_PATH}`;
 
@@ -77,23 +75,6 @@ export function startUserscriptInstallHttpServer(options) {
     if (reqPath === '/' || reqPath === '/index.html') {
       res.writeHead(302, { Location: INSTALL_PATH });
       res.end();
-      return;
-    }
-    if (reqPath === BUILD_ID_PATH) {
-      fs.readFile(buildIdFile, 'utf8', (error, body) => {
-        if (error) {
-          res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('waiting for build');
-          return;
-        }
-        res.writeHead(200, {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-store, no-cache, must-revalidate',
-          Pragma: 'no-cache'
-        });
-        res.end(String(body).trim());
-      });
       return;
     }
     if (options.loaderSource && reqPath === USERSCRIPT_DEV_LOADER_PATH) {

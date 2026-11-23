@@ -9,6 +9,7 @@ import {
 } from '../../adapters/laya-object-locator.ts';
 import type { CardConfigSource } from '../../adapters/card-config-source.ts';
 import {
+  SHANHETU_MANAGER_RETRY_MS,
   SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS,
   SHANHETU_SHOP_SYNC_MS
 } from '../../const/poll-intervals.ts';
@@ -126,7 +127,14 @@ function mergeUniqueItemIds(sources: unknown[][]): unknown[] {
   return result;
 }
 
-import { readRogueLikeAllData, resolveRogueLikeSyncBody } from './shanhetu-rogue-sync.ts';
+import {
+  createRogueManagerLookup,
+  readRogueMapLayoutFingerprint,
+  readRogueRunFingerprint,
+  extractRogueMapRuntime,
+  resolveRogueLikeSyncBody
+} from './shanhetu-rogue-sync.ts';
+import { EMPTY_ROGUE_MAP_RUNTIME } from './shanhetu-map-types.ts';
 
 export { resolveRogueLikeSyncBody } from './shanhetu-rogue-sync.ts';
 
@@ -228,6 +236,7 @@ export function installShanhetuShopController(
   const locator = options.locator ?? createLayaObjectLocator(globalObject);
   const cardConfigSource = options.cardConfigSource;
   const patcher = createMethodPatcher();
+  const rogueManager = createRogueManagerLookup(locator, SHANHETU_MANAGER_RETRY_MS);
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const previewListeners = new Set<ShanhetuShopPreviewListener>();
   let disposed = false;
@@ -241,12 +250,55 @@ export function installShanhetuShopController(
   let openWindowHandler: ((event: unknown) => void) | null = null;
   let previewItems: ShanhetuShopPreviewItem[] = [];
   let syncedShopItemIds: unknown[] = [];
+  let lastRogueRunKey = '';
+  /** 新开一局后 manager 上 shopData 仍是上一局的；仅信同步包写入的 itemId。 */
+  let managerShopUntrusted = true;
+  let lastPassChapter = -1;
+  let lastMapLayoutKey = '';
   /**
    * 同步包先于 Rplot 到达时暂存 itemId；Rplot 还是空对象时
    * 为 0 时解析不出商品——我们不展示占位方案，因此等配置就绪后再刷一次。
    */
   let pendingShopItemIds: unknown[] | null = null;
   let rplotWait: Promise<void> | null = null;
+
+  function resetShopPreviewCache(): void {
+    syncedShopItemIds = [];
+    pendingShopItemIds = null;
+    originalShopVisible = null;
+    requestedInCurrentScene = false;
+    managerShopUntrusted = true;
+    lastMapLayoutKey = '';
+    publishPreview([]);
+  }
+
+  function noteRogueRunFromPayload(payload: UnknownRecord): void {
+    const body = resolveRogueLikeSyncBody(payload);
+    const runtime = extractRogueMapRuntime(body, EMPTY_ROGUE_MAP_RUNTIME);
+    const passChapter = runtime.passChapter;
+    const passChapterDropped = lastPassChapter >= 0 && passChapter < lastPassChapter;
+    lastPassChapter = passChapter;
+
+    const layoutKey = readRogueMapLayoutFingerprint(payload);
+    const layoutChanged = Boolean(layoutKey)
+      && Boolean(lastMapLayoutKey)
+      && layoutKey !== lastMapLayoutKey
+      && passChapter <= 1;
+    if (layoutKey) lastMapLayoutKey = layoutKey;
+
+    const key = readRogueRunFingerprint(payload);
+    const runChanged = Boolean(lastRogueRunKey)
+      && (key !== lastRogueRunKey || passChapterDropped || layoutChanged);
+    if (runChanged) {
+      resetShopPreviewCache();
+      lastShopDataRequestAt = 0;
+      if (!disposed && isShanHeTuMode(locator, globalObject)) {
+        later(() => syncShopPreviewFromSources(true), 0);
+        later(() => syncShopPreviewFromSources(true), 600);
+      }
+    }
+    lastRogueRunKey = key;
+  }
 
   function publishPreview(next: ShanhetuShopPreviewItem[]): void {
     previewItems = next;
@@ -306,15 +358,29 @@ export function installShanhetuShopController(
   }
 
   function gatherShopItemIds(): unknown[] {
-    const managerData = readShopDataFromManager();
-    const sources: unknown[][] = [syncedShopItemIds];
-    if (managerData) sources.push(shopItemIds(managerData));
     const win = readShopWindow();
+  if (managerShopUntrusted) {
+      const sources: unknown[][] = [syncedShopItemIds];
+      if (win) sources.push(shopItemIdsFromWindow(win));
+      return mergeUniqueItemIds(sources);
+    }
+    const managerData = readShopDataFromManager();
+    if (managerData) {
+      const sources: unknown[][] = [syncedShopItemIds, shopItemIds(managerData)];
+      if (win) sources.push(shopItemIdsFromWindow(win));
+      return mergeUniqueItemIds(sources);
+    }
+    const sources: unknown[][] = [syncedShopItemIds];
     if (win) sources.push(shopItemIdsFromWindow(win));
     return mergeUniqueItemIds(sources);
   }
 
   function refreshPreviewFromItemIds(ids: unknown[]): void {
+    if (!ids.length) {
+      pendingShopItemIds = null;
+      publishPreview([]);
+      return;
+    }
     const rplot = cardConfigSource?.getShanhetuMapData()?.Rplot ?? null;
     if (ids.length && !isRplotReady(rplot)) {
       pendingShopItemIds = ids;
@@ -340,16 +406,25 @@ export function installShanhetuShopController(
       wasInShanheScene = false;
       return;
     }
+    const justEnteredShanhe = !wasInShanheScene;
     wasInShanheScene = true;
-    const managerData = readShopDataFromManager();
+    if (justEnteredShanhe) {
+      managerShopUntrusted = true;
+      const manager = rogueManager.get();
+      if (manager) noteRogueRunFromPayload(manager);
+      lastShopDataRequestAt = 0;
+      allowRequest = true;
+    }
+    const managerData = !managerShopUntrusted ? readShopDataFromManager() : null;
     if (managerData) forceShopVisible(managerData, originalShopVisible === null);
     const ids = gatherShopItemIds();
     if (ids.length) {
       refreshPreviewFromItemIds(ids);
       return;
     }
+    publishPreview([]);
     // 参考脚本缺集市数据时请求一次完整山河同步；进入总地图也执行一次。
-    if ((allowRequest || !requestedInCurrentScene) && requestShopData()) {
+    if ((allowRequest || !requestedInCurrentScene) && requestShopData(ROGUE_SHOP_DATA_REQ_MARK, allowRequest)) {
       requestedInCurrentScene = true;
     }
   }
@@ -364,7 +439,7 @@ export function installShanhetuShopController(
   }
 
   function readShopDataFromManager(): UnknownRecord | null {
-    const manager = asRecord(locator.manager('RogueLikePveManager'));
+    const manager = rogueManager.get();
     if (!manager) return null;
     return readShopData(manager)
       ?? readShopData(asRecord(manager.allData) ?? {})
@@ -372,10 +447,10 @@ export function installShanhetuShopController(
   }
 
   /** 缺 shopData 时向 RogueLikePveManager 要一次完整同步。 */
-  function requestShopData(mark = ROGUE_SHOP_DATA_REQ_MARK): boolean {
+  function requestShopData(mark = ROGUE_SHOP_DATA_REQ_MARK, ignoreCooldown = false): boolean {
     const now = Date.now();
-    if (now - lastShopDataRequestAt < SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS) return false;
-    const manager = asRecord(locator.manager('RogueLikePveManager'));
+    if (!ignoreCooldown && now - lastShopDataRequestAt < SHANHETU_SHOP_DATA_REQUEST_COOLDOWN_MS) return false;
+    const manager = rogueManager.get();
     const method = manager?.RogueLikeDataReq;
     if (typeof method !== 'function') return false;
     try {
@@ -462,6 +537,7 @@ export function installShanhetuShopController(
 
   function filterMessage(payload: UnknownRecord, className: string): void {
     if (className !== 'decodeRogueLikeDataSync') return;
+    noteRogueRunFromPayload(payload);
     if (!isShanHeTuMode(locator, globalObject)) return;
 
     // ClassName 在外层；allData / dataMark / shopData 由 readShopData / hasRogueShopSyncFlag 解 ProtoObj。
@@ -476,16 +552,17 @@ export function installShanhetuShopController(
 
     if (!shopData) return;
     requestedInCurrentScene = true;
+    managerShopUntrusted = false;
 
     const syncedIds = shopItemIds(shopData);
-    if (syncedIds.length) syncedShopItemIds = syncedIds;
+    syncedShopItemIds = syncedIds;
 
     // bit4 时记下原始 bShow 并强制可见，同时复位数据请求锁。
     if (shopFlag) {
       forceShopVisible(shopData, true);
     }
 
-    refreshPreviewFromItemIds(syncedShopItemIds.length ? syncedShopItemIds : syncedIds);
+    refreshPreviewFromItemIds(syncedIds);
     later(() => syncShopPreviewFromSources(), 0);
   }
 
@@ -551,6 +628,9 @@ export function installShanhetuShopController(
       requestedInCurrentScene = false;
       pendingShopItemIds = null;
       rplotWait = null;
+      lastRogueRunKey = '';
+      managerShopUntrusted = true;
+      lastPassChapter = -1;
       previewItems = [];
       syncedShopItemIds = [];
     }
