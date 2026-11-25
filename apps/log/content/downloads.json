@@ -4,5 +4,11 @@
     "file": "wd-xc-1.0.70.zip",
     "size": 568572,
     "sha256": "c15c9da4730d9da6c67aab30a1235e24d10aea94b64f5b20a88d6d7e6bc65aad"
+  },
+  {
+    "version": "1.0.71",
+    "file": "wd-xc-1.0.71.zip",
+    "size": 569555,
+    "sha256": "53c7fe0d6411b74ba495117e3c82f43fc89098614fff81675d05f3c251402c24"
   }
 ]
