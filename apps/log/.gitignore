@@ -11,3 +11,6 @@ npm-debug.log*
 .vercel
 *.tsbuildinfo
 next-env.d.ts
+
+# 历史安装包由发布流程归档，索引单独保存在 content/downloads.json
+/public/downloads/

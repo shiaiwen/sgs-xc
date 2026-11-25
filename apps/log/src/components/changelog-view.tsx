@@ -3,12 +3,7 @@
 import { useEffect, useState } from "react";
 import { Markdown } from "@/components/markdown";
 
-type Release = {
-  version: string;
-  title: string;
-  date: string;
-  content: string;
-};
+import type { Release } from "@/lib/releases";
 
 function versionFromLocation(releases: Release[]) {
   const requested = new URLSearchParams(window.location.search).get("v");
@@ -64,6 +59,19 @@ export function ChangelogView({ releases }: { releases: Release[] }) {
               {current.title}
             </h1>
             <p className="mt-4 text-[14px] text-[#666]">发布时间：{current.date}</p>
+            {current.download ? (
+              <div className="mt-6 rounded-lg border border-[#ddd] bg-[#fafafa] p-4 text-[14px]">
+                <a
+                  href={`/downloads/${current.download.file}`}
+                  download
+                  className="inline-block rounded-md bg-[#2463a6] px-4 py-2 font-medium text-white hover:bg-[#194c82] focus-visible:outline-2 focus-visible:outline-offset-2"
+                >
+                  下载小抄 {current.version} 微端安装包
+                </a>
+                <p className="mt-3 text-[#666]">历史版本归档 · {(current.download.size / 1024).toFixed(1)} KB</p>
+                <p className="mt-2 text-xs text-[#666]">旧版本仅供回退参考，可能不兼容当前游戏；客户端仍可能自动更新到最新版。</p>
+              </div>
+            ) : <p className="mt-6 text-[13px] text-[#888]">此版本暂无归档安装包。</p>}
             {current.content ? (
               <div className="mt-8">
                 <Markdown source={current.content} />

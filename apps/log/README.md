@@ -78,3 +78,22 @@ date: "2026-10-28"
 4. 在 `apps/log` 执行 `npm run deploy`。脚本会先构建，再上传到服务器。
 
 默认上传到 `admin@123.56.3.130:/opt/log`。要换机器或目录，设置 `LOG_SSH` 和 `LOG_REMOTE`。没设 `LOG_SSH` 时会沿用 `XC_SSH`。
+
+## 历史安装包归档（从 1.0.70 开始）
+
+在日志站选择带「可下载」的版本，即可下载该版微端手动安装包，查看大小与 SHA-256。
+没有真实产物的旧日志不展示下载按钮，不回填猜测包。版本链接：`https://log.95chong.cn/?v=1.0.70`。
+
+- 包：`apps/log/public/downloads/wd-xc-<版本>.zip`（Git 忽略，不提交大文件）。
+- 索引：`apps/log/content/downloads.json`（版本、文件名、字节数、SHA-256，随代码提交）。
+- 线上包及索引：`https://log.95chong.cn/downloads/wd-xc-<版本>.zip`、`/downloads/index.json`。
+- `npm run release` 在正式下载与版本服务上传后，运行 `archive-release`，然后部署日志站。
+  归档读取已有 `apps/extension/release`，校验包内 app.zip、xiaochao.js 的发布哈希和脚本版本，绝不重新构建。
+- 独立补存已验证的本地正式包：`npm run archive-release -w apps/log`；只归档不升级版本、不发布扩展。
+- 日志站 `npm run deploy -w apps/log` 会先合并远端索引并校验已有包，不能把 SSH 错误当空索引。
+  同版本同哈希可重复执行；同版本不同哈希失败，禁止覆盖。缺少真实包时失败，不能发布虚假链接。
+- 部署只增量覆盖网站页面，**不清空远端 `/opt/log/dist`**，也不让静态构建覆盖 `downloads`。
+  历史包保留在远端 `dist/downloads`；新电脑没有旧包也能部署。新包上传前后校验哈希，索引最后更新。
+- 从空服务器恢复时须先从备份还原索引中的安装包；Git 只有元数据，不代替二进制备份。
+
+归档测试：`npm run test:archive -w apps/log`。

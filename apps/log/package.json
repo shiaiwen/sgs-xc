@@ -9,6 +9,8 @@
     "lint": "eslint",
     "test": "node --test scripts/new-release.test.js",
     "new-release": "node scripts/new-release.js",
+    "archive-release": "node scripts/archive-release.js",
+    "test:archive": "node --test scripts/archive-store.test.js",
     "ensure-changelog": "node scripts/ensure-release-changelog.js",
     "deploy": "node deploy/push.js"
   },

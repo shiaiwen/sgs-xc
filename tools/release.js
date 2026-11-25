@@ -16,6 +16,7 @@ const steps = [
   { name: '拷贝到门户下载目录', command: 'npm', args: ['run', 'copy:portal', '-w', 'apps/extension'] },
   { name: '上传门户下载文件', command: 'npm', args: ['run', 'deploy:downloads', '-w', 'apps/portal'] },
   { name: '上传版本服务', command: 'npm', args: ['run', 'deploy', '-w', 'apps/server'] },
+  { name: '归档版本安装包', command: 'npm', args: ['run', 'archive-release', '-w', 'apps/log'] },
   { name: '发布更新日志站', command: 'npm', args: ['run', 'deploy', '-w', 'apps/log'] }
 ];
 

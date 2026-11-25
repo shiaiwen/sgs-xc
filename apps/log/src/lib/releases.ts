@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
+import { readIndex } from "../../scripts/archive-store.js";
 
 const releasesDir = path.join(process.cwd(), "content", "releases");
 
@@ -9,6 +10,7 @@ export type Release = {
   title: string;
   date: string;
   content: string;
+  download: { file: string; size: number; sha256: string } | null;
 };
 
 function asDate(value: unknown) {
@@ -49,6 +51,7 @@ function compareVersions(left: string, right: string) {
 export function getReleases(): Release[] {
   if (!fs.existsSync(releasesDir)) return [];
 
+  const downloads = readIndex(path.join(process.cwd(), "content/downloads.json"));
   const releases: Release[] = [];
   const seen = new Set<string>();
   const files = fs.readdirSync(releasesDir).filter(
@@ -73,6 +76,7 @@ export function getReleases(): Release[] {
       title: titleText || `小抄 ${version}`,
       date,
       content: content.trim(),
+      download: downloads.find((item: { version: string }) => item.version === version) ?? null,
     });
   }
 
