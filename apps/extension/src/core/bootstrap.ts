@@ -69,6 +69,9 @@ import {
 import { installSkinChangeController } from '../features/skin-background/skin-change-controller';
 import { installSkinPaperController } from '../features/skin-background/skin-paper-controller';
 import { installAutoTaskController } from '../features/auto-task';
+// 临时关闭周年庆入口，方便以后恢复。
+// import { installAnniversaryAssistController } from '../features/anniversary-assist';
+// import { setAnniversaryAssistController } from '../features/anniversary-assist/anniversary-assist-registry';
 import { installDdzShopAutoExchange } from '../features/ddz-shop/ddz-shop-auto-exchange';
 import { installShanhetuController } from '../features/shanhetu';
 import { createPeixiuRouteStore, installExtraAssistController } from '../features/extra-assist';
@@ -431,6 +434,17 @@ function startXiaochaoCore(
     } catch (error) {
       console.error('[xiaochao] 自动领取初始化失败，面板仍可用', error);
     }
+    // 临时关闭周年庆入口，方便以后恢复。
+    // try {
+    //   const anniversaryAssist = installAnniversaryAssistController(configStore, gameEvents, window);
+    //   setAnniversaryAssistController(anniversaryAssist);
+    //   lifecycle.register(() => {
+    //     anniversaryAssist.dispose();
+    //     setAnniversaryAssistController(null);
+    //   });
+    // } catch (error) {
+    //   console.error('[xiaochao] 周年庆互助初始化失败，面板仍可用', error);
+    // }
     try {
       lifecycle.register(installDdzShopAutoExchange({ cardConfigSource }));
       lifecycle.register(installGiftCodeController({ configStore }));

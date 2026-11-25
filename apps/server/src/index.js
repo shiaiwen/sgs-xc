@@ -10,6 +10,8 @@ import { createLogRoutes } from './logs-page.js';
 import { captureRequestLog } from './request-log.js';
 import { createVersionRoutes } from './version/routes.js';
 import { createFeedbackRoutes } from './feedback/routes.js';
+// 临时关闭周年庆入口，方便以后恢复。
+// import { createAnniversaryAssistRoutes } from './anniversary-assist/routes.js';
 
 const app = new Hono();
 const port = Number(process.env.PORT) || 8787;
@@ -33,6 +35,8 @@ app.route('/', createAccountSkinRoutes());
 app.route('/', createAccountResetRoutes());
 app.route('/', createVersionRoutes());
 app.route('/', createFeedbackRoutes());
+// 临时关闭周年庆入口，方便以后恢复。
+// app.route('/', createAnniversaryAssistRoutes());
 
 // 礼包码跟着上游每小时刷一次，接口只读缓存，不受上游抖动影响。
 startGiftCodeRefresh();

@@ -22,6 +22,8 @@ import BlockSettingsSection from './settings/BlockSettingsSection.vue';
 import GuanxingEntry from './settings/GuanxingEntry.vue';
 import SkinBackgroundSettingsSection from './settings/SkinBackgroundSettingsSection.vue';
 import AutoTaskSettingsSection from './settings/AutoTaskSettingsSection.vue';
+// 临时关闭周年庆入口，方便以后恢复。
+// import AnniversaryAssistSettingsSection from './settings/AnniversaryAssistSettingsSection.vue';
 import ShanhetuSettingsSection from './settings/ShanhetuSettingsSection.vue';
 import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -768,6 +770,8 @@ function handleResizeStart(event: PointerEvent): void {
         <BlockSettingsSection :config-store="configStore" />
         <SkinBackgroundSettingsSection :config-store="configStore" />
         <AutoTaskSettingsSection :config-store="configStore" />
+        <!-- 临时关闭周年庆入口，方便以后恢复。 -->
+        <!-- <AnniversaryAssistSettingsSection /> -->
       </div>
     </main>
     <main
