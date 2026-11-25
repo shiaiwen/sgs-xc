@@ -11,38 +11,10 @@ import {
   readRequestedShowName
 } from './real-player-name-init.ts';
 import { shouldDeferSeatTopManagerSync } from '../../runtime/game-native-dialog.ts';
-import {
-  PLAY_NAME_DEBUG_CLOCK_END,
-  PLAY_NAME_DEBUG_CLOCK_START,
-  PLAY_NAME_DEBUG_LOG_MAX
-} from '../../const/play-name-sync.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
 const PLAY_NAME_VISIBLE_APPLIED_KEY = '__xcPlayNameVisibleApplied';
-
-interface PlayNameDebugBridge {
-  pauseSync?: boolean;
-  verbose?: boolean;
-  log?: string[];
-  maxLog?: number;
-}
-
-type PlayNameDebugWindow = GameRuntimeWindow & { __xcPlayNameDebug?: PlayNameDebugBridge };
-
-export function isPlayNameSyncPaused(globalObject: GameRuntimeWindow = window): boolean {
-  return (globalObject as PlayNameDebugWindow).__xcPlayNameDebug?.pauseSync === true;
-}
-
-export function appendPlayNameDebugLog(globalObject: GameRuntimeWindow, message: string): void {
-  const state = (globalObject as PlayNameDebugWindow).__xcPlayNameDebug;
-  if (!state || state.verbose === false) return;
-  const log = state.log ?? (state.log = []);
-  const max = state.maxLog ?? PLAY_NAME_DEBUG_LOG_MAX;
-  const clock = new Date().toISOString().slice(PLAY_NAME_DEBUG_CLOCK_START, PLAY_NAME_DEBUG_CLOCK_END);
-  log.push(`${clock} ${message}`);
-  if (log.length > max) log.splice(0, log.length - max);
-}
 
 /**
  * 排位、天梯、斗地主、八人匹配和 8人匹配会把真人名字藏起来。
@@ -105,7 +77,6 @@ export function isRankOrDoudizhuScene(
 
 /** 一轮同步在这个座位上停在哪一步，排查时看。 */
 export type PlayNameSyncStep =
-  | 'paused'
   | 'deferred'
   | 'no-client-id'
   | 'own-seat'
@@ -120,7 +91,6 @@ export function syncSeatPlayName(
   seatUi: UnknownRecord,
   globalObject: GameRuntimeWindow = window
 ): PlayNameSyncStep {
-  if (isPlayNameSyncPaused(globalObject)) return 'paused';
   if (shouldDeferSeatTopManagerSync(globalObject)) return 'deferred';
 
   const seat = asRecord(seatUi.seat);
@@ -280,7 +250,8 @@ function readSeatPlayerInfo(seat: UnknownRecord | null): UnknownRecord | null {
   return asRecord(seat?.PlayerInfo) ?? asRecord(seat?.playerInfo);
 }
 
-function readSeatClientId(seat: UnknownRecord | null): unknown {
+/** 与同步显隐同一套 ClientId 来源。 */
+export function readSeatClientId(seat: UnknownRecord | null): unknown {
   const playerInfo = asRecord(seat?.playerInfo) ?? asRecord(seat?.PlayerInfo);
   const direct = playerInfo?.ClientId ?? playerInfo?.clientId;
   if (direct != null && direct !== '') return direct;

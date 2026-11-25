@@ -49,10 +49,7 @@ import { createDeckRecordInteraction } from '../features/deck-record/deck-record
 import { installNativeDeckRecordController } from '../features/deck-record/native-deck-record-controller';
 import { installCountdownSecondsController } from '../features/countdown/countdown-seconds-controller';
 import { installCardLabelController } from '../features/cards/card-label-controller';
-import {
-  installAiPlayerTipController,
-  mountPlayNameProbe
-} from '../features/ai-player/ai-player-tip-controller';
+import { installAiPlayerTipController } from '../features/ai-player/ai-player-tip-controller';
 import { installChooseFigureController } from '../features/identity-drill/choose-figure-controller';
 import { installCardConfigSource } from '../adapters/card-config-source';
 import { installNativeRecentCardController } from '../features/recent-cards/native-recent-card-controller';
@@ -534,7 +531,6 @@ function startXiaochaoCore(
     getCardConfigSize: () => cardConfigSource.size(),
     mountPanelShell
   });
-  mountPlayNameProbe(window);
   return {
     mountPanelShell,
     teardownPanel,

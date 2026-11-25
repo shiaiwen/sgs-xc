@@ -81,7 +81,7 @@ function AuthorTipDialog({
           </button>
         </header>
         <p className="text-sm leading-relaxed text-muted">
-          小抄永久免费。觉得好用就扫个码支持一下，我继续好好干。
+          小抄一直免费。为了维护它，我反而没空打三国杀了——觉得好用就请我喝杯奶茶，支持我继续更新。
         </p>
         <div className="portal-dialog__tabs" role="tablist" aria-label="收款方式">
           <button
