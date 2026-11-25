@@ -14,11 +14,10 @@ import { resolveGameAccountId } from '../../runtime/game-account-session.ts';
 import {
   WALLPAPER_MENU_ATTACH_STAGE_DEPTH,
   WALLPAPER_MENU_HOOK_DELAY_MS,
-  WALLPAPER_MENU_READY_POLL_ATTEMPTS,
-  WALLPAPER_MENU_READY_POLL_MS,
+  WALLPAPER_MENU_PREWARM_FOLLOWUP_MS,
   WALLPAPER_TOP_MENU_OPEN_METHODS,
-  WALLPAPER_VISIBLE_MENU_POLL_ATTEMPTS,
-  WALLPAPER_VISIBLE_MENU_POLL_MS
+  WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY,
+  WALLPAPER_TOP_MENU_SKIN_BTN_HOOKED_KEY
 } from '../../const/wallpaper-menu.ts';
 import {
   asRecord,
@@ -26,12 +25,18 @@ import {
   createTaskScope,
   prototypeOf,
   isBackgroundUiScene,
+  isHallGameplayUiReady,
   readJson,
   findHallWallPaperMenuHost,
   findWallPaperMenuOnStage,
+  findWallPaperTopMenu,
+  findSceneTopMenu,
+  hasVisibleWallPaperShirtEntry,
   resolveHallScene,
+  topMenuCanOpenWallPaperMenu,
   resolveWallPaperTabGroup,
   skinTrace,
+  retrySkinBackgroundEventHooks,
   watchSceneSwitch,
   watchSceneSwitchRequest,
   wallPaperTabButtons,
@@ -40,12 +45,14 @@ import {
 } from './skin-runtime.ts';
 import { readOfficialBackgroundChoice, saveOfficialBackgroundChoice } from './skin-background-document.ts';
 import { PAPER_LOBBY_SCENE_NAMES } from '../../const/paper-all-paper-scene.ts';
+import { mayAttachWallPaperMenuExtension } from './skin-background-session.ts';
 import {
   paintWallpaperSelectionMarks,
   showWallpaperSelectedMark,
   wallpaperChoiceItems,
   wallpaperItemId
 } from './wallpaper-selection-marks.ts';
+import { preloadWallPaperUiResources } from './wallpaper-menu-ui-preload.ts';
 const CHOICE_STORAGE_SUFFIX = '::XC_OFFICIAL_BACKGROUND_CHOICE';
 /** 游戏背景层放静态图的方法，第二个参数表示是不是皮肤图。 */
 const BACKGROUND_LAYER_IMAGE_METHOD = 'O';
@@ -121,19 +128,25 @@ export function installOfficialBackgroundController(
   const cleanups: Array<() => void> = [];
   let localWriteDepth = 0;
   let suppressChoiceSave = false;
-  let topMenuWaiting = false;
   let syncCoalescing = false;
   let wallPaperHooksEnabled = false;
   const patchedTopMenus = new WeakSet<object>();
   const silentMenuCreated = new WeakSet<object>();
-  const visibleMenuWatchStarted = new WeakSet<object>();
+  const wallPaperMenuRefreshHooked = new WeakSet<object>();
+  const wallPaperMenuInitHooked = new WeakSet<object>();
   let hookEnableQueued = false;
-  let stageMenuWatchStarted = false;
-  const isOn = () => configStore.get('skin.officialBackground') === true;
-  const extensionOn = () => Boolean(extension?.enabled());
+  let hallMenuPrewarmDone = false;
+  const isOfficialBackgroundOn = () => configStore.get('skin.officialBackground') === true;
+  const isSkinPaperOn = () => Boolean(extension?.enabled());
 
-  function shouldSyncBackgroundUi(): boolean {
-    return isOn() || extensionOn();
+  /** 是否挂背景面板钩子：官方解锁或皮肤做背景任一开。 */
+  function shouldEnableWallpaperMenuHooks(): boolean {
+    return isOfficialBackgroundOn() || isSkinPaperOn();
+  }
+
+  /** 小抄背景页签只看皮肤做背景，与官方背景开关无关。 */
+  function shouldAttachXiaochaoTab(): boolean {
+    return isSkinPaperOn();
   }
 
   const traceDeduped = createDedupedTrace(skinTrace);
@@ -141,8 +154,8 @@ export function installOfficialBackgroundController(
   function traceWallPaperAttach(phase: string, detail: Record<string, unknown> = {}): void {
     traceDeduped('wallpaper-menu', {
       phase,
-      skinPaper: extensionOn(),
-      officialBackground: isOn(),
+      skinPaper: isSkinPaperOn(),
+      officialBackground: isOfficialBackgroundOn(),
       ...detail
     });
   }
@@ -280,7 +293,7 @@ export function installOfficialBackgroundController(
       return original.apply(this, args);
     });
     patcher.wrap(xhrPrototype, 'send', (original) => function (this: UnknownRecord, ...args: unknown[]) {
-      if (isOn() && isBackgroundReport(String(this[REQUEST_URL_KEY] ?? ''), args[0])) {
+      if (isOfficialBackgroundOn() && isBackgroundReport(String(this[REQUEST_URL_KEY] ?? ''), args[0])) {
         try {
           (this.abort as () => void)();
         } catch {
@@ -295,7 +308,7 @@ export function installOfficialBackgroundController(
   function installSettingLogGuard(): void {
     const settingManager = locator.managerFromList((manager) => typeof manager.SendSettingLog === 'function');
     patcher.wrap(settingManager, 'SendSettingLog', (original) => function (this: unknown, ...args: unknown[]) {
-      if (isOn() && localWriteDepth > 0) return undefined;
+      if (isOfficialBackgroundOn() && localWriteDepth > 0) return undefined;
       return original.apply(this, args);
     });
   }
@@ -312,7 +325,7 @@ export function installOfficialBackgroundController(
           tasks.later(() => {
             preparedMenus.forEach(paintMenuMarks);
             // 牌桌要等服务器回当前背景才换图，那条请求被挡掉了，这里直接告诉牌桌换成刚点的这张。
-            if (isOn() && locator.gameScene()) callMethod(dispatcher, 'event', 'BACKGROUND_USEDID_GOT', [Number(id)]);
+            if (isOfficialBackgroundOn() && locator.gameScene()) callMethod(dispatcher, 'event', 'BACKGROUND_USEDID_GOT', [Number(id)]);
           }, 0);
         }
         return saved;
@@ -351,7 +364,7 @@ export function installOfficialBackgroundController(
   // ---------- 背景面板 ----------
 
   function forceTrueGetter(prototype: UnknownRecord | null, name: string): void {
-    patcher.wrapGetter(prototype, name, (originalGet) => () => isOn() || originalGet());
+    patcher.wrapGetter(prototype, name, (originalGet) => () => isOfficialBackgroundOn() || originalGet());
   }
 
   function unlockUsedData(usedData: unknown): void {
@@ -364,7 +377,7 @@ export function installOfficialBackgroundController(
   }
 
   function hideLockNodes(item: UnknownRecord): void {
-    if (!isOn()) return;
+    if (!isOfficialBackgroundOn()) return;
     LOCK_NODE_NAMES.forEach((name) => {
       const node = asRecord(item[name]);
       if (node) node.visible = false;
@@ -406,8 +419,8 @@ export function installOfficialBackgroundController(
    * 返回 null 表示交给游戏；0 表示所有官方格子都不该有勾。
    */
   function localMarkChoice(): number | null {
-    if (!isOn()) return null;
-    if (extensionOn() && extension?.usingXiaochaoBackground?.()) return 0;
+    if (!isOfficialBackgroundOn()) return null;
+    if (isSkinPaperOn() && extension?.usingXiaochaoBackground?.()) return 0;
     const chosen = savedChoice();
     return chosen > 0 ? chosen : null;
   }
@@ -449,7 +462,7 @@ export function installOfficialBackgroundController(
     }
     keepLocalMark(record, ['UpdateSelectedUI']);
     overrideItemInstanceMethod(record, 'useWall', (original) => function (this: UnknownRecord, ...args: unknown[]) {
-      if (!isOn()) return original.apply(this, args);
+      if (!isOfficialBackgroundOn()) return original.apply(this, args);
       const result = writeLocally(() => original.apply(this, args));
       saveChoice(wallpaperItemId(this));
       markWallpaperSelection(this);
@@ -459,7 +472,7 @@ export function installOfficialBackgroundController(
       originalSelectHandlers.set(record, original);
       return function (this: UnknownRecord, ...args: unknown[]) {
         const useWallMethod = this.useWall as PatchableFunction | undefined;
-        const result = isOn() && typeof useWallMethod === 'function'
+        const result = isOfficialBackgroundOn() && typeof useWallMethod === 'function'
           ? useWallMethod.apply(this, args)
           : original.apply(this, args);
         extension?.onOfficialWallpaperUsed();
@@ -520,10 +533,10 @@ export function installOfficialBackgroundController(
     if (patcher.isWrapped(menu, 'onShowSkinitems')) return;
     patcher.wrap(menu, 'onShowSkinitems', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       if (this !== menu) return original.apply(this, args);
-      const result = isOn() ? withAllSkinsOwned(() => original.apply(this, args)) : original.apply(this, args);
-      if (isOn() || extensionOn()) {
+      const result = isOfficialBackgroundOn() ? withAllSkinsOwned(() => original.apply(this, args)) : original.apply(this, args);
+      if (isOfficialBackgroundOn() || isSkinPaperOn()) {
         itemsOf(this, 'wallPaperSkinItems').forEach((item) => {
-          if (isOn()) unlockSkinItemData(item.data);
+          if (isOfficialBackgroundOn()) unlockSkinItemData(item.data);
           prepareItem(item, true);
         });
         paintMenuMarks(this);
@@ -540,7 +553,7 @@ export function installOfficialBackgroundController(
     patcher.wrap(menu, 'onShowLiveitems', (original) => function (this: UnknownRecord, ...args: unknown[]) {
       if (this !== menu) return original.apply(this, args);
       const result = original.apply(this, args);
-      if (isOn() || extensionOn()) {
+      if (isOfficialBackgroundOn() || isSkinPaperOn()) {
         prepareLiveItems(this);
         paintMenuMarks(this);
       }
@@ -561,7 +574,7 @@ export function installOfficialBackgroundController(
   function prepareAllItems(menu: UnknownRecord): void {
     itemsOf(menu, 'wallPaperItems').forEach((item) => prepareItem(item, false));
     itemsOf(menu, 'wallPaperSkinItems').forEach((item) => {
-      if (isOn()) unlockSkinItemData(item.data);
+      if (isOfficialBackgroundOn()) unlockSkinItemData(item.data);
       prepareItem(item, true);
     });
     prepareLiveItems(menu);
@@ -617,7 +630,7 @@ export function installOfficialBackgroundController(
 
   /** 首次打开时重建列表并应用本地保存的背景。 */
   function unlockMenu(menu: UnknownRecord): boolean {
-    if (!isOn()) return false;
+    if (!isOfficialBackgroundOn()) return false;
     installGlobalGuards();
     patchSkinItemsBuilder(menu);
     if (preparedMenus.has(menu)) {
@@ -700,39 +713,98 @@ export function installOfficialBackgroundController(
 
   function applyMenuExtension(menu: UnknownRecord, topMenu: UnknownRecord | null): void {
     // 列表是按整理时的官方背景开关建的，开关变了就按游戏原样重建一次再整理。
-    if (preparedMenus.has(menu) && unlockedMenus.has(menu) !== isOn()) restoreMenu(menu);
-    if (isOn() && !preparedMenus.has(menu)) unlockMenu(menu);
-    else if (extensionOn() && !preparedMenus.has(menu)) {
+    if (preparedMenus.has(menu) && unlockedMenus.has(menu) !== isOfficialBackgroundOn()) restoreMenu(menu);
+    if (isOfficialBackgroundOn() && !preparedMenus.has(menu)) unlockMenu(menu);
+    else     if (isSkinPaperOn() && !preparedMenus.has(menu) && !isOfficialBackgroundOn()) {
       prepareMenuForExtension(menu);
       preparedMenus.add(menu);
     }
-    if (extensionOn()) {
+    if (shouldAttachXiaochaoTab()) {
       extension?.attachMenu(menu);
       traceWallPaperAttach('attached');
+    } else {
+      extension?.detachMenu(menu);
     }
     if (topMenu) watchVisibleWallPaperMenu(topMenu);
   }
 
   /** 背景面板就绪后挂小抄页签并解锁官方项。 */
   function prepareWallPaperMenu(menu: UnknownRecord, topMenu: UnknownRecord | null): void {
-    if (!shouldSyncBackgroundUi()) return;
+    if (!shouldEnableWallpaperMenuHooks()) return;
     if (!menuReady(menu) && !wallPaperTabButtons(resolveWallPaperTabGroup(menu) ?? {}).length) return;
     applyMenuExtension(menu, topMenu);
   }
 
+  const WALLPAPER_MENU_INIT_METHODS = ['initData', 'loadMore', 'onShowSkinitems'] as const;
+
+  function bindWallPaperMenuInitHooks(menu: UnknownRecord, topMenu: UnknownRecord | null): void {
+    if (wallPaperMenuInitHooked.has(menu)) return;
+    wallPaperMenuInitHooked.add(menu);
+    for (const methodName of WALLPAPER_MENU_INIT_METHODS) {
+      const proto = prototypeOf(menu);
+      const hasMethod = typeof menu[methodName] === 'function' || typeof proto?.[methodName] === 'function';
+      if (!hasMethod || patcher.isWrapped(menu, methodName)) continue;
+      patcher.wrap(menu, methodName, (original) => function (this: UnknownRecord, ...args: unknown[]) {
+        const result = original.apply(this, args);
+        if (this !== menu) return result;
+        if (menuReady(menu)) applyMenuExtension(menu, topMenu);
+        return result;
+      });
+    }
+  }
+
+  function schedulePrepareTopMenuFollowUp(topMenu: UnknownRecord): void {
+    for (const delay of WALLPAPER_MENU_PREWARM_FOLLOWUP_MS) {
+      tasks.later(() => prepareTopMenu(topMenu), delay);
+    }
+  }
+
+  /** 静默建面板后把「皮肤背景」页数据拉齐，页签才能挂上去。 */
+  function primeHiddenWallPaperMenu(menu: UnknownRecord, topMenu: UnknownRecord): void {
+    menu.visible = false;
+    if (isSkinPaperOn() && !preparedMenus.has(menu) && !isOfficialBackgroundOn()) {
+      prepareMenuForExtension(menu);
+      preparedMenus.add(menu);
+    }
+    callMethod(menu, 'onShowSkinitems');
+    callMethod(menu, 'RefreList');
+    bindWallPaperMenuInitHooks(menu, topMenu);
+    ensureWallPaperMenuReadyHook(menu, topMenu);
+    prepareTopMenu(topMenu);
+    schedulePrepareTopMenuFollowUp(topMenu);
+  }
+
+  /** 列表未就绪时包一层 RefreList，等游戏刷完页签再挂小抄页。 */
+  function ensureWallPaperMenuReadyHook(menu: UnknownRecord, topMenu: UnknownRecord | null): void {
+    if (menuReady(menu)) {
+      applyMenuExtension(menu, topMenu);
+      return;
+    }
+    if (wallPaperMenuRefreshHooked.has(menu)) return;
+    const proto = prototypeOf(menu);
+    const hasRefresh = typeof menu.RefreList === 'function' || typeof proto?.RefreList === 'function';
+    if (!hasRefresh) return;
+    wallPaperMenuRefreshHooked.add(menu);
+    if (patcher.isWrapped(menu, 'RefreList')) return;
+    patcher.wrap(menu, 'RefreList', (original) => function (this: UnknownRecord, ...args: unknown[]) {
+      const result = original.apply(this, args);
+      if (this !== menu) return result;
+      if (menuReady(menu)) applyMenuExtension(menu, topMenu);
+      return result;
+    });
+  }
+
   /** 点开皮肤页后准备顶栏背景菜单。 */
   function prepareTopMenu(topMenu: UnknownRecord): void {
-    if (!shouldSyncBackgroundUi()) return;
-    void tasks.poll(() => menuReady(topMenu), WALLPAPER_MENU_READY_POLL_MS, WALLPAPER_MENU_READY_POLL_ATTEMPTS)
-      .then((menu) => {
-        if (menu) {
-          applyMenuExtension(menu, topMenu);
-          return;
-        }
-        const fallback = findReadyWallPaperMenu(topMenu);
-        if (fallback) applyMenuExtension(fallback, topMenu);
-        else traceWallPaperAttach('menu-not-ready');
-      });
+    if (!shouldEnableWallpaperMenuHooks()) return;
+    const ready = menuReady(topMenu) ?? findReadyWallPaperMenu(topMenu);
+    if (ready) {
+      applyMenuExtension(ready, topMenu);
+      return;
+    }
+    const openMenu = asRecord(topMenu.wallPaperUI);
+    if (openMenu) ensureWallPaperMenuReadyHook(openMenu, topMenu);
+    else traceWallPaperAttach('menu-not-ready');
   }
 
   /** 还没打开过背景面板时，静默创建一次以便挂上小抄页签。每个 topMenu 只做一次。 */
@@ -748,15 +820,32 @@ export function installOfficialBackgroundController(
       traceWallPaperAttach('create-hidden-menu-failed');
       return false;
     }
-    menu.visible = false;
     const stage = asRecord(globalObject.Laya?.stage);
     const layaEvent = asRecord(globalObject.Laya?.Event);
     callMethod(stage, 'off', layaEvent?.CLICK, topMenu, topMenu.stageclickHandler);
+    primeHiddenWallPaperMenu(menu, topMenu);
     return true;
   }
 
+  function wallpaperMenuVisible(topMenu: UnknownRecord): boolean {
+    const openMenu = asRecord(topMenu.wallPaperUI);
+    return Boolean(openMenu && openMenu.visible !== false);
+  }
+
+  function maySyncWallPaperMenuNow(): boolean {
+    return mayAttachWallPaperMenuExtension(
+      locator,
+      globalObject,
+      shouldEnableWallpaperMenuHooks,
+      () => {
+        const topMenu = findTopMenu();
+        return Boolean(topMenu && wallpaperMenuVisible(topMenu));
+      }
+    );
+  }
+
   function tryEnsureWallPaperMenu(topMenu: UnknownRecord): void {
-    if (!shouldSyncBackgroundUi()) return;
+    if (!shouldEnableWallpaperMenuHooks() || !maySyncWallPaperMenuNow()) return;
     if (menuReady(topMenu)) {
       prepareTopMenu(topMenu);
       return;
@@ -766,22 +855,19 @@ export function installOfficialBackgroundController(
       prepareWallPaperMenu(openMenu, topMenu);
       return;
     }
+    if (hasVisibleWallPaperShirtEntry(locator, globalObject) || locator.gameScene()) return;
     if (createHiddenMenu(topMenu)) prepareTopMenu(topMenu);
   }
 
   /** 面板被用户打开后补挂页签，避免只走其它入口时漏挂。 */
   function watchVisibleWallPaperMenu(topMenu: UnknownRecord): void {
-    if (visibleMenuWatchStarted.has(topMenu)) return;
-    visibleMenuWatchStarted.add(topMenu);
-    void tasks.poll(() => {
-      const menu = menuReady(topMenu);
-      if (menu && menu.visible !== false) return menu;
-      const fallback = findReadyWallPaperMenu(topMenu);
-      if (fallback && fallback.visible !== false) return fallback;
-      return null;
-    }, WALLPAPER_VISIBLE_MENU_POLL_MS, WALLPAPER_VISIBLE_MENU_POLL_ATTEMPTS).then((menu) => {
-      if (menu) applyMenuExtension(menu, topMenu);
-    });
+    const openMenu = asRecord(topMenu.wallPaperUI);
+    if (!openMenu) return;
+    if (menuReady(openMenu) && openMenu.visible !== false) {
+      applyMenuExtension(openMenu, topMenu);
+      return;
+    }
+    ensureWallPaperMenuReadyHook(openMenu, topMenu);
   }
 
   function wrapTopMenuOpenMethod(topMenu: UnknownRecord, methodName: string): void {
@@ -793,7 +879,10 @@ export function installOfficialBackgroundController(
     patcher.wrap(topMenu, methodName, (original) => function (this: UnknownRecord, ...args: unknown[]) {
       const result = original.apply(this, args);
       const host = asRecord(this);
-      if (host) tasks.later(() => prepareTopMenu(host), 0);
+      if (host && shouldEnableWallpaperMenuHooks()) {
+        tasks.later(() => prepareTopMenu(host), 0);
+        if (isSkinPaperOn()) schedulePrepareTopMenuFollowUp(host);
+      }
       return result;
     });
   }
@@ -804,17 +893,33 @@ export function installOfficialBackgroundController(
     if (typeof topMenu.stageclickHandler !== 'function' && typeof proto?.stageclickHandler !== 'function') return;
     if (patcher.isWrapped(topMenu, 'stageclickHandler')) return;
     patcher.wrap(topMenu, 'stageclickHandler', (original) => function (this: UnknownRecord, ...args: unknown[]) {
-      if (this === topMenu && shouldSyncBackgroundUi() && isInsideLiveWallpaperPanel(asRecord(args[0])?.target)) {
+      if (this === topMenu && shouldEnableWallpaperMenuHooks() && isInsideLiveWallpaperPanel(asRecord(args[0])?.target)) {
         return undefined;
       }
       return original.apply(this, args);
     });
   }
 
+  function hookTopMenuSkinButton(topMenu: UnknownRecord): void {
+    if (topMenu[WALLPAPER_TOP_MENU_SKIN_BTN_HOOKED_KEY]) return;
+    const button = asRecord(topMenu[WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY]);
+    if (!button || typeof button.on !== 'function') return;
+    topMenu[WALLPAPER_TOP_MENU_SKIN_BTN_HOOKED_KEY] = true;
+    const layaClick = asRecord(globalObject.Laya?.Event)?.CLICK;
+    if (!layaClick) return;
+    const onShirtClick = () => {
+      if (!isSkinPaperOn()) return;
+      prepareTopMenu(topMenu);
+      schedulePrepareTopMenuFollowUp(topMenu);
+    };
+    callMethod(button, 'on', layaClick, topMenu, onShirtClick);
+  }
+
   function ensureTopMenuPatched(topMenu: UnknownRecord): void {
     if (patchedTopMenus.has(topMenu)) return;
     patchedTopMenus.add(topMenu);
     keepLiveWallpaperClickInside(topMenu);
+    hookTopMenuSkinButton(topMenu);
     for (const methodName of WALLPAPER_TOP_MENU_OPEN_METHODS) {
       wrapTopMenuOpenMethod(topMenu, methodName);
     }
@@ -825,31 +930,52 @@ export function installOfficialBackgroundController(
     if (wallPaperHooksEnabled) return;
     wallPaperHooksEnabled = true;
     traceWallPaperAttach('hooks-enabled', { hasTopMenu: Boolean(findTopMenu()) });
-    watchStageWallPaperMenu();
     scheduleSync();
   }
 
   function queueEnableWallPaperHooks(): void {
     if (wallPaperHooksEnabled || hookEnableQueued) return;
     hookEnableQueued = true;
+    const delay = isHallGameplayUiReady(locator, globalObject) || hasVisibleWallPaperShirtEntry(locator, globalObject)
+      ? 0
+      : WALLPAPER_MENU_HOOK_DELAY_MS;
     tasks.later(() => {
       hookEnableQueued = false;
-      if (!isBackgroundUiScene(locator, globalObject) || !shouldSyncBackgroundUi()) return;
+      if (!isBackgroundUiScene(locator, globalObject) || !shouldEnableWallpaperMenuHooks()) return;
       enableWallPaperHooks();
-    }, WALLPAPER_MENU_HOOK_DELAY_MS);
+    }, delay);
   }
 
   function findTopMenu(): UnknownRecord | null {
-    const fromScene = asRecord(locator.scene()?.topMenu);
-    if (fromScene) return fromScene;
-    const hall = resolveHallScene(locator, globalObject);
-    const fromHall = asRecord(hall?.topMenu);
-    if (fromHall) return fromHall;
-    return findHallWallPaperMenuHost(locator, globalObject);
+    const ranked = findWallPaperTopMenu(locator, globalObject);
+    if (ranked && topMenuCanOpenWallPaperMenu(ranked)) return ranked;
+    const fromGame = asRecord(locator.gameScene()?.topMenu);
+    if (fromGame && topMenuCanOpenWallPaperMenu(fromGame)) return fromGame;
+    const fromScene = findSceneTopMenu(locator, globalObject);
+    if (fromScene && topMenuCanOpenWallPaperMenu(fromScene)) return fromScene;
+    return ranked ?? fromGame ?? fromScene
+      ?? findHallWallPaperMenuHost(locator, globalObject);
+  }
+
+  function scheduleWallPaperMenuPrewarm(): void {
+    if (!shouldAttachXiaochaoTab()) return;
+    void preloadWallPaperUiResources(globalObject)
+      .catch(() => undefined)
+      .finally(() => {
+        if (hasVisibleWallPaperShirtEntry(locator, globalObject)) {
+          enableWallPaperHooks();
+          syncWallPaperMenuAttach();
+          return;
+        }
+        if (!isHallGameplayUiReady(locator, globalObject)) return;
+        if (hallMenuPrewarmDone) return;
+        hallMenuPrewarmDone = true;
+        scheduleSync();
+      });
   }
 
   function tryAttachFromStage(topMenu: UnknownRecord | null = null): void {
-    if (!shouldSyncBackgroundUi()) return;
+    if (!shouldEnableWallpaperMenuHooks()) return;
     // 顶栏已经挂着就绪面板时直接挂，别每次 sync 都深搜整棵舞台树（那是 31ms 尖峰来源）。
     if (topMenu) {
       const ready = menuReady(topMenu);
@@ -864,23 +990,8 @@ export function installOfficialBackgroundController(
     applyMenuExtension(menu, topMenu ?? findTopMenu());
   }
 
-  /** 无 topMenu 或面板挂在舞台其它节点时，轮询挂上小抄页签。 */
-  function watchStageWallPaperMenu(): void {
-    if (stageMenuWatchStarted) return;
-    stageMenuWatchStarted = true;
-    void tasks.poll(() => {
-      if (!wallPaperHooksEnabled || !shouldSyncBackgroundUi()) return null;
-      const menu = findWallPaperMenuOnStage(globalObject, WALLPAPER_MENU_ATTACH_STAGE_DEPTH);
-      if (!menu) return null;
-      if (!wallPaperTabButtons(resolveWallPaperTabGroup(menu) ?? {}).length) return null;
-      return menu;
-    }, 500, 240).then((menu) => {
-      if (menu) applyMenuExtension(menu, findTopMenu());
-    });
-  }
-
   function scheduleSync(): void {
-    if (isBackgroundUiScene(locator, globalObject) && shouldSyncBackgroundUi()) {
+    if (isBackgroundUiScene(locator, globalObject) && shouldEnableWallpaperMenuHooks()) {
       queueEnableWallPaperHooks();
     }
     if (syncCoalescing) return;
@@ -891,28 +1002,11 @@ export function installOfficialBackgroundController(
     }, 0);
   }
 
-  /** 场景就绪后安装拦截；小抄页签只在用户打开背景面板时挂上。 */
-  function sync(): void {
-    installGlobalGuards();
-    if (!extensionOn()) {
-      const openMenu = asRecord(findTopMenu()?.wallPaperUI);
-      if (openMenu) extension?.detachMenu(openMenu);
-    }
-    if (!wallPaperHooksEnabled) return;
-    if (!shouldSyncBackgroundUi()) {
-      const topMenu = findTopMenu();
-      if (topMenu) {
-        if (!isOn()) restoreMenu(topMenu.wallPaperUI);
-        const openMenu = asRecord(topMenu.wallPaperUI);
-        if (openMenu) extension?.detachMenu(openMenu);
-      }
-      return;
-    }
-    if (!isBackgroundUiScene(locator, globalObject)) return;
+  function syncWallPaperMenuAttach(): void {
+    if (!shouldEnableWallpaperMenuHooks() || !maySyncWallPaperMenuNow()) return;
     const topMenu = findTopMenu();
     if (!topMenu) {
       tryAttachFromStage();
-      waitForTopMenu();
       return;
     }
     ensureTopMenuPatched(topMenu);
@@ -920,41 +1014,66 @@ export function installOfficialBackgroundController(
     tryAttachFromStage(topMenu);
   }
 
-  function waitForTopMenu(): void {
-    if (topMenuWaiting) return;
-    topMenuWaiting = true;
-    void tasks.poll(() => findTopMenu(), 100, 50).then((topMenu) => {
-      topMenuWaiting = false;
-      if (topMenu) scheduleSync();
-    });
+  /** 场景就绪后安装拦截；小抄页签在大厅就绪后静默挂上。 */
+  function sync(): void {
+    installGlobalGuards();
+    if (!shouldEnableWallpaperMenuHooks()) {
+      const topMenu = findTopMenu();
+      if (topMenu) {
+        if (!isOfficialBackgroundOn()) restoreMenu(topMenu.wallPaperUI);
+        if (!shouldAttachXiaochaoTab()) {
+          const openMenu = asRecord(topMenu.wallPaperUI);
+          if (openMenu) extension?.detachMenu(openMenu);
+        }
+      }
+      return;
+    }
+    syncWallPaperMenuAttach();
+    if (!wallPaperHooksEnabled) return;
+    if (!isBackgroundUiScene(locator, globalObject)) return;
+    retrySkinBackgroundEventHooks(locator, patcher, tasks, globalObject);
   }
 
   const unsubscribes = [
-    configStore.subscribe('skin.officialBackground', () => scheduleSync()),
-    configStore.subscribe('skin.skinPaper', () => scheduleSync())
+    configStore.subscribe('skin.officialBackground', () => {
+      scheduleSync();
+      scheduleWallPaperMenuPrewarm();
+    }),
+    configStore.subscribe('skin.skinPaper', (detail) => {
+      if (detail.value === true) {
+        scheduleWallPaperMenuPrewarm();
+        if (isHallGameplayUiReady(locator, globalObject) || hasVisibleWallPaperShirtEntry(locator, globalObject)) {
+          enableWallPaperHooks();
+        }
+      }
+      scheduleSync();
+    })
   ];
   traceWallPaperAttach('installed');
-  void tasks.poll(() => (isBackgroundUiScene(locator, globalObject) ? 'ready' : null), Infinity, 1000).then((token) => {
-    if (!token) return;
+  if (isBackgroundUiScene(locator, globalObject)) {
     installGlobalGuards();
     queueEnableWallPaperHooks();
-  });
-  void tasks.poll(() => {
-    if (wallPaperHooksEnabled) return 'done';
-    if (!shouldSyncBackgroundUi() || !isBackgroundUiScene(locator, globalObject)) return null;
-    return 'enable';
-  }, Infinity, 1500).then((token) => {
-    if (token === 'enable') enableWallPaperHooks();
-  });
+  }
   tasks.later(() => scheduleSync(), 0);
   watchSceneSwitchRequest(locator, patcher, tasks, (sceneName) => {
     leavingToLobby = PAPER_LOBBY_SCENE_NAMES.includes(sceneName);
     if (leavingToLobby) dropMatchWallpaper(sceneName);
-  });
+  }, globalObject);
   watchSceneSwitch(locator, patcher, tasks, () => {
     leavingToLobby = false;
     settleWallpaper();
+    if (shouldAttachXiaochaoTab()) scheduleWallPaperMenuPrewarm();
+    if (isBackgroundUiScene(locator, globalObject) && shouldEnableWallpaperMenuHooks()) {
+      installGlobalGuards();
+      enableWallPaperHooks();
+    } else if (shouldAttachXiaochaoTab() && maySyncWallPaperMenuNow()) {
+      syncWallPaperMenuAttach();
+    } else {
+      scheduleSync();
+    }
   }, globalObject, undefined, () => true);
+  if (shouldAttachXiaochaoTab()) scheduleWallPaperMenuPrewarm();
+  retrySkinBackgroundEventHooks(locator, patcher, tasks, globalObject);
   return {
     sync,
     dispose() {

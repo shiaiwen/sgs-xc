@@ -315,6 +315,163 @@ type WindowShowListener = (windowName: string, args: unknown[]) => void;
 /** 同一个 patcher 对打开窗口的方法只能包一次，后挂的监听都由先包上的那层转发。 */
 const windowShowListeners = new WeakMap<MethodPatcher, WindowShowListener[]>();
 
+type SceneSwitchRequestListener = (sceneName: string) => void;
+
+type SceneSwitchCompleteListener = {
+  onSwitch: () => void;
+  onBeforeSwitch?: () => void;
+  sceneReady: () => boolean;
+};
+
+const sceneSwitchRequestListeners = new WeakMap<MethodPatcher, SceneSwitchRequestListener[]>();
+const sceneSwitchCompleteListeners = new WeakMap<MethodPatcher, SceneSwitchCompleteListener[]>();
+
+type SkinBackgroundHookContext = {
+  locator: LayaObjectLocator;
+  globalObject: LayaRuntimeWindow;
+  tasks: TaskScope;
+};
+
+const skinBackgroundHookContext = new WeakMap<MethodPatcher, SkinBackgroundHookContext>();
+
+function rememberSkinBackgroundHookContext(
+  patcher: MethodPatcher,
+  locator: LayaObjectLocator,
+  globalObject: LayaRuntimeWindow,
+  tasks: TaskScope
+): void {
+  if (!skinBackgroundHookContext.has(patcher)) {
+    skinBackgroundHookContext.set(patcher, { locator, globalObject, tasks });
+  }
+}
+
+function createShowWindowHook(forwardTo: WindowShowListener[]) {
+  return (original: (...hookArgs: unknown[]) => unknown) => function (
+    this: unknown,
+    windowName: unknown,
+    ...rest: unknown[]
+  ) {
+    const result = original.call(this, windowName, ...rest);
+    if (typeof windowName !== 'string') return result;
+    for (const listener of forwardTo) {
+      try {
+        listener(windowName, rest);
+      } catch (error) {
+        console.warn('[皮肤与背景] 窗口打开处理失败:', windowName, error);
+      }
+    }
+    return result;
+  };
+}
+
+function hookShowWindowOnTarget(
+  patcher: MethodPatcher,
+  target: UnknownRecord | null,
+  forwardTo: WindowShowListener[],
+  locator: LayaObjectLocator
+): boolean {
+  if (!target) return false;
+  const methodNames = locator.listShowWindowMethodNames(target);
+  if (!methodNames.length) return false;
+  const hook = createShowWindowHook(forwardTo);
+  let hooked = false;
+  for (const methodName of methodNames) {
+    if (patcher.isWrapped(target, methodName)) {
+      hooked = true;
+      continue;
+    }
+    if (patcher.wrap(target, methodName, hook)) hooked = true;
+  }
+  return hooked;
+}
+
+/** 场景管理器或分发器晚就绪时，在场景切换后再试挂 ShowWindow。 */
+export function tryInstallShowWindowHook(
+  locator: LayaObjectLocator,
+  patcher: MethodPatcher,
+  globalObject: LayaRuntimeWindow
+): boolean {
+  const forwardTo = windowShowListeners.get(patcher);
+  if (!forwardTo?.length) return false;
+  const dispatcher = locator.dispatcher();
+  const hookedDispatcher = hookShowWindowOnTarget(patcher, dispatcher, forwardTo, locator);
+  const hookedProto = hookShowWindowOnTarget(
+    patcher,
+    asRecord(Object.getPrototypeOf(dispatcher ?? {})),
+    forwardTo,
+    locator
+  );
+  if (hookedDispatcher || hookedProto) return true;
+  void globalObject;
+  return false;
+}
+
+function tryInstallSceneSwitchRequestHook(patcher: MethodPatcher, globalObject: LayaRuntimeWindow, tasks: TaskScope): boolean {
+  const sceneManager = asRecord(locateSceneManager(globalObject));
+  if (!sceneManager || typeof sceneManager.SwitchScene !== 'function') return false;
+  if (patcher.isWrapped(sceneManager, 'SwitchScene')) return true;
+  const listeners = () => sceneSwitchRequestListeners.get(patcher) ?? [];
+  patcher.wrap(sceneManager, 'SwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
+    try {
+      const [target, , recreate] = args;
+      const sceneName = typeof target === 'string' ? target.trim() : '';
+      if (sceneName && !switchIgnoredByGame(sceneManager, sceneName, recreate)) {
+        for (const onRequest of listeners()) {
+          runMeasured(tasks.label, () => onRequest(sceneName));
+        }
+      }
+    } catch (error) {
+      console.warn('[皮肤与背景] 场景切换开始处理失败:', error);
+    }
+    return original.apply(this, args);
+  });
+  return true;
+}
+
+function tryInstallSceneSwitchCompleteHook(patcher: MethodPatcher, globalObject: LayaRuntimeWindow, tasks: TaskScope): boolean {
+  const sceneManager = asRecord(locateSceneManager(globalObject));
+  if (!sceneManager || typeof sceneManager.executeSwitchScene !== 'function') return false;
+  if (patcher.isWrapped(sceneManager, 'executeSwitchScene')) return true;
+  const listeners = () => sceneSwitchCompleteListeners.get(patcher) ?? [];
+  patcher.wrap(sceneManager, 'executeSwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
+    try {
+      for (const entry of listeners()) {
+        if (entry.sceneReady()) runMeasured(tasks.label, () => entry.onBeforeSwitch?.());
+      }
+    } catch (error) {
+      console.warn('[皮肤与背景] 场景切换前处理失败:', error);
+    }
+    const result = original.apply(this, args);
+    tasks.later(() => {
+      const ctx = skinBackgroundHookContext.get(patcher);
+      for (const entry of listeners()) {
+        try {
+          if (entry.sceneReady()) entry.onSwitch();
+        } catch (error) {
+          console.warn('[皮肤与背景] 场景切换后处理失败:', error);
+        }
+      }
+      if (ctx) retrySkinBackgroundEventHooks(ctx.locator, patcher, ctx.tasks, ctx.globalObject);
+    }, 0);
+    return result;
+  });
+  return true;
+}
+
+/** 场景切换或同步时重试挂 ShowWindow / SceneManager 钩子。 */
+export function retrySkinBackgroundEventHooks(
+  locator: LayaObjectLocator,
+  patcher: MethodPatcher,
+  tasks: TaskScope,
+  globalObject: LayaRuntimeWindow,
+  sceneReady: () => boolean = () => isBackgroundUiScene(locator, globalObject)
+): void {
+  rememberSkinBackgroundHookContext(patcher, locator, globalObject, tasks);
+  tryInstallSceneSwitchRequestHook(patcher, globalObject, tasks);
+  tryInstallSceneSwitchCompleteHook(patcher, globalObject, tasks);
+  if (sceneReady()) tryInstallShowWindowHook(locator, patcher, globalObject);
+}
+
 /** 游戏打开指定窗口后回调（包装 GameEventDispatcher.ShowWindow）。 */
 export function watchWindowShow(
   locator: LayaObjectLocator,
@@ -343,34 +500,8 @@ export function watchWindowShow(
       }, delay);
     }
   });
-  void tasks.poll(() => {
-    if (!isBackgroundUiScene(locator, globalObject)) return null;
-    const dispatcher = locator.dispatcher();
-    const methodNames = dispatcher ? locator.listShowWindowMethodNames(dispatcher) : [];
-    return dispatcher && methodNames.length ? { dispatcher, methodNames } : null;
-  }, Infinity, 1000).then((found) => {
-    if (!found) return;
-    const hook = (original: (...hookArgs: unknown[]) => unknown) => function (
-      this: unknown,
-      windowName: unknown,
-      ...rest: unknown[]
-    ) {
-      const result = original.call(this, windowName, ...rest);
-      if (typeof windowName !== 'string') return result;
-      for (const listener of forwardTo) {
-        try {
-          listener(windowName, rest);
-        } catch (error) {
-          console.warn('[皮肤与背景] 窗口打开处理失败:', windowName, error);
-        }
-      }
-      return result;
-    };
-    for (const methodName of found.methodNames) {
-      if (patcher.isWrapped(found.dispatcher, methodName)) continue;
-      patcher.wrap(found.dispatcher, methodName, hook);
-    }
-  });
+  rememberSkinBackgroundHookContext(patcher, locator, globalObject, tasks);
+  tryInstallShowWindowHook(locator, patcher, globalObject);
 }
 
 /** 大厅子控件已创建且未被隐藏。 */
@@ -506,6 +637,17 @@ export function findSceneTopMenu(
   const scene = asRecord(locator.scene());
   if (!scene) return null;
   return asRecord(scene.topMenu) ?? asRecord(scene.TopMenu) ?? null;
+}
+
+/** 顶栏「设置」旁 T 恤（skinBtn）正在显示，可点开换背景；与旁观、对局无关。 */
+export function hasVisibleWallPaperShirtEntry(
+  locator: LayaObjectLocator,
+  globalObject: LayaRuntimeWindow = globalThis as LayaRuntimeWindow
+): boolean {
+  const topMenu = findWallPaperTopMenu(locator, globalObject);
+  if (!topMenu) return false;
+  const skinButton = asRecord(topMenu[WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY]);
+  return Boolean(skinButton && skinButton.visible !== false);
 }
 
 /** 顶栏上有皮肤按钮，或者已经挂了背景菜单。 */
@@ -881,30 +1023,17 @@ export function watchSceneSwitchRequest(
   locator: LayaObjectLocator,
   patcher: MethodPatcher,
   tasks: TaskScope,
-  onRequest: (sceneName: string) => void
+  onRequest: (sceneName: string) => void,
+  globalObject: LayaRuntimeWindow = window as LayaRuntimeWindow
 ): void {
-  void tasks.poll(() => {
-    const listeners = asRecord(locator.dispatcher()?._events)?.SWITCH_SCENE;
-    for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
-      const caller = asRecord(asRecord(listener)?.caller);
-      if (caller && typeof caller.SwitchScene === 'function') return caller;
-    }
-    return null;
-  }, Infinity, 1000).then((sceneManager) => {
-    if (!sceneManager) return;
-    patcher.wrap(sceneManager, 'SwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
-      try {
-        const [target, , recreate] = args;
-        const sceneName = typeof target === 'string' ? target.trim() : '';
-        if (sceneName && !switchIgnoredByGame(sceneManager, sceneName, recreate)) {
-          runMeasured(tasks.label, () => onRequest(sceneName));
-        }
-      } catch (error) {
-        console.warn('[皮肤与背景] 场景切换开始处理失败:', error);
-      }
-      return original.apply(this, args);
-    });
-  });
+  let listeners = sceneSwitchRequestListeners.get(patcher);
+  if (!listeners) {
+    listeners = [];
+    sceneSwitchRequestListeners.set(patcher, listeners);
+  }
+  listeners.push(onRequest);
+  rememberSkinBackgroundHookContext(patcher, locator, globalObject, tasks);
+  tryInstallSceneSwitchRequestHook(patcher, globalObject, tasks);
 }
 
 /** 场景切换完成后回调。进大厅前不挂钩子，避免登录切场景时被脚本打断。 */
@@ -917,35 +1046,15 @@ export function watchSceneSwitch(
   onBeforeSwitch?: () => void,
   sceneReady: () => boolean = () => isBackgroundUiScene(locator, globalObject)
 ): void {
-  void tasks.poll(() => {
-    if (!sceneReady()) return null;
-    const listeners = asRecord(locator.dispatcher()?._events)?.SWITCH_SCENE;
-    for (const listener of Array.isArray(listeners) ? listeners : [listeners]) {
-      const caller = asRecord(asRecord(listener)?.caller);
-      if (caller && typeof caller.executeSwitchScene === 'function') return caller;
-    }
-    return null;
-  }, Infinity, 1000).then((sceneManager) => {
-    if (!sceneManager) return;
-    patcher.wrap(sceneManager, 'executeSwitchScene', (original) => function (this: unknown, ...args: unknown[]) {
-      try {
-        runMeasured(tasks.label, () => {
-          if (sceneReady()) onBeforeSwitch?.();
-        });
-      } catch (error) {
-        console.warn('[皮肤与背景] 场景切换前处理失败:', error);
-      }
-      const result = original.apply(this, args);
-      tasks.later(() => {
-        try {
-          if (sceneReady()) onSwitch();
-        } catch (error) {
-          console.warn('[皮肤与背景] 场景切换后处理失败:', error);
-        }
-      }, 0);
-      return result;
-    });
-  });
+  let listeners = sceneSwitchCompleteListeners.get(patcher);
+  if (!listeners) {
+    listeners = [];
+    sceneSwitchCompleteListeners.set(patcher, listeners);
+  }
+  listeners.push({ onSwitch, onBeforeSwitch, sceneReady });
+  rememberSkinBackgroundHookContext(patcher, locator, globalObject, tasks);
+  tryInstallSceneSwitchCompleteHook(patcher, globalObject, tasks);
+  if (sceneReady()) tryInstallShowWindowHook(locator, patcher, globalObject);
 }
 
 /** 座位上主将、副将的武将与皮肤信息。 */

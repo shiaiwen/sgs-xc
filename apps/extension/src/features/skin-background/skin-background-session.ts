@@ -7,7 +7,7 @@ import type { LayaObjectLocator, LayaRuntimeWindow } from '../../adapters/laya-o
 import { readSeatStateFromGameScene } from '../seat-display/seat-game-adapter.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
 import { PAPER_HOME_SCENE_NAMES, PAPER_MATCH_SCENE_CLASS_NAME } from '../../const/paper-all-paper-scene.ts';
-import { isBackgroundUiScene } from './skin-runtime.ts';
+import { hasVisibleWallPaperShirtEntry, isBackgroundUiScene } from './skin-runtime.ts';
 
 /** 山河图等小地图：无座位 UI，不能按是否已开局来挡背景。 */
 const MAP_SCENE_NAMES = ['RogueLikeBigMapScene', 'RogueSmallMapScene'];
@@ -42,8 +42,8 @@ export function mayMutateSkinBackground(
 }
 
 /**
- * 挂「小抄背景」页签：面板已经打开时不看是否已开局；
- * 未打开时与换底图条件一致，避免登录页乱挂钩子。
+ * 挂「小抄背景」页签：旁观与对局一视同仁；
+ * 顶栏 T 恤（skinBtn）已显示，或背景面板已打开，才挂钩子。
  */
 export function mayAttachWallPaperMenuExtension(
   locator: LayaObjectLocator,
@@ -53,5 +53,5 @@ export function mayAttachWallPaperMenuExtension(
 ): boolean {
   if (!enabled()) return false;
   if (wallpaperMenuOpen()) return true;
-  return mayMutateSkinBackground(locator, globalObject, enabled);
+  return hasVisibleWallPaperShirtEntry(locator, globalObject);
 }

@@ -1,6 +1,9 @@
 /** 进大厅后延迟挂背景面板钩子，避免登录切场景时卡住。 */
 export const WALLPAPER_MENU_HOOK_DELAY_MS = 2500;
 
+/** 静默建背景面板后，跟几次短时补挂小抄页签，不等用户先点「皮肤背景」。 */
+export const WALLPAPER_MENU_PREWARM_FOLLOWUP_MS = [0, 200, 600, 1200] as const;
+
 /** 子节点搜索背景面板时的最大深度。 */
 export const WALLPAPER_MENU_TREE_SEARCH_DEPTH = 5;
 
@@ -16,6 +19,9 @@ export const WALLPAPER_TOP_MENU_OPEN_METHODS = [
 
 /** 顶栏换背景按钮节点字段名。 */
 export const WALLPAPER_TOP_MENU_SKIN_BUTTON_KEY = 'skinBtn';
+
+/** 顶栏 T 恤已绑定点开后补挂小抄页签。 */
+export const WALLPAPER_TOP_MENU_SKIN_BTN_HOOKED_KEY = '__xcWallPaperSkinBtnHooked';
 
 /** 包装 onClickSkin 前保留的游戏原方法，供 skinBtn 重绑。 */
 export const WALLPAPER_TOP_MENU_NATIVE_ON_CLICK_SKIN_KEY = '__xcWallPaperNativeOnClickSkin';

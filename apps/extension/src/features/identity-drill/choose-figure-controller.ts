@@ -111,7 +111,6 @@ export function installChooseFigureController(
           if (name && Number.isInteger(value) && value > 0) lockedByName.set(name, value);
         }
       }
-      if (lockedFigures.size || lockedByName.size) frozenAfterReconnect = true;
     } catch {
       // 会话存储不可用时按没锁定处理。
     }
@@ -134,6 +133,11 @@ export function installChooseFigureController(
 
   const unsubscribe = gameEvents?.subscribe((event) => {
     if (event.type === 'game-started') {
+      // 新一局开局协议表示上一局锁定应作废；未结算离桌时 session 里旧锁也会在这里清掉。
+      // 断线重连后 frozenAfterReconnect 为 true 时不清，仍靠锁定补画。
+      if (event.freshGame === true || !frozenAfterReconnect) {
+        clearFigureLock();
+      }
       startApplying();
       return;
     }

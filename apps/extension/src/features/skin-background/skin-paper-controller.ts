@@ -21,7 +21,6 @@ import { createSkinBackgroundStore, type BackgroundFavorite, type BackgroundReso
 import { SKIN_FRAME_HORIZONTAL, SKIN_FRAME_PORTRAIT, SKIN_FRAME_WIDE } from '../../const/skin-frame.ts';
 import {
   SKIN_DETAIL_BUTTON_HEIGHT,
-  SKIN_DETAIL_BUTTON_RECHECK_ROUND_INTERVAL,
   SKIN_DETAIL_FLAT_BUTTON_SKINS,
   SKIN_DETAIL_WINDOW_NAMES
 } from '../../const/skin-detail-window.ts';
@@ -70,6 +69,7 @@ import {
   supportsDynamicSkin,
   isBackgroundUiScene,
   isXiaochaoGameplayUiReady,
+  retrySkinBackgroundEventHooks,
   watchSceneSwitch,
   watchSceneSwitchRequest,
   watchWindowShow,
@@ -818,40 +818,17 @@ export function installSkinPaperController(
   }
 
   function onSkinInfoWindow(): void {
-    void tasks.poll(() => {
+    const tryDetail = () => {
       const win = resolveDetailWindow();
-      if (!win || win.destroyed || win.visible === false) return null;
-      return win;
-    }, 80, 120).then((win) => {
-      if (!win || win.destroyed || !isOn()) return;
+      if (!win || win.destroyed || win.visible === false || !isOn()) return false;
       tryInstallDetailButtons();
-      tasks.later(() => tryInstallDetailButtons(), 250);
-      tasks.later(() => tryInstallDetailButtons(), 800);
-      tasks.later(() => tryInstallDetailButtons(), 1600);
-      startActiveDetailWatch();
-    });
-  }
-
-  let detailWatchRunning = false;
-  let detailWatchRound = 0;
-
-  /** 皮肤详情窗口打开期间的维护循环：每 700ms 复查按钮是否漂移/需要复位。 */
-  function startActiveDetailWatch(): void {
-    if (detailWatchRunning) return;
-    detailWatchRunning = true;
-    detailWatchRound = 0;
-    const tick = () => {
-      const win = resolveDetailWindow();
-      if (win && win.visible !== false && !win.destroyed) {
-        detailWatchRound += 1;
-        if (detailWatchRound % SKIN_DETAIL_BUTTON_RECHECK_ROUND_INTERVAL === 1) tryInstallDetailButtons();
-        tasks.later(tick, 700);
-      } else {
-        // 窗口关了，停止维护；再次打开由 watchWindowShow 事件驱动。
-        detailWatchRunning = false;
-      }
+      return true;
     };
-    tasks.later(tick, 700);
+    for (const delay of [0, 120, 250, 600, 800, 1600]) {
+      tasks.later(() => {
+        tryDetail();
+      }, delay);
+    }
   }
 
   let skinDetailHooksStarted = false;
@@ -868,11 +845,23 @@ export function installSkinPaperController(
     tryInstallDetailButtons();
   }
 
+  let skinDetailHooksQueued = false;
+
   function waitForSkinDetailHooks(): void {
-    void tasks.poll(() => {
-      if (!isOn() || !isXiaochaoGameplayUiReady(locator, globalObject)) return null;
-      return true;
-    }, Infinity, 800).then(() => startSkinDetailHooks());
+    if (skinDetailHooksQueued) return;
+    skinDetailHooksQueued = true;
+    const tryStart = () => {
+      if (!isOn() || !isXiaochaoGameplayUiReady(locator, globalObject)) return;
+      startSkinDetailHooks();
+    };
+    tryStart();
+    if (!skinDetailHooksStarted) {
+      watchSceneSwitch(
+        locator, patcher, tasks, tryStart, globalObject, undefined,
+        () => isXiaochaoGameplayUiReady(locator, globalObject)
+      );
+      retrySkinBackgroundEventHooks(locator, patcher, tasks, globalObject, () => isXiaochaoGameplayUiReady(locator, globalObject));
+    }
   }
 
   // ---------- 换肤窗口悬停图标 ----------
@@ -1068,6 +1057,24 @@ export function installSkinPaperController(
 
   let preparingPaperWindow = false;
 
+  function ensureChangeSkinItemListHook(win: UnknownRecord): void {
+    if (win.__xcPaperItemListHook) return;
+    const selectView = asRecord(win.selectView);
+    if (!selectView) return;
+    win.__xcPaperItemListHook = true;
+    const wrapRefresh = (target: UnknownRecord, methodName: 'updateContent' | 'refresh') => {
+      if (typeof target[methodName] !== 'function' || patcher.isWrapped(target, methodName)) return;
+      patcher.wrap(target, methodName, (original) => function (this: unknown, ...args: unknown[]) {
+        const result = original.apply(this, args);
+        if (!preparingPaperWindow) queueMicrotask(() => void prepareChangeSkinWindow(win));
+        return result;
+      });
+    };
+    wrapRefresh(selectView, 'updateContent');
+    const panel = asRecord(selectView.pannel);
+    if (panel) wrapRefresh(panel, 'refresh');
+  }
+
   async function prepareChangeSkinWindow(win: UnknownRecord): Promise<boolean> {
     if (preparingPaperWindow) return false;
     if (!isOn()) {
@@ -1076,11 +1083,13 @@ export function installSkinPaperController(
     }
     preparingPaperWindow = true;
     try {
-    const view = await tasks.poll(() => {
-      const selectView = asRecord(win.selectView);
-      const list = selectView?.itemList;
-      return Array.isArray(list) && list.length ? selectView : null;
-    }, 20, 100);
+    const selectView = asRecord(win.selectView);
+    const list = selectView?.itemList;
+    let view = Array.isArray(list) && list.length ? selectView : null;
+    if (!view) {
+      ensureChangeSkinItemListHook(win);
+      return false;
+    }
     const container = asRecord(view?.pannelContent) ?? view;
     if (!view || !container || !Array.isArray(view.itemList)) return false;
     const all = view.__xcPaperButtons instanceof Set ? view.__xcPaperButtons as Set<UnknownRecord> : new Set<UnknownRecord>();
@@ -1126,9 +1135,12 @@ export function installSkinPaperController(
   }
 
   function onChangeSkinWindow(): void {
-    void tasks.poll(() => locator.window('ChangeSkinWindow'), 20, 100).then((win) => {
-      if (win) void prepareChangeSkinWindow(win);
-    });
+    const win = locator.window('ChangeSkinWindow');
+    if (win) void prepareChangeSkinWindow(win);
+    else tasks.later(() => {
+      const retry = locator.window('ChangeSkinWindow');
+      if (retry) void prepareChangeSkinWindow(retry);
+    }, 0);
   }
 
   // ---------- 开关与场景 ----------
@@ -1316,7 +1328,12 @@ export function installSkinPaperController(
       if (event.type === 'game-ended') {
         if (shouldShow()) void syncVisibility();
         else hideBackground();
-      } else if (event.type === 'game-started') void migrateLegacyUpload().then(() => syncVisibility());
+      } else if (event.type === 'game-started') {
+        options.syncWallpaperMenu();
+        void migrateLegacyUpload().then(() => syncVisibility());
+      } else if (event.type === 'card-list-ready') {
+        options.syncWallpaperMenu();
+      }
     }));
   }
   async function applyHallBackgroundOnce(): Promise<void> {
@@ -1360,25 +1377,39 @@ export function installSkinPaperController(
     if (backgroundHooksStarted) return;
     backgroundHooksStarted = true;
     watchWindowShow(locator, patcher, tasks, ['ChangeSkinWindow'], () => onChangeSkinWindow(), globalObject);
-    watchSceneSwitchRequest(locator, patcher, tasks, onSceneSwitchRequest);
+    watchSceneSwitchRequest(locator, patcher, tasks, onSceneSwitchRequest, globalObject);
     warmMatchBackgroundFile();
     watchSceneSwitch(
       locator, patcher, tasks, onBackgroundSceneReady, globalObject, undefined,
       () => isPaperUiScene(locator, globalObject)
     );
-    void tasks.poll(() => {
-      if (!mayMutateSkinBackground(locator, globalObject, () => hasStoredPicture())) return null;
-      return true;
-    }, Infinity, 2000).then(() => {
+    retrySkinBackgroundEventHooks(
+      locator, patcher, tasks, globalObject, () => isPaperUiScene(locator, globalObject)
+    );
+    if (mayMutateSkinBackground(locator, globalObject, () => hasStoredPicture())) {
       void syncVisibility();
-    });
+    }
   }
 
+  let backgroundHooksQueueStarted = false;
+
   function waitForSafeBackgroundHooks(): void {
-    void tasks.poll(() => {
-      if (!isPaperUiScene(locator, globalObject)) return null;
-      return true;
-    }, Infinity, 1000).then(() => startBackgroundLifecycleHooks());
+    if (backgroundHooksQueueStarted) return;
+    backgroundHooksQueueStarted = true;
+    const tryStart = () => {
+      if (!isPaperUiScene(locator, globalObject)) return;
+      startBackgroundLifecycleHooks();
+    };
+    tryStart();
+    if (!backgroundHooksStarted) {
+      watchSceneSwitch(
+        locator, patcher, tasks, tryStart, globalObject, undefined,
+        () => isPaperUiScene(locator, globalObject)
+      );
+      retrySkinBackgroundEventHooks(
+        locator, patcher, tasks, globalObject, () => isPaperUiScene(locator, globalObject)
+      );
+    }
   }
 
   if (isOn()) waitForSkinDetailHooks();
