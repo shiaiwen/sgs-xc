@@ -91,6 +91,7 @@ async function onVersionClick(): Promise<void> {
   <button
     type="button"
     class="xiaochao-block-entry xiaochao-block-entry--center xiaochao-version-entry"
+    :class="{ 'xiaochao-version-entry--update': snapshot.hasUpdate }"
     :data-tooltip="tooltip"
     @click="onVersionClick"
   >

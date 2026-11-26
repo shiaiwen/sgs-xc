@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { PortalAuthorTipDialogHost } from "@/components/author-tip-dialog-host";
 import { SiteHeader } from "@/components/site-header";
 import { PORTAL_FONT_CRITICAL_CSS, PORTAL_FONT_FAMILY } from "@/lib/portal-font";
 import { site } from "@/lib/site";
@@ -71,6 +72,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         <SiteHeader />
+        <PortalAuthorTipDialogHost />
         <div className="min-h-0 flex-1 overflow-auto">{children}</div>
       </body>
     </html>

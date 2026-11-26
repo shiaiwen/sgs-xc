@@ -82,6 +82,10 @@ export interface XiaochaoConfig {
   'assist.autoHGEnabled': boolean;
   'assist.baiShengEnabled': boolean;
   'assist.autoBotTavernTarget': 'none' | 'dailyGame' | 'dailyWin' | 'weeklyWin';
+  /** 周年庆每日互绑；仅值为 true 时执行。 */
+  'anniversaryAssist.enabled': boolean | 'leaving';
+  /** 归集大号的游戏用户编号文本，留空表示计入本号。 */
+  'anniversaryAssist.creditAccountId': string;
   /** 为 false 时不拉远程版本；油猴为 true 时检测到新版会自动打开脚本安装页。 */
   'update.autoUpdateEnabled': boolean;
 }
@@ -275,6 +279,23 @@ export const CONFIG_SCHEMA: {
         ? value
         : undefined;
     }
+  },
+  'anniversaryAssist.enabled': {
+    defaultValue: false,
+    parse(value) {
+      if (value === true) return true;
+      if (value === false) return false;
+      if (value === 'leaving') return 'leaving';
+      return undefined;
+    },
+  },
+  'anniversaryAssist.creditAccountId': {
+    defaultValue: '',
+    parse(value) {
+      if (typeof value !== 'string') return undefined;
+      const text = value.trim();
+      return /^[0-9]{0,32}$/.test(text) ? text : undefined;
+    },
   },
   'update.autoUpdateEnabled': booleanDefinition(true),
 };

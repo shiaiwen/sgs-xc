@@ -10,5 +10,11 @@
     "file": "wd-xc-1.0.71.zip",
     "size": 569555,
     "sha256": "53c7fe0d6411b74ba495117e3c82f43fc89098614fff81675d05f3c251402c24"
+  },
+  {
+    "version": "1.0.72",
+    "file": "wd-xc-1.0.72.zip",
+    "size": 571332,
+    "sha256": "f09d233b98294056196ba188ffabd3d2f75c76f252c8763a5d471ff65b5affbf"
   }
 ]

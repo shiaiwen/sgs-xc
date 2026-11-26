@@ -178,84 +178,77 @@ html.xiaochao-game-viewport--docked #GameDiv {
   color: #fff1bd;
 }
 #createIframe.xiaochao-panel--collapsed .xiaochao-reset-toolbar { display: none; }
-#createIframe .xiaochao-reset-dialog p {
-  margin: 0;
-  color: #d2c7b3;
-  font-size: 13px;
-  line-height: 1.6;
+.xiaochao-dialog.xiaochao-reset-dialog {
+  width: min(360px, calc(100vw - 24px));
 }
-#createIframe .xiaochao-reset-dialog__cancel,
-#createIframe .xiaochao-reset-dialog__confirm {
-  padding: 5px 12px;
-  border: 1px solid rgba(242, 222, 156, .3);
-  border-radius: 4px;
-  background: rgba(54, 43, 31, .9);
-  color: #e3d6b9;
-  cursor: pointer;
+.xiaochao-dialog.xiaochao-reset-dialog .xiaochao-dialog__content {
+  padding: 10px 12px 12px;
 }
-#createIframe .xiaochao-reset-dialog__confirm {
-  border-color: rgba(214, 111, 87, .58);
-  background: rgba(105, 48, 39, .78);
-  color: #ffe3d4;
-}
-#createIframe .xiaochao-reset-dialog__cancel:hover,
-#createIframe .xiaochao-reset-dialog__confirm:hover { filter: brightness(1.18); }
-#createIframe .xiaochao-author-tip-dialog__lead,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__lead {
-  margin: 0;
-  color: #d2c7b3;
-  font-size: 13px;
-  line-height: 1.55;
-}
-#createIframe .xiaochao-author-tip-dialog__tabs,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__tabs {
+.xiaochao-reset-dialog__body {
   display: flex;
-  gap: 6px;
-  margin-top: 12px;
-  padding: 3px;
-  border: 1px solid rgba(242, 222, 156, .22);
-  border-radius: 999px;
-  background: rgba(32, 26, 20, .72);
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.45;
 }
-#createIframe .xiaochao-author-tip-dialog__tab,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__tab {
+.xiaochao-reset-dialog__lead {
+  margin: 0;
+  color: #d2c7b3;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.xiaochao-reset-dialog__list {
+  margin: 0;
+  padding: 0 0 0 14px;
+  color: #a89888;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.xiaochao-reset-dialog__list li + li {
+  margin-top: 4px;
+}
+.xiaochao-reset-dialog__warn {
+  margin: 2px 0 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(214, 111, 87, .38);
+  border-radius: 4px;
+  background: rgba(105, 48, 39, .22);
+  color: #e0a89a;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.xiaochao-dialog.xiaochao-reset-dialog .xiaochao-dialog__footer {
+  display: flex;
+  justify-content: stretch;
+  padding: 8px 10px;
+}
+.xiaochao-reset-dialog__actions {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.xiaochao-reset-dialog__actions .xiaochao-block-select-btn {
   flex: 1 1 0;
   min-width: 0;
-  padding: 6px 10px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: #c8bba3;
-  font-size: 12px;
-  cursor: pointer;
+  min-height: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+  white-space: nowrap;
 }
-#createIframe .xiaochao-author-tip-dialog__tab--active,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__tab--active {
-  background: rgba(242, 222, 156, .16);
-  color: #f2de9c;
+.xiaochao-reset-dialog__confirm {
+  border-color: rgba(214, 111, 87, .55) !important;
+  background: linear-gradient(180deg, rgba(132, 56, 46, .92), rgba(92, 40, 34, .95)) !important;
+  box-shadow: inset 0 1px rgba(255, 230, 220, .08) !important;
+  color: #ffe8de !important;
 }
-#createIframe .xiaochao-author-tip-dialog__qr-wrap,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__qr-wrap {
-  display: flex;
-  justify-content: center;
-  margin-top: 12px;
-  padding: 8px;
-  border: 1px solid rgba(242, 222, 156, .2);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, .96);
-}
-#createIframe .xiaochao-author-tip-dialog__qr,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__qr {
-  display: block;
-  width: min(220px, 100%);
-  height: auto;
-}
-#createIframe .xiaochao-author-tip-dialog__hint,
-.xiaochao-dialog.xiaochao-author-tip-dialog .xiaochao-author-tip-dialog__hint {
-  margin: 10px 0 0;
-  text-align: center;
-  color: #b8ab92;
-  font-size: 12px;
+.xiaochao-reset-dialog__confirm:hover {
+  border-color: rgba(230, 130, 108, .72) !important;
+  background: linear-gradient(180deg, rgba(155, 66, 54, .96), rgba(105, 48, 39, .98)) !important;
+  color: #fff4ee !important;
 }
 #createIframe .xc-frame-toggle {
   position: relative;
@@ -369,17 +362,12 @@ html.xiaochao-game-viewport--docked #GameDiv {
   margin: 4px 0 0;
 }
 #createIframe .xiaochao-others-entry__actions {
-  padding: 1px 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 6px;
 }
 #createIframe .xiaochao-others-entry__actions .xiaochao-settings-section {
   margin: 0;
-}
-#createIframe .xiaochao-others-entry__actions .xiaochao-block-entry {
-  width: calc(100% - 8px);
-  min-height: 28px;
-  margin: 3px 4px;
-  padding: 0 10px;
-  font-size: 12px;
 }
 #createIframe .xiaochao-settings-grid.xiaochao-shanhetu-switch-grid {
   grid-template-columns: 1fr 1fr;
@@ -1192,7 +1180,178 @@ html.xiaochao-game-viewport--docked #GameDiv {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-/* 临时关闭周年庆入口样式，方便以后恢复。
+
+/* 其他页工具栏：版本状态、秒杀主操作、辅助入口、危险重置分层 */
+#createIframe .xiaochao-others-entry__actions .xiaochao-version-entry {
+  width: auto;
+  min-height: 26px;
+  box-sizing: border-box;
+  margin: 0 0 4px;
+  padding: 0 8px;
+  border-color: transparent;
+  border-bottom-color: rgba(242, 222, 156, .16);
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  box-shadow: none;
+  color: rgba(230, 214, 168, .86);
+  font-size: 12px;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-version-entry:hover {
+  border-color: rgba(242, 222, 156, .32);
+  background: rgba(215, 182, 107, .12);
+  color: #f2de9c;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-version-entry:active {
+  border-color: rgba(242, 222, 156, .5);
+  background: rgba(215, 182, 107, .22);
+  color: #fff6d8;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-version-entry--update {
+  border-color: rgba(242, 222, 156, .42);
+  background: linear-gradient(180deg, rgba(215, 182, 107, .22), rgba(57, 47, 34, .7));
+  color: #fff1bd;
+  font-weight: 700;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-version-entry--update:hover {
+  border-color: rgba(242, 222, 156, .7);
+  background: linear-gradient(180deg, rgba(215, 182, 107, .34), rgba(57, 47, 34, .8));
+  color: #fff6d8;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-seckill-entry {
+  margin: 0 0 8px;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-seckill-entry__trigger {
+  width: 100%;
+  min-height: 34px;
+  margin: 0;
+  padding: 0 10px;
+  justify-content: space-between;
+  text-align: left;
+  border-color: rgba(242, 222, 156, .55);
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(215, 182, 107, .18), rgba(57, 47, 34, .82));
+  box-shadow: inset 0 1px rgba(255, 242, 198, .1), 0 1px 3px rgba(0, 0, 0, .18);
+  color: #f2de9c;
+  font-size: 12.5px;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-seckill-entry__trigger > span:first-child {
+  font-weight: 700;
+  letter-spacing: .3px;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-seckill-entry__trigger:hover {
+  border-color: rgba(242, 222, 156, .78);
+  background:
+    linear-gradient(180deg, rgba(215, 182, 107, .28), rgba(57, 47, 34, .88));
+  color: #fff1bd;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-seckill-entry__trigger:active {
+  border-color: rgba(242, 222, 156, .9);
+  background:
+    linear-gradient(180deg, rgba(215, 182, 107, .4), rgba(215, 182, 107, .12));
+  color: #fff6d8;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-seckill-entry__trigger--selected {
+  border-color: rgba(242, 222, 156, .72);
+  background:
+    linear-gradient(180deg, rgba(215, 182, 107, .26), rgba(57, 47, 34, .86));
+}
+#createIframe .xiaochao-others-entry__links {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-gap: 5px;
+  gap: 5px;
+  margin: 0 0 8px;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-block-entry {
+  width: auto;
+  min-width: 0;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 8px;
+  justify-content: center;
+  gap: 5px;
+  border-color: rgba(242, 222, 156, .28);
+  background: rgba(57, 47, 34, .5);
+  box-shadow: inset 0 1px rgba(255, 242, 198, .04);
+  font-size: 11.5px;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-block-entry:hover {
+  border-color: rgba(242, 222, 156, .55);
+  background: linear-gradient(180deg, rgba(215, 182, 107, .18), rgba(57, 47, 34, .72));
+  color: #f2de9c;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-block-entry:active {
+  border-color: rgba(242, 222, 156, .72);
+  background: linear-gradient(180deg, rgba(215, 182, 107, .3), rgba(215, 182, 107, .1));
+  color: #fff6d8;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-block-entry svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-others-entry__link--author-tip {
+  grid-column: 1 / -1;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  margin-bottom: 2px;
+  border-color: rgba(215, 182, 107, .58);
+  background: linear-gradient(180deg, rgba(215, 182, 107, .28), rgba(74, 58, 39, .88));
+  box-shadow:
+    inset 0 1px rgba(255, 242, 198, .14),
+    0 1px 3px rgba(0, 0, 0, .22);
+  color: #fff1c8;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-others-entry__link--author-tip:hover {
+  border-color: rgba(242, 222, 156, .78);
+  background: linear-gradient(180deg, rgba(230, 196, 120, .38), rgba(92, 72, 48, .92));
+  color: #fff6d8;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-others-entry__link--author-tip:active {
+  border-color: rgba(242, 222, 156, .9);
+  background: linear-gradient(180deg, rgba(242, 222, 156, .32), rgba(215, 182, 107, .18));
+  color: #fff;
+}
+#createIframe .xiaochao-others-entry__links .xiaochao-others-entry__link--author-tip svg {
+  width: 14px;
+  height: 14px;
+  fill: #e86a62;
+  stroke: none;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-block-entry--danger {
+  width: auto;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  justify-content: center;
+  border-color: rgba(214, 111, 87, .42);
+  background: rgba(72, 36, 32, .42);
+  box-shadow: none;
+  color: #e8c4b6;
+  font-size: 12px;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-block-entry--danger:hover {
+  border-color: rgba(214, 111, 87, .72);
+  background: rgba(105, 48, 39, .72);
+  color: #ffe3d4;
+}
+#createIframe .xiaochao-others-entry__actions .xiaochao-block-entry--danger:active {
+  border-color: rgba(214, 111, 87, .86);
+  background: rgba(120, 52, 42, .86);
+  color: #fff0e8;
+}
+
+/* 周年庆互助弹窗样式。面板快捷入口、bootstrap 装配与服务端路由仍保持关闭。 */
 #createIframe .xiaochao-dialog.xiaochao-anniversary-assist-dialog,
 .xiaochao-dialog.xiaochao-anniversary-assist-dialog {
   width: 100%;
@@ -1205,43 +1364,93 @@ html.xiaochao-game-viewport--docked #GameDiv {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  padding: 12px 10px 14px;
+  padding: 10px 10px 12px;
   overflow-x: hidden;
 }
-.xiaochao-anniversary-assist__switch-grid {
-  grid-template-columns: 1fr;
+.xiaochao-anniversary-assist {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.xiaochao-anniversary-assist__master {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid rgba(242, 222, 156, .42);
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(215, 182, 107, .16), rgba(57, 47, 34, .82));
+  box-shadow: inset 0 1px rgba(255, 242, 198, .1), 0 1px 3px rgba(0, 0, 0, .16);
+  cursor: pointer;
+}
+.xiaochao-anniversary-assist__master-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.xiaochao-anniversary-assist__master-title {
+  color: #f2de9c;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  line-height: 1.2;
+}
+.xiaochao-anniversary-assist__master-desc {
+  color: rgba(214, 197, 156, .7);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.xiaochao-anniversary-assist__master .xiaochao-block-switch__toggle {
+  flex: 0 0 52px;
+  width: 52px;
+  margin: 0;
 }
 .xiaochao-anniversary-assist__status-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   box-sizing: border-box;
-  margin: 0 4px;
-  padding: 10px 12px;
-  border: 1px solid rgba(242, 222, 156, .28);
+  padding: 8px 10px;
+  border: 1px solid rgba(242, 222, 156, .22);
   border-radius: 6px;
   background: rgba(26, 21, 14, .55);
 }
 .xiaochao-anniversary-assist__status-card--error {
-  border-color: rgba(226, 62, 62, .45);
-  background: rgba(57, 28, 28, .35);
+  border-color: rgba(214, 111, 87, .5);
+  background: rgba(72, 36, 32, .35);
 }
 .xiaochao-anniversary-assist__status-card--syncing,
 .xiaochao-anniversary-assist__status-card--binding,
 .xiaochao-anniversary-assist__status-card--verifying {
   border-color: rgba(215, 182, 107, .55);
+  background: rgba(215, 182, 107, .08);
 }
 .xiaochao-anniversary-assist__phase {
+  flex: 0 0 auto;
   display: inline-block;
-  margin-bottom: 6px;
-  padding: 1px 8px;
+  margin: 1px 0 0;
+  padding: 1px 7px;
+  border: 1px solid rgba(242, 222, 156, .28);
   border-radius: 3px;
   background: rgba(215, 182, 107, .18);
   color: #f2de9c;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .04em;
+  line-height: 1.5;
 }
 .xiaochao-anniversary-assist__status-card--error .xiaochao-anniversary-assist__phase {
-  background: rgba(226, 62, 62, .22);
-  color: #ffb3b3;
+  border-color: rgba(214, 111, 87, .5);
+  background: rgba(214, 111, 87, .22);
+  color: #ffe3d4;
+}
+.xiaochao-anniversary-assist__status-body {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .xiaochao-anniversary-assist__message {
   margin: 0;
@@ -1250,47 +1459,99 @@ html.xiaochao-game-viewport--docked #GameDiv {
   line-height: 1.45;
 }
 .xiaochao-anniversary-assist__note {
-  margin: 8px 4px 0;
+  margin: 6px 0 0;
   color: rgba(214, 197, 156, .72);
   font-size: 10.5px;
   line-height: 1.4;
 }
+.xiaochao-anniversary-assist__note--inline {
+  margin-top: 4px;
+}
 .xiaochao-anniversary-assist__stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0 4px;
+  grid-gap: 6px;
+  gap: 6px;
 }
 .xiaochao-anniversary-assist__stat {
   box-sizing: border-box;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 7px 9px 6px;
   border: 1px solid rgba(242, 222, 156, .22);
   border-radius: 5px;
-  background: rgba(57, 47, 34, .45);
+  background: rgba(57, 47, 34, .5);
+  box-shadow: inset 0 1px rgba(255, 242, 198, .04);
 }
 .xiaochao-anniversary-assist__stat--pending {
   grid-column: 1 / -1;
-  border-color: rgba(215, 182, 107, .4);
+  border-color: rgba(215, 182, 107, .42);
+  background: rgba(215, 182, 107, .1);
 }
 .xiaochao-anniversary-assist__stat-label {
   display: block;
-  margin-bottom: 4px;
-  color: rgba(214, 197, 156, .78);
+  margin-bottom: 3px;
+  color: rgba(214, 197, 156, .72);
   font-size: 10px;
+  letter-spacing: .2px;
 }
 .xiaochao-anniversary-assist__stat-value {
   color: #f2de9c;
   font-size: 15px;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.2;
+}
+.xiaochao-anniversary-assist__section {
+  display: flex;
+  flex-direction: column;
+}
+.xiaochao-anniversary-assist__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+  margin: 2px 0 6px;
+  padding: 0 6px 0 7px;
+  border-left: 3px solid #d7b66b;
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(117, 84, 38, .32), rgba(44, 36, 28, .08) 72%, transparent);
+}
+.xiaochao-anniversary-assist__section-title {
+  margin: 0;
+  color: #f2de9c;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .5px;
+}
+.xiaochao-anniversary-assist__text-btn {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(232, 196, 182, .88);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.xiaochao-anniversary-assist__text-btn:hover {
+  border-color: rgba(214, 111, 87, .42);
+  background: rgba(72, 36, 32, .4);
+  color: #ffe3d4;
+}
+.xiaochao-anniversary-assist__text-btn:disabled {
+  opacity: .45;
+  cursor: default;
 }
 .xiaochao-anniversary-assist__credit-row {
   display: flex;
-  gap: 8px;
   align-items: stretch;
-  margin: 8px 4px 0;
+  grid-gap: 6px;
+  gap: 6px;
+  margin-top: 6px;
 }
 #createIframe .xiaochao-dialog .xiaochao-anniversary-assist__input,
 .xiaochao-dialog .xiaochao-anniversary-assist__input {
@@ -1317,19 +1578,28 @@ html.xiaochao-game-viewport--docked #GameDiv {
   flex: 0 0 auto;
   align-self: stretch;
   min-width: 52px;
+  border-color: rgba(242, 222, 156, .55);
+  background: linear-gradient(180deg, rgba(215, 182, 107, .28), rgba(57, 47, 34, .85));
+  color: #f2de9c;
+  font-weight: 700;
 }
 .xiaochao-anniversary-assist__hint {
-  margin: 8px 4px 0;
+  margin: 6px 0 0;
   color: rgba(214, 197, 156, .85);
   font-size: 11px;
+  line-height: 1.4;
 }
 .xiaochao-anniversary-assist__hint--error {
   color: #ffb3b3;
 }
 .xiaochao-anniversary-assist__table {
   margin: 0;
-  padding: 0 4px;
+  padding: 0;
+  overflow: hidden;
   list-style: none;
+  border: 1px solid rgba(242, 222, 156, .18);
+  border-radius: 5px;
+  background: rgba(26, 21, 14, .4);
 }
 .xiaochao-anniversary-assist__table-row {
   display: flex;
@@ -1337,7 +1607,7 @@ html.xiaochao-game-viewport--docked #GameDiv {
   justify-content: space-between;
   gap: 8px;
   min-height: 28px;
-  padding: 4px 8px;
+  padding: 4px 9px;
   border-bottom: 1px solid rgba(242, 222, 156, .12);
   color: #e6d6a8;
   font-size: 11px;
@@ -1346,13 +1616,19 @@ html.xiaochao-game-viewport--docked #GameDiv {
   border-bottom: none;
 }
 .xiaochao-anniversary-assist__table-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .xiaochao-anniversary-assist__table-val {
+  flex: 0 0 auto;
   color: #f2de9c;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-}*/
+}
+
 `;
 
 export const PANEL_SHELL_CSS = PANEL_SHELL_CSS_SOURCE;

@@ -3,6 +3,9 @@ dist/
 out/
 release/
 .dev-data/
+# 开发过程临时目录：可乱放草稿与本地摘录，仅保留目录占位文件
+scratch/**
+!scratch/.gitignore
 *.log
 .DS_Store
 

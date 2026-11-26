@@ -3,16 +3,25 @@
  */
 
 import { createLayaObjectLocator } from '../../adapters/laya-object-locator.ts';
+import {
+  installProtocolEventHooks,
+  type ProtocolEventHookHandlers
+} from '../../adapters/server-proxy-protocol-hook.ts';
 import { locateGameEventDispatcher, locateGameScene, type GameRuntimeWindow } from '../seat-display/game-scene-locator.ts';
 import type { GameEventBus } from '../../runtime/game-event-bus.ts';
-import { everyInterval } from '../../runtime/shared-ticker.ts';
-import { CHOOSE_FIGURE_APPLY_MS } from '../../const/poll-intervals.ts';
+import {
+  CHOOSE_FIGURE_APPLY_BURST_MS,
+  CHOOSE_FIGURE_APPLY_FRESH_BURST_MS,
+  CHOOSE_FIGURE_READY_PROTOCOL_NAMES,
+  CHOOSE_FIGURE_SKILL_CHANGE_EVENT
+} from '../../const/choose-figure-apply.ts';
 import {
   CHOOSE_FIGURE_LOCK_KEY_BASE,
   CHOOSE_FIGURE_LOCK_VERSION
 } from '../../const/choose-figure-lock.ts';
 import { loggedInAccountStorageKey } from '../skin-background/skin-runtime.ts';
 import {
+  CHOOSE_IDENTITY_PLAYER_COUNT,
   figureByClientOrder,
   figureConflicts,
   figureForChooseIdentityOrder,
@@ -25,6 +34,7 @@ import {
 
 type UnknownRecord = Record<string, unknown>;
 const DEBUG_KEY = '__XIAOCHAO_CHOOSE_FIGURE_DEBUG__';
+const FIGURE_SKILL_HOOK_KEY = '__xcChooseFigureSkillHook';
 /** 无账号后缀的旧 session 键，读后迁移。 */
 const LEGACY_FIGURE_LOCK_SESSION_KEY = CHOOSE_FIGURE_LOCK_KEY_BASE;
 
@@ -54,7 +64,7 @@ interface ChooseFigureDebugState {
   clear(): void;
 }
 
-/** 挂上轮询：进局后反复尝试，直到房间座位和武将牌都就绪。 */
+/** 按游戏事件与房间协议触发身份写入，开局时分批重试几次直到座位表就绪。 */
 export function installChooseFigureController(
   globalObject: GameRuntimeWindow = window,
   gameEvents?: GameEventBus
@@ -118,18 +128,51 @@ export function installChooseFigureController(
   let lastDebugSignature = '';
   let lastDebugAt = 0;
   const debug = createDebugState(globalObject);
-  let stopApplying: (() => void) | null = null;
+  let applyBurstGeneration = 0;
+  const applyTimers: Array<ReturnType<typeof setTimeout>> = [];
 
-  function startApplying(): void {
-    if (stopApplying) return;
-    stopApplying = everyInterval('身份锁定', CHOOSE_FIGURE_APPLY_MS, applyChooseFigures, {}, globalObject);
+  function cancelApplyBurst(): void {
+    applyBurstGeneration += 1;
+    while (applyTimers.length) clearTimeout(applyTimers.pop());
+  }
+
+  function requestApplyFigures(reason: string): void {
+    recordDebug(debug, { event: 'apply-once', reason });
     applyChooseFigures();
   }
 
-  function stopApplyingLoop(): void {
-    stopApplying?.();
-    stopApplying = null;
+  function scheduleApplyBurst(reason: string, delays: readonly number[]): void {
+    cancelApplyBurst();
+    const generation = applyBurstGeneration;
+    recordDebug(debug, { event: 'schedule-burst', reason, delays: [...delays] });
+    applyChooseFigures();
+    for (const delayMs of delays) {
+      if (delayMs <= 0) continue;
+      applyTimers.push(setTimeout(() => {
+        if (generation !== applyBurstGeneration) return;
+        applyChooseFigures();
+      }, delayMs));
+    }
   }
+
+  function bindSkillChangeFigureHook(): void {
+    const scene = asRecord(locateGameScene(globalObject));
+    const selfUi = asRecord(scene?.SelfSeatUi);
+    const seat = asRecord(selfUi?.seat);
+    if (!seat || seat[FIGURE_SKILL_HOOK_KEY]) return;
+    const handler = () => requestApplyFigures('skill-change');
+    if (typeof seat.on !== 'function') return;
+    callMethodOnRecord(seat, 'on', CHOOSE_FIGURE_SKILL_CHANGE_EVENT, seat, handler);
+    seat[FIGURE_SKILL_HOOK_KEY] = handler;
+  }
+
+  const protocolHooks: ProtocolEventHookHandlers = {
+    onBeforeForward(className) {
+      if (!CHOOSE_FIGURE_READY_PROTOCOL_NAMES.includes(className as typeof CHOOSE_FIGURE_READY_PROTOCOL_NAMES[number])) return;
+      scheduleApplyBurst(`protocol:${className}`, CHOOSE_FIGURE_APPLY_BURST_MS);
+    }
+  };
+  const protocolHookHandle = installProtocolEventHooks(globalObject as unknown as Window, protocolHooks);
 
   const unsubscribe = gameEvents?.subscribe((event) => {
     if (event.type === 'game-started') {
@@ -138,7 +181,10 @@ export function installChooseFigureController(
       if (event.freshGame === true || !frozenAfterReconnect) {
         clearFigureLock();
       }
-      startApplying();
+      scheduleApplyBurst(
+        event.freshGame === true ? 'game-started-fresh' : 'game-started',
+        event.freshGame === true ? CHOOSE_FIGURE_APPLY_FRESH_BURST_MS : CHOOSE_FIGURE_APPLY_BURST_MS
+      );
       return;
     }
     if (event.type === 'game-reconnected') {
@@ -146,21 +192,28 @@ export function installChooseFigureController(
       // 只能退回按画面座位号猜，反而猜出第二个主公。
       if (lockedFigures.size || lockedByName.size || lockedBySeat.size) frozenAfterReconnect = true;
       recordDebug(debug, { event: 'game-reconnected', stableRoomKey, stableClientTokens: stableClientIds.map(clientToken) });
-      startApplying();
+      scheduleApplyBurst('game-reconnected', CHOOSE_FIGURE_APPLY_FRESH_BURST_MS);
+      return;
+    }
+    if (event.type === 'card-list-ready') {
+      scheduleApplyBurst('card-list-ready', CHOOSE_FIGURE_APPLY_FRESH_BURST_MS);
+      return;
+    }
+    if (event.type === 'turn-started' || event.type === 'phase-changed') {
+      requestApplyFigures(event.type);
       return;
     }
     if (event.type === 'game-ended' && event.settled) {
       // 断线、离桌、场景重建也会报一局结束，那些不能清。只有结算后下一局才重算。
       recordDebug(debug, { event: 'game-ended', stableRoomKey, stableClientTokens: stableClientIds.map(clientToken) });
       clearFigureLock();
-      stopApplyingLoop();
+      scheduleApplyBurst('game-ended-settled', CHOOSE_FIGURE_APPLY_BURST_MS);
     }
   });
-  // 没传事件源时保持常驻；有事件源时只在对局内轮询，安装时先应用一次兜住已在局内的情况。
-  if (!gameEvents) startApplying();
-  else applyChooseFigures();
+  scheduleApplyBurst(gameEvents ? 'install' : 'install-no-events', CHOOSE_FIGURE_APPLY_BURST_MS);
   return () => {
-    stopApplyingLoop();
+    cancelApplyBurst();
+    protocolHookHandle.restore();
     unsubscribe?.();
   };
 
@@ -204,6 +257,7 @@ export function installChooseFigureController(
 
   function applyChooseFigures(): void {
     try {
+      bindSkillChangeFigureHook();
       const locator = createLayaObjectLocator(globalObject);
       const room = roomController(globalObject);
       const setting = asRecord(room?.TableSetting) ?? asRecord(room?.tableSetting);
@@ -264,6 +318,7 @@ export function installChooseFigureController(
       const selfRead = seatReads.find((read) => read.isSelf) ?? null;
       const selfGameFigure = isIdentityFigure(selfRead?.gameFigure) ? Number(selfRead?.gameFigure) : 0;
       const hasLock = lockedFigures.size > 0 || lockedByName.size > 0 || lockedBySeat.size > 0;
+      const capturePending = inMatch && !hasLock && stableClientIds.length !== CHOOSE_IDENTITY_PLAYER_COUNT;
       // 房间座位表才是身份顺序，画面座位号不是。认身份的两个时机：
       // 一是在房间里，二是手里已经没有锁定的时候，重连丢过一次锁就靠这一步捡回来。
       // 手里有锁又已经进局就绝不重认：重连后房间对象会重建、顺序会变，重认等于把主公认丢。
@@ -302,17 +357,16 @@ export function installChooseFigureController(
           byName: read.seatName ? lockedByName.get(read.seatName) : undefined,
           bySeat: read.seatId !== null ? lockedBySeat.get(read.seatId) : undefined,
           byRoomOrder: figureByClientOrder(stableClientIds, read.clientId),
-          // 局内不按画面座位号猜：那不是身份顺序，猜出来会多出一个主公。
-          bySeatIndex: !inMatch && !lockedFigures.size && seatOrder !== null
+          // 局内等账号顺序还没认全时，暂时用画面座位号垫一下，认全后只走房间顺序。
+          bySeatIndex: (!inMatch || capturePending) && !lockedFigures.size && seatOrder !== null
             ? figureForChooseIdentityOrder(seatOrder)
             : 0
         });
         return { read, decision };
       });
-      // 刚认出来的这份顺序要先和游戏已经给出来的身份对一遍，对不上就整份作废：
-      // 自己那格是服务器给的，重连后它最能说明这份顺序是不是这一局的。
+      // 只拿自己那格和服务器对照：别人的 Figure 可能是上一局残留，整桌对照会把顺序误作废。
       const knownConflicts = planned.filter(({ read, decision }) => (
-        shouldTrustGameFigure(read) && figureConflicts(decision.figure, read.gameFigure)
+        read.isSelf && shouldTrustGameFigure(read) && figureConflicts(decision.figure, read.gameFigure)
       ));
       if (knownConflicts.length > 0) {
         recordDebug(debug, {
@@ -668,12 +722,25 @@ function shouldTrustGameFigure(read: { manager: UnknownRecord | null; gameFigure
   return !!read.manager && !writtenManagers.has(read.manager) && isIdentityFigure(read.gameFigure);
 }
 
-/** 身份还没写成目标值时才调用 SetFigure，避免每轮轮询重绘。 */
+function callMethodOnRecord(record: UnknownRecord | null, methodName: string, ...args: unknown[]): void {
+  if (!record || typeof record[methodName] !== 'function') return;
+  try {
+    (record[methodName] as (...inner: unknown[]) => unknown).apply(record, args);
+  } catch {
+    // 单座位失败不影响其他人。
+  }
+}
+
+/** 身份还没写成目标值时才调用 SetFigure；Figure 为 0 时也要写，第二局开局常见。 */
 function revealFigure(manager: UnknownRecord | null, figure: number): void {
-  if (!manager || figure <= 0 || Number(manager.Figure) === figure) return;
+  if (!manager || figure <= 0) return;
+  const current = Number(manager.Figure);
+  if (current === figure) return;
   writtenManagers.add(manager);
   if (typeof manager.SetFigure === 'function') {
-    try { manager.SetFigure(figure); } catch { /* 单座位失败不影响其他人。 */ }
+    callMethodOnRecord(manager, 'SetFigure', figure);
+    callMethodOnRecord(manager, 'updateFigure');
+    callMethodOnRecord(manager, 'UpdateFigure');
     return;
   }
   manager.Figure = figure;

@@ -11,6 +11,7 @@ alwaysApply: true
 
 - `apps/extension/.tmp-decode.js` 及同类临时解码脚本
 - 任意 `.dev-data/` 目录
+- 任意 `scratch/` 目录下除 `.gitignore` 以外的文件
 - 任意 `dist/`、`dist-ssr/`、`out/`、`release/` 构建产物
 - `apps/extension/tools/console-copy-seats.txt` 及同类本地调试摘录
 - `apps/portal/.next-dev-*/` 等 Next 本地 dev 缓存目录

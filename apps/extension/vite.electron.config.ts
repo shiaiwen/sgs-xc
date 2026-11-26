@@ -4,6 +4,10 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
+import {
+  AUTHOR_TIP_PORTAL_ORIGIN_LOCAL,
+  AUTHOR_TIP_PORTAL_ORIGIN_REMOTE,
+} from './src/const/author-tip-portal.ts';
 import { isElectronDevBuild } from './tools/vite-dev-fast.ts';
 
 const xiaochaoVersion = JSON.parse(
@@ -20,7 +24,10 @@ export default defineConfig({
     __XIAOCHAO_VERSION__: JSON.stringify(String(xiaochaoVersion || '0.0.0')),
     __XIAOCHAO_ACCOUNT_CONFIG_URL__: JSON.stringify(
       devFast ? ACCOUNT_CONFIG_LOCAL_URL : ACCOUNT_CONFIG_REMOTE_URL
-    )
+    ),
+    __XIAOCHAO_PORTAL_ORIGIN__: JSON.stringify(
+      devFast ? AUTHOR_TIP_PORTAL_ORIGIN_LOCAL : AUTHOR_TIP_PORTAL_ORIGIN_REMOTE
+    ),
   },
   build: {
     outDir: 'dist/electron',

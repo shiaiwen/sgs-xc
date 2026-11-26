@@ -43,18 +43,21 @@ function onToggle(item: SecKillItem): void {
   <div class="xiaochao-seckill-entry">
     <button
       type="button"
-      class="xiaochao-block-entry xiaochao-block-entry--center"
+      class="xiaochao-block-entry xiaochao-seckill-entry__trigger"
+      :class="{ 'xiaochao-seckill-entry__trigger--selected': selectedCount > 0 }"
       :aria-expanded="isOpen"
       data-tooltip="开售后自动连点抢购秒杀商品，抢到或满额即停"
       @click="toggleOpen"
     >
       <span>秒杀连点</span>
-      <span class="xiaochao-seckill-entry__state">{{ selectedCount ? '已选' : '未选' }}</span>
-      <span
-        class="xiaochao-seckill-entry__arrow"
-        :class="{ 'xiaochao-seckill-entry__arrow--open': isOpen }"
-        aria-hidden="true"
-      >▾</span>
+      <span class="xiaochao-seckill-entry__meta">
+        <span class="xiaochao-seckill-entry__state">{{ selectedCount ? '已选' : '未选' }}</span>
+        <span
+          class="xiaochao-seckill-entry__arrow"
+          :class="{ 'xiaochao-seckill-entry__arrow--open': isOpen }"
+          aria-hidden="true"
+        >▾</span>
+      </span>
     </button>
     <div v-show="isOpen" class="xiaochao-seckill-entry__body">
       <p v-if="!hasItems" class="xiaochao-seckill-entry__empty">当前没有可抢的秒杀商品</p>
@@ -77,9 +80,30 @@ function onToggle(item: SecKillItem): void {
 </template>
 
 <style scoped>
+.xiaochao-seckill-entry__trigger {
+  gap: 8px;
+}
+.xiaochao-seckill-entry__meta {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: auto;
+  gap: 6px;
+}
 .xiaochao-seckill-entry__state {
-  font-size: 12px;
-  opacity: 0.72;
+  padding: 1px 6px;
+  border: 1px solid rgba(242, 222, 156, 0.22);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18);
+  color: rgba(242, 222, 156, 0.72);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+}
+.xiaochao-seckill-entry__trigger--selected .xiaochao-seckill-entry__state {
+  border-color: rgba(242, 222, 156, 0.5);
+  background: rgba(212, 181, 106, 0.2);
+  color: #f2de9c;
 }
 .xiaochao-seckill-entry__arrow {
   font-size: 12px;

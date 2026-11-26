@@ -7,6 +7,10 @@ import monkey from 'vite-plugin-monkey';
 import { patchUserscriptDevInstallMount } from './tools/patch-userscript-dev-install.js';
 import { buildUserscriptPayload, wrapUserscriptWithPayloadLoader } from './tools/userscript-payload-prelude.ts';
 import { ACCOUNT_CONFIG_LOCAL_URL, ACCOUNT_CONFIG_REMOTE_URL } from './src/const/account-config-endpoint.ts';
+import {
+  AUTHOR_TIP_PORTAL_ORIGIN_LOCAL,
+  AUTHOR_TIP_PORTAL_ORIGIN_REMOTE,
+} from './src/const/author-tip-portal.ts';
 import { USERSCRIPT_PAYLOAD_FILE_NAME } from './src/const/userscript-payload.ts';
 import {
   USERSCRIPT_DEV_LOADER_NAME,
@@ -419,6 +423,9 @@ export default defineConfig({
     __XIAOCHAO_VERSION__: JSON.stringify(xiaochaoVersion),
     __XIAOCHAO_ACCOUNT_CONFIG_URL__: JSON.stringify(
       isDevUserscriptBundle ? ACCOUNT_CONFIG_LOCAL_URL : ACCOUNT_CONFIG_REMOTE_URL
+    ),
+    __XIAOCHAO_PORTAL_ORIGIN__: JSON.stringify(
+      isDevUserscriptBundle ? AUTHOR_TIP_PORTAL_ORIGIN_LOCAL : AUTHOR_TIP_PORTAL_ORIGIN_REMOTE
     ),
     __XIAOCHAO_BUILD_STAMP__: JSON.stringify(`${xiaochaoVersion}-panel-gate`)
   },

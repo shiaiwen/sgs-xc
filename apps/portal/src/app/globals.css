@@ -407,6 +407,49 @@ body {
   font-weight: 600;
 }
 
+.portal-dialog__amounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.portal-dialog__amount {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.portal-dialog__amount--active {
+  border-color: var(--accent);
+  background: var(--tint);
+}
+
+.portal-dialog__amount-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.portal-dialog__amount-label {
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
 /* 文章正文 */
 
 .prose {

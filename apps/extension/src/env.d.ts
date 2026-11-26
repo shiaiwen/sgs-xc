@@ -2,6 +2,7 @@
 
 declare const __XIAOCHAO_VERSION__: string;
 declare const __XIAOCHAO_ACCOUNT_CONFIG_URL__: string;
+declare const __XIAOCHAO_PORTAL_ORIGIN__: string;
 declare const __XIAOCHAO_BUILD_STAMP__: string;
 
 declare module '*.vue' {

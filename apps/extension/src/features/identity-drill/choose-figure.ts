@@ -4,6 +4,9 @@
  */
 const FIGURE_BY_SEAT_ORDER = [1, 2, 2, 4, 3, 3, 3, 3] as const;
 
+/** 自选身份局固定 8 人。 */
+export const CHOOSE_IDENTITY_PLAYER_COUNT = FIGURE_BY_SEAT_ORDER.length;
+
 type UnknownRecord = Record<string, unknown>;
 
 /** 房间设置里与自选身份相关的文案。 */

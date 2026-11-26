@@ -28,7 +28,7 @@ import ShanhetuSettingsSection from './settings/ShanhetuSettingsSection.vue';
 import GameAssistSettingsSection from './settings/GameAssistSettingsSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import VersionNoticeSection from './settings/VersionNoticeSection.vue';
-import AuthorTipSection from './settings/AuthorTipSection.vue';
+import AuthorTipPortalEntry from './settings/AuthorTipPortalEntry.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
 import SecKillSection from './settings/SecKillSection.vue';
 // @ts-expect-error Vue 单文件由项目运行时提供。
@@ -788,27 +788,38 @@ function handleResizeStart(event: PointerEvent): void {
         <div class="xiaochao-settings-section__body xiaochao-others-entry__actions">
           <VersionNoticeSection :update-notice-controller="updateNoticeController" />
           <SecKillSection v-if="secKillController" :sec-kill-controller="secKillController" />
-          <AuthorTipSection />
-          <GuanxingEntry :platform="platform" />
+          <div class="xiaochao-others-entry__links">
+            <AuthorTipPortalEntry :platform="platform" />
+            <GuanxingEntry :platform="platform" />
+            <button
+              type="button"
+              class="xiaochao-block-entry xiaochao-others-entry__link"
+              data-tooltip="在浏览器新页面打开小抄主页"
+              @click="openXiaochaoSite"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 11.5 12 4l8 7.5" />
+                <path d="M6 10.5V20h4.5v-5h3v5H18V10.5" />
+              </svg>
+              <span>小抄主页</span>
+            </button>
+            <button
+              type="button"
+              class="xiaochao-block-entry xiaochao-others-entry__link"
+              data-tooltip="在浏览器新页面打开更新日志"
+              @click="openChangelog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 3h8l5 5v13H7z" />
+                <path d="M15 3v5h5" />
+                <path d="M9 13h6M9 17h4" />
+              </svg>
+              <span>更新日志</span>
+            </button>
+          </div>
           <button
             type="button"
-            class="xiaochao-block-entry xiaochao-block-entry--center"
-            data-tooltip="在浏览器新页面打开小抄主页"
-            @click="openXiaochaoSite"
-          >
-            <span>小抄主页</span>
-          </button>
-          <button
-            type="button"
-            class="xiaochao-block-entry xiaochao-block-entry--center"
-            data-tooltip="在浏览器新页面打开更新日志"
-            @click="openChangelog"
-          >
-            <span>更新日志</span>
-          </button>
-          <button
-            type="button"
-            class="xiaochao-block-entry xiaochao-block-entry--center"
+            class="xiaochao-block-entry xiaochao-block-entry--danger"
             data-tooltip="清除小抄配置和授权缓存"
             @click="isResetDialogOpen = true"
           >
@@ -840,12 +851,35 @@ function handleResizeStart(event: PointerEvent): void {
     :open="isResetDialogOpen"
     title="重置小抄"
     dialog-class="xiaochao-reset-dialog"
+    :max-width="360"
     @close="isResetDialogOpen = false"
   >
-    <p>将清除小抄的开关、皮肤与背景、上传的背景图片和视频、记住的登录账号等。当前游戏账号的开关、皮肤和背景选择存在服务器上，微端和浏览器共用，会一起清掉；上传的图片视频和记住的登录账号只清这台设备上的。无法撤销。</p>
+    <div class="xiaochao-reset-dialog__body">
+      <p class="xiaochao-reset-dialog__lead">将清除本机上的小抄数据，并尝试清掉当前游戏账号在服务器上的配置。</p>
+      <ul class="xiaochao-reset-dialog__list">
+        <li>开关、皮肤与背景、上传的图片和视频</li>
+        <li>记住的登录账号与本地缓存</li>
+        <li>服务器上的开关与皮肤背景选择与微端、浏览器共用，会一并清除</li>
+      </ul>
+      <p class="xiaochao-reset-dialog__warn">无法撤销，完成后页面会重新加载。</p>
+    </div>
     <template #footer>
-      <button type="button" class="xiaochao-reset-dialog__cancel" @click="isResetDialogOpen = false">取消</button>
-      <button type="button" class="xiaochao-reset-dialog__confirm" @click="resetXiaochaoConfig">清除并重载</button>
+      <div class="xiaochao-reset-dialog__actions">
+        <button
+          type="button"
+          class="xiaochao-block-select-btn xiaochao-reset-dialog__cancel"
+          @click="isResetDialogOpen = false"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          class="xiaochao-block-select-btn xiaochao-reset-dialog__confirm"
+          @click="resetXiaochaoConfig"
+        >
+          清除并重载
+        </button>
+      </div>
     </template>
   </BaseDialog>
 </template>

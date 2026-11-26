@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AuthorTipEntry } from "@/components/author-tip-entry";
+import { AuthorTipTrigger } from "@/components/author-tip-entry";
 import { site } from "@/lib/site";
 
 const links: { href: string; label: string; external?: boolean }[] = [
@@ -43,7 +43,7 @@ export function SiteHeader() {
           <div className="site-header__nav-links">
             <NavLinks className="site-header__link" />
           </div>
-          <AuthorTipEntry triggerClassName="site-header__tip" />
+          <AuthorTipTrigger triggerClassName="site-header__tip" />
         </nav>
         <details className="relative sm:hidden">
           <summary className="site-header__link cursor-pointer list-none">菜单</summary>
@@ -52,7 +52,7 @@ export function SiteHeader() {
             aria-label="移动导航"
           >
             <NavLinks className="site-header__link" />
-            <AuthorTipEntry triggerClassName="site-header__tip site-header__tip--menu" />
+            <AuthorTipTrigger triggerClassName="site-header__tip site-header__tip--menu" />
           </nav>
         </details>
       </div>

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { AuthorTipEntry } from "@/components/author-tip-entry";
+import { AuthorTipTrigger } from "@/components/author-tip-entry";
 import { Markdown } from "@/components/markdown";
 import { getPage, getPageSlugs } from "@/lib/pages";
 
@@ -63,7 +63,7 @@ export default async function ArticlePage({ params }: Props) {
       <Markdown source={page.content} />
       {slug === "about" ? (
         <div className="mt-12 flex justify-center border-t border-line pt-10">
-          <AuthorTipEntry triggerClassName="site-header__tip" />
+          <AuthorTipTrigger triggerClassName="site-header__tip" />
         </div>
       ) : null}
     </main>
