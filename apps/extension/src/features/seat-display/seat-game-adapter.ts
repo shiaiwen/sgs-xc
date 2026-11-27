@@ -50,13 +50,14 @@ export function readSeatStateFromGameScene(
     return { inGame: false };
   }
 
+  // 先确定本机可控座位，再决定哪些私有 HandCards 可以当成真实牌面读取。
   const controlledSeatIds = readControlledSeatIds(gameScene, rawSeatUIs);
   const seats = rawSeatUIs.flatMap((rawSeatUI, index) => {
     const seatUI = asRecord(rawSeatUI);
     const seat = asRecord(seatUI?.seat) ?? seatUI;
     if (!seat) return [];
-    const seatId = readSeatId(seat, SEAT_ID_KEYS)
-      ?? readSeatId(seatUI, SEAT_ID_KEYS);
+    // 状态快照与原生明牌绘制使用同一个座位号解析，避免两边索引错位。
+    const seatId = readGameSeatId(seatUI);
     if (seatId === null) return [];
 
     // 2v2 的 mySeats/controlledSeatIds 会同时包含自己和队友。队友的手牌可以作为
@@ -143,6 +144,17 @@ function uniqueCards(cards: { cardId: number; name: string; tags: string[] }[]):
     seen.add(card.cardId);
     return true;
   });
+}
+
+/**
+ * 从座位 UI 或内部 seat 读取协议座位号。
+ * 明牌状态和绘制层共用此入口，避免字段名不同导致有状态却找不到座位节点。
+ */
+export function readGameSeatId(rawSeatUI: unknown): number | null {
+  const seatUI = asRecord(rawSeatUI);
+  const seat = asRecord(seatUI?.seat) ?? seatUI;
+  // 游戏内部 seat 较稳定；浏览器版本缺字段时再回退到外层 UI。
+  return readSeatId(seat, SEAT_ID_KEYS) ?? readSeatId(seatUI, SEAT_ID_KEYS);
 }
 
 /**
@@ -346,10 +358,15 @@ function readSeatId(record: UnknownRecord | null, keys: readonly string[]): numb
   return null;
 }
 
+/** 读取真实的非负计数，跳过空值后继续尝试其它字段别名。 */
 function readNonNegativeInteger(record: UnknownRecord | null, keys: readonly string[]): number | null {
   if (!record) return null;
   for (const key of keys) {
-    const value = Number(record[key]);
+    const raw = record[key];
+    // 浏览器场景里缺失的计数字段可能为 null；Number(null) 会误读成手牌数 0。
+    if (typeof raw !== 'number' && typeof raw !== 'string') continue;
+    if (typeof raw === 'string' && raw.trim() === '') continue;
+    const value = Number(raw);
     if (Number.isInteger(value) && value >= 0) return value;
   }
   return null;

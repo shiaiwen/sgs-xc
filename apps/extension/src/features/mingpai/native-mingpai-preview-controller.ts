@@ -19,7 +19,7 @@ import {
   type OfficialCardView
 } from '../cards/official-card-renderer.ts';
 import { locateGameScene } from '../seat-display/game-scene-locator.ts';
-import { readNativeHandCardTags, readSeatHandCardCount, readShownHandEntries } from '../seat-display/seat-game-adapter.ts';
+import { readGameSeatId, readNativeHandCardTags, readSeatHandCardCount, readShownHandEntries } from '../seat-display/seat-game-adapter.ts';
 import type { GameSeatSnapshot } from '../seat-display/seat-state.ts';
 import type { SeatStateStore } from '../seat-display/seat-state-store.ts';
 import { HAND_ZONE, type MingpaiEngine } from './mingpai-engine.ts';
@@ -142,10 +142,12 @@ export function installNativeMingpaiPreviewController(
   let pinnedSeatId: number | null = null;
   let hideTimer = 0;
 
+  /** 取消等待关闭弹层的计时，鼠标重新进入时保留当前弹层。 */
   const clearHideTimer = () => {
     if (hideTimer) window.clearTimeout(hideTimer);
     hideTimer = 0;
   };
+  /** 鼠标离开牌条后稍等片刻，给它移动到弹层的时间。 */
   const scheduleHide = () => {
     if (pinnedSeatId !== null) return;
     clearHideTimer();
@@ -155,6 +157,7 @@ export function installNativeMingpaiPreviewController(
     }, HIDE_DELAY_MS);
   };
 
+  /** 释放弹层中的官方牌面与绘制层，并清掉当前弹层状态。 */
   function destroyPopup(): void {
     popupCards.forEach((view) => releaseOfficialCardView(view));
     popupCards = [];
@@ -172,6 +175,7 @@ export function installNativeMingpaiPreviewController(
     popup = null;
   }
 
+  /** 移除一个座位的小牌条，并恢复它关联的游戏原生节点。 */
   function destroyStrip(entry: SeatStrip): void {
     restoreNativeSprite(entry);
     destroyNode(entry.strip);
@@ -180,6 +184,7 @@ export function installNativeMingpaiPreviewController(
     if (pinnedSeatId === entry.seatId) pinnedSeatId = null;
   }
 
+  /** 场景离开或根节点失效时，把本控制器添加的 Laya 节点全部卸掉。 */
   function destroyAll(): void {
     releaseSceneNativeHandGuards(asRecord(scene) ?? asRecord(locateGameScene(window)));
     clearHideTimer();
@@ -191,6 +196,7 @@ export function installNativeMingpaiPreviewController(
     officialShownBySeat.clear();
   }
 
+  /** 把覆盖层挂到当前牌局场景；场景或父节点换了就重建根节点。 */
   function ensureRoot(): UnknownRecord | null {
     const nextScene = asRecord(locateGameScene(window));
     const roundInfo = asRecord(nextScene?.gameRoundInfo);
@@ -218,6 +224,7 @@ export function installNativeMingpaiPreviewController(
     return root;
   }
 
+  /** 技能说明停驻期间让牌条卡片透传鼠标事件。 */
   function setStripTilePassThrough(tile: UnknownRecord, passThrough: boolean): void {
     if (passThrough) {
       tile.mouseEnabled = false;
@@ -230,6 +237,7 @@ export function installNativeMingpaiPreviewController(
     tile.hitTestPrior = false;
   }
 
+  /** 给小牌绑定悬停预览和点击固定弹层的交互，同一节点只绑定一次。 */
   function attachStripTilePointerEvents(tile: UnknownRecord, entry: SeatStrip): void {
     if (tile[STRIP_TILE_POINTER_BOUND] === true) return;
     tile[STRIP_TILE_POINTER_BOUND] = true;
@@ -261,6 +269,7 @@ export function installNativeMingpaiPreviewController(
     }
   }
 
+  /** 为座位新建牌条容器，并登记后续重绘所需的状态。 */
   function createStrip(seatId: number, seatUi: UnknownRecord): SeatStrip | null {
     if (!root) return null;
     const strip = createSprite(`xcVueMingpaiPreviewStrip-${seatId}`);
@@ -277,11 +286,13 @@ export function installNativeMingpaiPreviewController(
     return entry;
   }
 
+  /** 合并装备区提供的提示文字，避免同一提示在牌条里重复出现。 */
   function equipmentHintText(seatId: number): string {
     const seat = seatStateStore.getSnapshot().seats.find((entry) => entry.seatId === seatId);
     return [...new Set((seat?.equipmentCards ?? []).flatMap((card) => card.hints ?? []))].join(' ');
   }
 
+  /** 收集该座位可能持有的牌，排除已经确定、装备区和技能区的卡号。 */
   function buildPopupPossibleGroups(
     seat: GameSeatSnapshot,
     knownCardIds: readonly number[],
@@ -318,6 +329,7 @@ export function installNativeMingpaiPreviewController(
     return possibleGroups;
   }
 
+  /** 内容变化时重建小牌，位置变化时只更新座位锚点和牌条坐标。 */
   function renderStrip(
     entry: SeatStrip,
     cardIds: number[],
@@ -327,6 +339,7 @@ export function installNativeMingpaiPreviewController(
     skillCardIds: ReadonlySet<number>,
     anchor: Rect
   ): void {
+    // 牌条只保留确定牌和能命名的可能牌；弹层所需的技能区数据仍存到 entry。
     const tiles = mingpaiStripTiles({
       knownCardIds: cardIds,
       possibleGroups,
@@ -339,6 +352,7 @@ export function installNativeMingpaiPreviewController(
     ].filter((row) => row.items.length);
     const hintText = equipmentHintText(entry.seatId);
     const signature = `${tiles.map((tile) => `${tile.cardId}:${tile.possible ? 1 : 0}`).join(',')}|${hintText}`;
+    // 牌面没变时保留 Laya 节点和鼠标绑定，只刷新数据、锚点及坐标。
     if (entry.signature !== signature) {
       readChildren(entry.strip).forEach(destroyNode);
       rows.forEach((row, rowIndex) => {
@@ -383,6 +397,7 @@ export function installNativeMingpaiPreviewController(
       call(entry.strip, 'sortChildren');
       entry.signature = signature;
     }
+    // 悬停弹层读取最新数据，不能因牌条外观相同而留下旧标签或可能牌。
     entry.cardIds = cardIds;
     entry.possibleGroups = possibleGroups;
     entry.zone4Rows = zone4Rows;
@@ -413,6 +428,7 @@ export function installNativeMingpaiPreviewController(
     entry.strip.visible = rows.length > 0;
   }
 
+  /** 用 Laya 节点画一张小牌；可能牌叠问号并降低透明度。 */
   function createTile(cardId: number, possible = false, tags: readonly string[] = []): UnknownRecord | null {
     const card = gameCardCatalog.resolve(cardId);
     const tile = createSprite(`xcVueMingpaiPreviewTag-${cardId}`);
@@ -479,6 +495,7 @@ export function installNativeMingpaiPreviewController(
     return tile;
   }
 
+  /** 牌条超出可见张数时画省略牌，点击仍可打开完整弹层。 */
   function createEllipsisTile(): UnknownRecord | null {
     const tile = createSprite('xcVueMingpaiPreviewEllipsis');
     if (!tile) return null;
@@ -495,6 +512,7 @@ export function installNativeMingpaiPreviewController(
     return tile;
   }
 
+  /** 按确定牌、可能牌和技能区分栏生成官方牌面弹层。 */
   function showPopup(entry: SeatStrip): void {
     if (!root || !entry.anchor
       || (!entry.cardIds.length && !entry.possibleGroups.length && !entry.zone4Rows.length)) {
@@ -513,6 +531,7 @@ export function installNativeMingpaiPreviewController(
       cardWidth + POPUP_PADDING * 2,
       Math.min(maxWidth, viewportSpan)
     );
+    // 各分栏分别计算换行与叠放，弹层宽度受座位左右可用空间限制。
     const zone4Sections = zone4PopupSections(entry.zone4Rows);
     const sections = [
       ...(entry.cardIds.length ? [{
@@ -554,6 +573,7 @@ export function installNativeMingpaiPreviewController(
     const tagSignature = JSON.stringify([...entry.tagsByCardId]);
     const signature = `${entry.seatId}:${entry.cardIds.join(',')}|${possibleSig}:${[...receivedMarks].join(',')}:${[...selectedMarks].join(',')}:${teamMarkable}:${popupZone4Sig}:${layoutSig}:${Math.round(width)}:${direction}:${tagSignature}`;
 
+    // 牌面、标记或布局变化才重建弹层；单纯移动座位只需更新弹层坐标。
     if (!popup || popupSignature !== signature) {
       destroyPopup();
       const created = createSprite('xcVueMingpaiCardList');
@@ -596,6 +616,7 @@ export function installNativeMingpaiPreviewController(
             view.ui.zOrder = 10 + index;
             popupCards.push(view);
           } else {
+            // 官方牌面资源暂不可用时，仍用小牌展示卡号对应的内容。
             const labels = entry.tagsByCardId.get(cardId);
             const tags = visibleMingpaiTags([...(labels?.native ?? []), ...(labels?.tracked ?? [])]);
             const tile = createTile(cardId, cardIsPossible, tags);
@@ -610,6 +631,7 @@ export function installNativeMingpaiPreviewController(
             }
           }
           if (section.label.startsWith('确定牌') && teamMarkable) {
+            // 队友的确定牌支持游戏原生标记，可能牌不能发送卡号标记。
             const recommended = receivedMarks.has(cardId);
             const marked = recommended || selectedMarks.has(cardId);
             if (marked) {
@@ -684,6 +706,7 @@ export function installNativeMingpaiPreviewController(
   function syncNow(): void {
     if (stopped) return;
     const snapshot = seatStateStore.getSnapshot();
+    // 游戏原生座位交互（选牌/技能提示）进行时先关闭弹层，避免小抄挡住点击。
     if (isGameSeatUiFlowActive(window)) {
       clearHideTimer();
       if (popup) destroyPopup();
@@ -706,6 +729,7 @@ export function installNativeMingpaiPreviewController(
       destroyAll();
       return;
     }
+    // 座位快照负责判定是否在局；真正的绘制父节点每轮从当前场景重新确认。
     const host = ensureRoot();
     if (!host || !scene) return;
     const seatUis = readSeatUis(scene);
@@ -717,6 +741,7 @@ export function installNativeMingpaiPreviewController(
       const loc = record.location;
       locationByCardId.set(record.cardId, loc ? { seatId: loc.seatId, zone: loc.zone } : null);
     }
+    // 每轮只保留仍有有效座位、锚点和牌面的小牌条，场景切换后清理旧节点。
     const activeSeatIds = new Set<number>();
     for (const seat of snapshot.seats) {
       const seatUi = seatUis.get(seat.seatId);
@@ -736,6 +761,7 @@ export function installNativeMingpaiPreviewController(
       const zone4RowsAll = getZone4Rows(seat.seatId);
       const zone4Partition = partitionZone4RowsForStrip(zone4RowsAll);
       const skillZoneCardIds = new Set(zone4Partition.stripExcludeCardIds);
+      // 引擎先筛出仍在手牌区的卡号，下面再用场景可见名单补齐漏记的牌。
       const engineHandIds = (mingpaiEngine?.getHandCardIds(seat.seatId) ?? [])
         .filter((cardId) => cardId > 0 && !equipmentIds.has(cardId) && !skillZoneCardIds.has(cardId));
       const engineHandLocation = (cardId: number): { seatId: number; zone: number } | null => (
@@ -748,6 +774,7 @@ export function installNativeMingpaiPreviewController(
       };
       let cardIds = engineHandIds
         .filter((cardId) => currentKnownIds.has(cardId) && isCardInThisHand(cardId));
+      // 场景明确可见但引擎尚未登记的牌可以补入；已被引擎定位到别区的旧卡号不能补回。
       for (const known of seat.knownCards) {
         const cardId = known.cardId;
         if (cardId <= 0 || equipmentIds.has(cardId) || skillZoneCardIds.has(cardId)) continue;
@@ -756,6 +783,7 @@ export function installNativeMingpaiPreviewController(
         if (!engineHandIds.includes(cardId)) cardIds.push(cardId);
       }
       // 郭照：判定牌一律明牌，她拿到的牌牌面是确定的，手上不该再挂可能牌。
+      // 可能牌留在弹层和第二排，不能挤占确定牌的显示位置。
       let popupPossibleGroups = buildPopupPossibleGroups(
         seat,
         cardIds,
@@ -772,6 +800,7 @@ export function installNativeMingpaiPreviewController(
         popupPossibleGroups = [];
       }
       const keptCardIds = [...cardIds];
+      // 技能区可合并的牌只参与牌条展示，可能牌筛选仍用合并前的真实手牌集合。
       for (const merged of zone4Partition.mergeKnownBySpell) {
         for (const cardId of merged.cardIds) {
           if (!cardIds.includes(cardId)) cardIds.push(cardId);
@@ -799,6 +828,7 @@ export function installNativeMingpaiPreviewController(
         isNamedPossibleGroup(group, cardName, skillCardIds)
       ));
       const zone4Rows = zone4Partition.stripRows;
+      // 先算最终会画出的卡片，再决定是否需要让位给游戏原生明牌框。
       const stripTiles = mingpaiStripTiles({
         knownCardIds: cardIds,
         possibleGroups: popupPossibleGroups,
@@ -806,15 +836,17 @@ export function installNativeMingpaiPreviewController(
         cardName
       });
       const existing = strips.get(seat.seatId);
+      // 座位或锚点尚未就绪时先拆掉旧牌条，避免场景切换后牌条挂在原位置。
       if (!seatUi || !anchor || stripTiles.length === 0) {
         if (existing) destroyStrip(existing);
         continue;
       }
-      // 游戏自己在显示这个座位的明牌时让位给官方框：不隐藏它，也不画自己的小牌条。
-      if (gameShowsOwnMingpai(seatUi)) {
+      // 原生层确实画出了本批全部明牌时才让位；网页端的展示列表可能残留旧卡号。
+      if (gameShowsOwnMingpai(seatUi, stripTiles)) {
         if (existing) destroyStrip(existing);
         continue;
       }
+      // 原生层没有完整牌面时由小抄补上，避免部分牌或整个牌条消失。
       const entry = existing ?? createStrip(seat.seatId, seatUi);
       if (!entry) continue;
       hideNativeSprite(entry, seatUi);
@@ -831,6 +863,7 @@ export function installNativeMingpaiPreviewController(
   const bridge = asRecord((globalThis as UnknownRecord).__XIAOCHAO_ENGINEERING__);
   if (bridge) bridge.mingpaiNativePerf = mingpaiPerf;
 
+  /** 执行一次同步并记录耗时；重入时交由下一轮定时同步。 */
   function sync(): void {
     if (stopped || syncing) return;
     syncing = true;
@@ -843,6 +876,7 @@ export function installNativeMingpaiPreviewController(
     }
   }
 
+  /** 合并同一帧里的座位、引擎和游戏事件，减少重复重绘。 */
   function scheduleSync(): void {
     if (stopped || syncTimer) return;
     syncTimer = window.setTimeout(() => {
@@ -851,6 +885,7 @@ export function installNativeMingpaiPreviewController(
     }, SYNC_DEBOUNCE_MS);
   }
 
+  /** 切换队友牌面选择，并按游戏允许的张数发送原生卡牌标记。 */
   function toggleTeammateMark(entry: SeatStrip, cardId: number): void {
     const snapshot = seatStateStore.getSnapshot();
     if (!snapshot.controlledSeatIds.includes(entry.seatId) || entry.seatId === snapshot.selfSeatId) return;
@@ -930,6 +965,7 @@ export function installNativeMingpaiPreviewController(
       return location.zone !== HAND_ZONE || location.seatId !== seatId;
     };
     const liveHandConfirmsMembership = [...next].some((cardId) => liveHand.has(cardId));
+    // 只有实时 HandCards 与展示名单存在交集、且张数吻合时，才用它剔除过期展示牌。
     for (const cardId of [...next]) {
       if (equipmentIds.has(cardId) || placedOutsideThisHand(cardId)) {
         next.delete(cardId);
@@ -955,6 +991,7 @@ export function installNativeMingpaiPreviewController(
     else officialShownBySeat.delete(seatId);
   }
 
+  /** 对局结束立即卸层；新局或重连清掉上一局的展示与队友标记缓存。 */
   function onGameEvent(event: import('../../runtime/game-event-bus.ts').GameEvent): void {
     if (event.type === 'game-ended') {
       previewSuspended = true;
@@ -989,6 +1026,7 @@ export function installNativeMingpaiPreviewController(
   }
 
   let sessionInGame = seatStateStore.getSnapshot().inGame;
+  /** 场景状态兜底处理开局与离局，接住缺失的游戏生命周期事件。 */
   const stopSession = seatStateStore.subscribe((snapshot) => {
     if (snapshot.inGame) {
       const reentered = !sessionInGame;
@@ -1007,6 +1045,7 @@ export function installNativeMingpaiPreviewController(
     scheduleMingpaiPostGameCleanup();
   });
 
+  /** 局后同步清空牌条和交互缓存，防止结算画面残留明牌。 */
   function runPostGamePreviewCleanup(): void {
     recommendedBySeat.clear();
     selectedBySeat.clear();
@@ -1016,6 +1055,7 @@ export function installNativeMingpaiPreviewController(
   const unregisterPostGameCleanup = registerMingpaiPostGameCleanup(runPostGamePreviewCleanup);
   const unregisterHudTeardown = registerNativeHudPostGameTeardown(runPostGamePreviewCleanup);
 
+  /** 只在牌局内运行视觉兜底轮询，离局靠订阅事件清理。 */
   function adjustPollInterval() {
     const inGame = seatStateStore.getSnapshot().inGame && !previewSuspended && !isNativeHudSuspended();
     if (!inGame) {
@@ -1086,18 +1126,41 @@ export function seatIsGuozhao(seatUi: UnknownRecord): boolean {
   return false;
 }
 
-/** 游戏自己是否正在显示这个座位的明牌。排位队友手牌、斗地主明牌都是这种。 */function gameShowsOwnMingpai(seatUi: UnknownRecord): boolean {
+/**
+ * 判断排位队友手牌、斗地主明牌等是否已由游戏原生层完整显示。
+ * 展示列表只是数据记录，必须再核对当前可见的原生卡牌节点。
+ */
+function gameShowsOwnMingpai(seatUi: UnknownRecord, tiles: readonly { cardId: number; possible: boolean }[]): boolean {
+  // 原生明牌框不能代替小抄的可能牌行，也不能替空牌条做显示判断。
+  if (!tiles.length || tiles.some((tile) => tile.possible)) return false;
   const manager = asRecord(seatUi.otherTopManager) ?? asRecord(seatUi.topManager);
   const sprite = asRecord(manager?.handCardSpr);
   if (!sprite || sprite.destroyed || !sprite.visible) return false;
   const seat = asRecord(seatUi.seat);
-  return readShownHandEntries(seat, seatUi).some((entry) => readCardId(entry) > 0);
+  // 先用游戏的展示名单确认本批牌属于公开牌；只展示其中一部分时仍需小抄补齐。
+  const shownIds = new Set(readShownHandEntries(seat, seatUi).map(readCardId).filter((id) => id > 0));
+  if (!tiles.every((tile) => shownIds.has(tile.cardId))) return false;
+
+  // 网页端 HandShowCards 可能在牌面撤走后继续保留卡号，逐层查找仍可见的原生卡牌。
+  const renderedIds = new Set<number>();
+  const visited = new Set<UnknownRecord>();
+  const visit = (node: UnknownRecord) => {
+    if (visited.has(node) || node.destroyed || node.visible === false) return;
+    visited.add(node);
+    const cardId = readCardId(node);
+    if (cardId > 0) renderedIds.add(cardId);
+    readChildren(node).forEach(visit);
+  };
+  visit(sprite);
+  // 只要还有一张没有原生牌面，就保留小抄牌条。
+  return tiles.every((tile) => renderedIds.has(tile.cardId));
 }
 
 /** 不改写 handCardSpr：部分客户端手牌与装备同容器，强制隐藏会导致装备区消失。 */
 function hideNativeSprite(_entry: SeatStrip, _seatUi: UnknownRecord): void {
 }
 
+/** 清除旧版本遗留的原生手牌可见性守卫，恢复游戏自身的显示控制。 */
 function releaseNativeHandSpriteGuard(sprite: UnknownRecord | null): void {
   const guard = asRecord(sprite?.[NATIVE_GUARD_KEY]) as {
     ownDescriptor?: PropertyDescriptor; requestedVisible: boolean; write(value: boolean): void;
@@ -1115,6 +1178,7 @@ function releaseNativeHandSpriteGuard(sprite: UnknownRecord | null): void {
   }
 }
 
+/** 离局时遍历所有座位，释放旧守卫以免影响下一局的原生手牌。 */
 function releaseSceneNativeHandGuards(gameScene: UnknownRecord | null): void {
   const seatUis = gameScene?.seatContainer as { seatUIs?: unknown[] } | undefined;
   if (!Array.isArray(seatUis)) return;
@@ -1126,6 +1190,7 @@ function releaseSceneNativeHandGuards(gameScene: UnknownRecord | null): void {
   }
 }
 
+/** 牌条销毁后让游戏重新刷新原生手牌节点。 */
 function restoreNativeSprite(entry: SeatStrip): void {
   const sprite = entry.nativeSprite;
   entry.nativeSprite = null;
@@ -1138,14 +1203,16 @@ function restoreNativeSprite(entry: SeatStrip): void {
   }
 }
 
+/** 按协议座位号索引场景中的座位 UI，供明牌条找到对应的锚点。 */
 function readSeatUis(scene: UnknownRecord): Map<number, UnknownRecord> {
   const result = new Map<number, UnknownRecord>();
   const seatUis = asRecord(scene.seatContainer)?.seatUIs;
   for (const value of Array.isArray(seatUis) ? seatUis : []) {
     const seatUi = asRecord(value);
-    const seat = asRecord(seatUi?.seat);
-    const seatId = Number(seat?.index ?? seat?.Index ?? seatUi?.seatID);
-    if (seatUi && Number.isInteger(seatId)) result.set(seatId, seatUi);
+    if (!seatUi) continue;
+    // 与座位状态使用同一套字段别名，浏览器对象缺少 index 时仍能定位牌条锚点。
+    const seatId = readGameSeatId(seatUi);
+    if (seatId !== null) result.set(seatId, seatUi);
   }
   return result;
 }
@@ -1170,6 +1237,7 @@ function readAnchorRect(seatUi: UnknownRecord, root: UnknownRecord): Rect | null
   return null;
 }
 
+/** 依次读取节点展示范围、局部边界和宽高，跳过尚未排版的节点。 */
 function readNodeRect(node: UnknownRecord): Rect | null {
   if (node.destroyed) return null;
   const accept = (value: unknown): Rect | null => {
@@ -1190,6 +1258,7 @@ function readNodeRect(node: UnknownRecord): Rect | null {
   return width >= 40 && height >= 50 ? { x: 0, y: 0, width, height } : null;
 }
 
+/** 把舞台可见范围换算到明牌根节点坐标，用于限制牌条与弹层位置。 */
 function readViewport(root: UnknownRecord | null): Rect {
   const laya = asRecord((globalThis as UnknownRecord).Laya);
   const stage = asRecord(laya?.stage);
@@ -1210,6 +1279,7 @@ function readViewport(root: UnknownRecord | null): Rect {
   return { x: 0, y: 0, width: stageWidth, height: stageHeight };
 }
 
+/** 经全局坐标把游戏节点上的点投到明牌根节点；坐标接口缺失时安全回退。 */
 function toRootPoint(node: UnknownRecord, root: UnknownRecord, x: number, y: number): { x: number; y: number } | null {
   try {
     const Point = asRecord((globalThis as UnknownRecord).Laya)?.Point as (new (x: number, y: number) => object) | undefined;
@@ -1229,12 +1299,14 @@ function toRootPoint(node: UnknownRecord, root: UnknownRecord, x: number, y: num
   }
 }
 
+/** 选择座位旁边剩余空间较多的一侧展开弹层。 */
 function chooseDirection(anchor: Rect, viewport: Rect): 'left' | 'right' {
   const rightSpace = viewport.x + viewport.width - VIEWPORT_MARGIN - anchor.x - anchor.width;
   const leftSpace = anchor.x - viewport.x - VIEWPORT_MARGIN;
   return rightSpace >= leftSpace ? 'right' : 'left';
 }
 
+/** 从当前游戏运行时创建 Laya Sprite，运行时未就绪时返回空。 */
 function createSprite(name: string): UnknownRecord | null {
   const Sprite = asRecord((globalThis as UnknownRecord).Laya)?.Sprite;
   if (typeof Sprite !== 'function') return null;
@@ -1243,6 +1315,7 @@ function createSprite(name: string): UnknownRecord | null {
   return sprite;
 }
 
+/** 创建与游戏字体一致、不会抢占鼠标的文字节点。 */
 function createText(
   text: string,
   fontSize: number,
@@ -1266,6 +1339,7 @@ function createText(
   return node;
 }
 
+/** 在 Laya 图形对象上画牌条和弹层共用的圆角背景。 */
 function drawRoundedRect(
   target: UnknownRecord,
   width: number,
@@ -1293,6 +1367,7 @@ function drawRoundedRect(
   }
 }
 
+/** 兼容普通节点与官方绘制子节点的不同释放方式。 */
 function destroyNode(node: UnknownRecord): void {
   try {
     call(node, 'removeSelf');
@@ -1303,11 +1378,13 @@ function destroyNode(node: UnknownRecord): void {
   }
 }
 
+/** 读取 Laya 子节点并过滤非对象项，供牌条清理和原生牌面检查使用。 */
 function readChildren(node: UnknownRecord): UnknownRecord[] {
   const children = node._children;
   return Array.isArray(children) ? children.map(asRecord).filter(Boolean) as UnknownRecord[] : [];
 }
 
+/** 沿原型链查找游戏节点的属性描述符。 */
 function findDescriptor(target: object | null, key: string): PropertyDescriptor | null {
   for (let current = target; current; current = Object.getPrototypeOf(current)) {
     const descriptor = Object.getOwnPropertyDescriptor(current, key);
@@ -1316,6 +1393,7 @@ function findDescriptor(target: object | null, key: string): PropertyDescriptor 
   return null;
 }
 
+/** 游戏未加载事件常量时让调用方使用字符串事件名。 */
 function readLayaEvent(): UnknownRecord | null {
   return asRecord(asRecord((globalThis as UnknownRecord).Laya)?.Event);
 }
@@ -1329,6 +1407,7 @@ type Zone4PopupSection = {
   possibleCardIds?: ReadonlySet<number>;
 };
 
+/** 把技能区行转成弹层分栏；暗放牌只显示张数，不猜牌面。 */
 function zone4PopupSections(rows: readonly Zone4Row[]): Zone4PopupSection[] {
   const sections: Zone4PopupSection[] = [];
   for (const row of rows.filter(zone4RowHasCards)) {
@@ -1353,10 +1432,12 @@ function zone4PopupSections(rows: readonly Zone4Row[]): Zone4PopupSection[] {
   return sections;
 }
 
+/** 将浮层坐标限制在可见范围内。 */
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(Math.max(min, max), value));
 }
 
+/** 从游戏当前提示参数读取队友标记上限，缺失时按一张处理。 */
 function readTeammateMarkLimit(scene: UnknownRecord | null): number {
   const seatUis = asRecord(scene?.seatContainer)?.seatUIs;
   for (const rawSeat of Array.isArray(seatUis) ? seatUis : []) {
@@ -1371,6 +1452,7 @@ function readTeammateMarkLimit(scene: UnknownRecord | null): number {
   return 1;
 }
 
+/** 尊重游戏的卡牌标记开关；设置对象缺失时不阻断牌面交互。 */
 function canShowTeammateMarks(): boolean {
   const globals = globalThis as UnknownRecord;
   const runtime = asRecord(globals.zy) ?? asRecord(globals.laya);
@@ -1385,27 +1467,32 @@ function canShowTeammateMarks(): boolean {
   }
 }
 
+/** 弹层只展示牌面标签，过滤已由其他位置表达的来源文字。 */
 function visibleMingpaiTags(tags: readonly string[]): string[] {
   return [...new Set(tags.map((tag) => String(tag).trim()).filter((tag) => (
     tag && !tag.startsWith('来源:') && !tag.startsWith('来源：')
   )))];
 }
 
+/** 排除技能独立展示或方括号样式的标签，避免弹层重复绘制。 */
 function isPreviewTag(tag: string): boolean {
   return tag !== '心幽' && tag !== '椒遇' && !tag.startsWith('[');
 }
 
+/** 动态调用不同游戏版本可能缺失的 Laya 方法。 */
 function call(target: UnknownRecord | null | undefined, methodName: string, ...args: unknown[]): unknown {
   const method = target?.[methodName];
   return typeof method === 'function' ? method.apply(target, args) : undefined;
 }
 
+/** 将运行时未知值收窄为可读取字段的对象。 */
 function asRecord(value: unknown): UnknownRecord | null {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
     ? value as UnknownRecord
     : null;
 }
 
+/** 兼容裸卡号、卡牌 UI 和嵌套牌面对象的卡号字段。 */
 function readCardId(card: unknown): number {
   if (typeof card === 'number') return card;
   const record = asRecord(card);
@@ -1413,6 +1500,7 @@ function readCardId(card: unknown): number {
   return Number(inner?.CardId ?? inner?.cardId ?? inner?.CardID ?? inner?.cardID ?? 0);
 }
 
+/** 按候选字段顺序读取游戏数组，兼容不同客户端的命名。 */
 function readArray(record: UnknownRecord | null, keys: readonly string[]): unknown[] {
   if (!record) return [];
   for (const key of keys) {

@@ -115,6 +115,7 @@ export function installMicroClientMessageSource(
     }
   }
 
+  /** 真正解析协议：两个来源共用类名回退、对象去重和事件发布顺序。 */
   function deliverMeasured(rawArguments: unknown[], fallbackClassName: string, source: MessageSourceName): void {
     diagnostics.deliveries[source] += 1;
     const message = findGameMessage(rawArguments);
@@ -125,8 +126,10 @@ export function installMicroClientMessageSource(
       diagnostics.lastClassName = className;
     }
     if (payload) {
+      // 浏览器 event 的类名可能只在 type 参数中，补到对象上供统一翻译器识别。
       if (!message && className && !readClassName(payload)) payload.ClassName = className;
       mutateProtocolPayload(payload, className);
+      // console 与 ServerProxy 常复用同一对象；同一事件循环内只翻译一次。
       if (recentPayloads.has(payload)) return;
       recentPayloads.add(payload);
       if (!recentPayloadsClearPending) {
@@ -140,19 +143,24 @@ export function installMicroClientMessageSource(
         diagnostics.lastCardMovementInput = snapshotMovementPayload(payload, className);
       }
     }
+    // 先留下翻译结果的诊断，再按来源签名压掉镜像移牌，保留真实连发。
     translateGameMessages(rawArguments, message).forEach((event) => {
       diagnostics.translatedEventCounts[event.type] = (diagnostics.translatedEventCounts[event.type] ?? 0) + 1;
       if (event.type === 'cards-moved') {
         if (isMessageSourceDebug(globalObject)) {
+          // 同时保留解析后的牌堆位置和技能号，便于与浏览器原始字段逐项对照。
           diagnostics.lastCardMovementEvent = {
             at: Date.now(),
             cardCount: event.cardCount,
             cardIds: [...event.cardIds],
             fromId: event.fromId,
             fromZone: event.fromZone,
+            fromPosition: event.fromPosition,
             toId: event.toId,
             toZone: event.toZone,
-            moveType: event.moveType
+            toPosition: event.toPosition,
+            moveType: event.moveType,
+            spellId: event.spellId
           };
         }
         if (!shouldPublishCardMovement(event, source)) {
@@ -227,6 +235,7 @@ export function installMicroClientMessageSource(
   }
 
   const consoleLogSource = installConsoleLogSource(listener, globalObject);
+  // 选将也订阅这个宿主；共用钩子会给消息源单独分发，浏览器靠这路收到协议。
   const protocolHook = installProtocolEventHooks(globalObject, {
     mutate: (className, payload) => mutateProtocolPayload(payload, className),
     shouldDrop: (className, payload) => options.shouldDropProtocolEvent?.(className, payload) ?? false,
@@ -350,7 +359,7 @@ function installConsoleLogSource(
   };
 }
 
-/** 诊断快照：摊平多层 Protocol/Data 后摘牌移动关键字段。 */
+/** 诊断快照：摊平多层 Protocol/Data 后摘牌移动关键字段，供浏览器顶牌问题复现。 */
 function snapshotMovementPayload(payload: UnknownRecord, className: string): UnknownRecord {
   const message = asRecord(payload.msg) ?? asRecord(payload.Msg);
   const data = asRecord(payload.Data) ?? asRecord(payload.data);
@@ -368,6 +377,7 @@ function snapshotMovementPayload(payload: UnknownRecord, className: string): Unk
     ?? asRecord(message?.protoObj)
     ?? data;
   const records = nested && nested !== payload ? [payload, nested] : [payload];
+  // 诊断保留原始外层优先级；与翻译后的 event 对照可看出哪层字段被占位覆盖。
   const read = (...keys: string[]): unknown => {
     for (const record of records) {
       for (const key of keys) if (record[key] !== undefined) return record[key];
@@ -387,8 +397,12 @@ function snapshotMovementPayload(payload: UnknownRecord, className: string): Unk
     moveType: read('MoveType', 'moveType', 'move_type'),
     fromId: read('FromID', 'FromId', 'fromID', 'fromId', 'from_id'),
     fromZone: read('FromZone', 'fromZone', 'from_zone'),
+    fromPosition: read('FromPosition', 'fromPosition', 'from_position'),
     toId: read('ToID', 'ToId', 'toID', 'toId', 'to_id'),
     toZone: read('ToZone', 'toZone', 'to_zone'),
+    toPosition: read('ToPosition', 'toPosition', 'to_position'),
+    spellId: read('SpellID', 'SpellId', 'spellID', 'spellId', 'spell_id'),
+    cardId: read('CardID', 'CardId', 'cardID', 'cardId'),
     cardIds
   };
 }

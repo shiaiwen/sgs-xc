@@ -514,12 +514,19 @@ function protocolBody(payload: UnknownRecord): UnknownRecord {
     message
   ];
   let merged: UnknownRecord | null = null;
+  // 按已知的嵌套层顺序填空；外层有效字段优先，避免内层旧值反盖已摊平的协议。
   for (const nested of nestedRecords) {
     if (nested === null || nested === payload) continue;
     if (merged === null) merged = { ...payload };
     for (const [key, value] of Object.entries(nested)) {
-      // 网页端外层常挂着空 CardIDs，真实牌号在 Protocol / ProtoObj。空列表不能挡住内层。
-      if (merged[key] === undefined || isEmptyList(merged[key])) merged[key] = value;
+      if (value === undefined || value === null) continue;
+      // 网页端外层可能给空列表或全 0 的 CardIDs 占位，真实牌号在 Protocol / ProtoObj。
+      // null 也表示外层尚无有效数据，不能挡住内层真实的移牌张数和位置。
+      if (merged[key] === undefined || merged[key] === null || isEmptyList(merged[key])
+        || isHiddenCardIdsPlaceholder(key, merged[key], value)
+        || isEmptyMovementCountPlaceholder(key, merged[key], value)) {
+        merged[key] = value;
+      }
     }
   }
   return merged ?? payload;
@@ -527,6 +534,21 @@ function protocolBody(payload: UnknownRecord): UnknownRecord {
 
 function isEmptyList(value: unknown): boolean {
   return isArrayLike(value) && value.length === 0;
+}
+
+/** 仅对牌号列表用内层已公开牌替换外层全 0 占位；Params 等数组里的 0 仍有业务含义。 */
+function isHiddenCardIdsPlaceholder(key: string, outer: unknown, inner: unknown): boolean {
+  if (!['CardIDs', 'CardIds', 'cardIDs', 'cardIds'].includes(key)) return false;
+  if (!isArrayLike(outer) || !isArrayLike(inner)) return false;
+  // 只允许“全未知 → 有正卡号”这个方向覆盖，不能把公开牌重新藏成 0。
+  return Array.from(outer, Number).every((id) => id === 0)
+    && Array.from(inner, Number).some((id) => id > 0);
+}
+
+/** 移牌张数必须为正数；包装层的 0 只在内层给出正张数时才视为占位。 */
+function isEmptyMovementCountPlaceholder(key: string, outer: unknown, inner: unknown): boolean {
+  if (!['CardCount', 'cardCount', 'card_count'].includes(key)) return false;
+  return Number(outer) === 0 && Number.isInteger(Number(inner)) && Number(inner) > 0;
 }
 
 /**
@@ -598,24 +620,31 @@ function normalizeZoneOwner(ownerId: number, zone: number): number {
   return ownerId === 0 && GLOBAL_ZONE_IDS.has(zone) ? 0xff : ownerId;
 }
 
-/** 读移动牌号；兼容只有单张 CardID、没有 CardIDs 数组的协议。 */
+/** 读移动牌号；浏览器外层可能带空 CardIDs，真实单张牌号仍在 CardID。 */
 function readMovementCardIds(payload: UnknownRecord): number[] {
+  let hiddenList: number[] | null = null;
   for (const key of CARD_IDS_KEYS) {
     const value = payload[key];
-    if (!isArrayLike(value)) continue;
-    return Array.from(value, (candidate) => {
+    // 空列表只是协议占位，不能挡住后面的 CardID 单牌字段。
+    if (!isArrayLike(value) || value.length === 0) continue;
+    const ids = Array.from(value, (candidate) => {
       const card = asRecord(candidate);
       return card
         ? readNonNegativeInteger(card, CARD_ID_KEYS) ?? 0
         : nonNegativeInteger(candidate) ?? 0;
     });
+    // 只要列表里有公开卡号，就保持列表原顺序和未知占位；不能改用单张字段。
+    if (ids.some((id) => id > 0)) return ids;
+    // 浏览器外层也可能给 [0] 占位；继续找内层公开的单张 CardID。
+    hiddenList ??= ids;
   }
   // 单张移动（顺手牵羊等）有时只带 CardID，不带 CardIDs 数组。
   for (const key of CARD_ID_KEYS) {
     const value = nonNegativeInteger(payload[key]);
-    if (value !== null) return [value];
+    if (value !== null && value > 0) return [value];
   }
-  return [];
+  // 所有来源都没公开身份时保留原来的 0 列表，供后续暗牌移动按张数处理。
+  return hiddenList ?? [];
 }
 
 function readNumberArray(payload: UnknownRecord, keys: readonly string[]): number[] {
@@ -700,7 +729,10 @@ function readSeatId(record: UnknownRecord, keys: readonly string[]): number | nu
 
 function readNonNegativeInteger(record: UnknownRecord, keys: readonly string[]): number | null {
   for (const key of keys) {
-    const value = nonNegativeInteger(record[key]);
+    // 浏览器包装层可能把缺失字段置为 null；不能让 Number(null)=0 截断别名回退。
+    const raw = record[key];
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) continue;
+    const value = nonNegativeInteger(raw);
     if (value !== null) return value;
   }
   return null;
