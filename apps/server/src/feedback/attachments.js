@@ -5,10 +5,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { feedbackAttachmentExpiresAt } from './retention.js';
 
 const ATTACHMENTS_ROOT = path.join(process.cwd(), 'data', 'feedback-attachments');
 const MAX_ATTACHMENTS_PER_TICKET = 5;
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+// 与门户 FEEDBACK_MAX_ATTACHMENT_BYTES 一致；截图原图常超过 5MB。
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const ALLOWED_CONTENT_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -99,7 +101,7 @@ export async function saveTicketAttachment(token, file, existingCount) {
 }
 
 export function readTicketAttachmentFile(token, attachment) {
-  if (!attachment?.storedName) return null;
+  if (!attachment?.storedName || attachment.deletedAt) return null;
   const absolutePath = path.join(ticketDir(token), attachment.storedName);
   if (!fs.existsSync(absolutePath)) return null;
   return {
@@ -109,12 +111,36 @@ export function readTicketAttachmentFile(token, attachment) {
   };
 }
 
-export function toPublicAttachments(token, list) {
+/** 只删除当前工单目录内的单个文件；拒绝路径穿越和链接目录，缺失文件可安全重试。 */
+export function deleteTicketAttachmentFile(token, attachment) {
+  const storedName = attachment.storedName;
+  if (!/^[A-Za-z0-9_-]+$/.test(token) || typeof storedName !== 'string'
+    || !storedName || storedName === '.' || storedName === '..' || /[\\/]/.test(storedName)) {
+    throw new Error('附件路径无效');
+  }
+  const directory = path.resolve(ticketDir(token));
+  const absolutePath = path.resolve(directory, storedName);
+  if (path.dirname(directory) !== path.resolve(ATTACHMENTS_ROOT) || path.dirname(absolutePath) !== directory) {
+    throw new Error('附件路径超出工单目录');
+  }
+  try {
+    // Windows 目录联接也属于符号链接；不能沿链接删除工单目录外的文件。
+    if (fs.lstatSync(directory).isSymbolicLink()) throw new Error('附件目录不能为链接');
+    fs.unlinkSync(absolutePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+/** 清理后仍返回文件名与时间，不再返回下载地址；公开接口不暴露磁盘文件名。 */
+export function toPublicAttachments(token, list, ticket = {}) {
   return normalizeAttachmentList(list).map((item) => ({
     id: item.id,
     name: item.name,
     contentType: item.contentType,
     size: item.size,
-    url: `/api/feedback/${encodeURIComponent(token)}/attachments/${encodeURIComponent(item.id)}`
+    url: item.deletedAt ? '' : `/api/feedback/${encodeURIComponent(token)}/attachments/${encodeURIComponent(item.id)}`,
+    deletedAt: item.deletedAt || null,
+    expiresAt: feedbackAttachmentExpiresAt(ticket, item)
   }));
 }

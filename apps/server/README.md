@@ -46,7 +46,36 @@ npm start
 
 `/api/account-reset` 的 POST 内容是 `{ "account", "userId", "resetAt" }`。两张表都记下 `reset_at`，`savedAt` 不晚于它的项删掉，以后传上来也不收。读和写的返回里都带 `resetAt`，小抄读到后把本机重置以前的改动改回默认。
 
+## 工单附件保留与清理
+
+工单存储在 `data/feedback-tickets.json`，附件存储在 `data/feedback-attachments/<token>/`。
+只有 `fixed`（已修复）和 `rejected`（不采纳）状态的附件会过期，完成后保留 30 天；后补上传的附件从上传时间起保留 30 天。
+修改处理说明或在两种结束状态之间切换不会重置期限。重新进入 `received` 或 `processing` 会取消清理计时，再次处理完成时重新计时。
+已有的结束工单缺少完成时间时，从首次检查起获得完整的 30 天保留期。
+
+管理端 `PATCH /admin/feedback/:token` 可传 `{"retainAttachments":true}` 保留重要附件，传 `false` 恢复按原期限清理。
+
+门户工单管理登录在环境变量中配置 `FEEDBACK_ADMIN_USERNAME` 与 `FEEDBACK_ADMIN_PASSWORD`，调用 `POST /admin/feedback/login` 获取 `sessionToken`，后续管理接口在 `Authorization: Bearer` 里带上该令牌，有效期 24 小时。清理脚本等自动化仍可使用 `FEEDBACK_ADMIN_TOKEN`。保留标记和重新打开均无法恢复已经删除的文件。
+
+服务监听成功后检查一次，之后每 24 小时检查一次。清理保留工单文字、处理说明、修复版本和附件名称，只删除附件文件并记录 `deletedAt`。
+公开查询不再给已清理附件返回下载地址，原下载地址返回 HTTP 410。删除失败不标记成功，下次检查重试。
+
+在仓库根目录可手动预览或执行，预览不会修改任何工单和附件。
+实际执行需先启动本地服务，并在命令终端设置与服务一致的 `FEEDBACK_ADMIN_TOKEN`（自定义端口也需设置相同的 `PORT`）；命令通过受保护的 `POST /admin/feedback-attachments/cleanup` 接口执行，避免独立进程并发改写工单 JSON：
+
+```bash
+npm run cleanup:feedback -w apps/server -- --dry-run
+npm run cleanup:feedback -w apps/server
+npm run test:feedback -w apps/server
+```
+
+部署不会上传本地的 `feedback-tickets.json` 和附件目录，避免覆盖线上工单及清理记录。
+此清理任务只管理服务的附件目录；外部备份应另行设置保留期限，避免过期附件在备份中长期累积。
+
 ## 发布
+
+周年庆互助的接口、账本规则、迁移步骤和未验证项见 [周年庆互助接入说明](src/anniversary-assist/README.md)。
+该模块不再自动创建表，启用前需要显式执行数据迁移；本地开发期间不直接操作线上账本。
 
 本机已能 SSH 到 `admin@123.56.3.130` 时：
 

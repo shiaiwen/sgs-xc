@@ -14,7 +14,7 @@ export default function FeedbackNewPage() {
       <header className="page-shell__header">
         <h1 className="page-shell__title">反馈与建议</h1>
         <p className="page-shell__lead">
-          提交后会给你一条专属链接，收藏后随时查看进度。下面也会让你留下 QQ 或邮箱，方便必要时回找你。
+          每一条反馈都在帮小抄变好。提交后会得到专属进度页，收藏链接随时可看处理进展；需要补充细节或着急说明，用本页下方 QQ 找我就好。
         </p>
       </header>
       <FeedbackForm />

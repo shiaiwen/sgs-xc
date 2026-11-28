@@ -17,8 +17,8 @@ const { withSshOpts } = require('../../../tools/deploy-ssh-options.cjs');
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const target = process.env.SGS_XC_SSH || 'admin@123.56.3.130';
 const remote = process.env.SGS_XC_REMOTE || '/opt/sgs-xc-server';
-/** 本地测试/运行时工单附件，不上传。 */
-const DATA_UPLOAD_EXCLUDE = new Set(['feedback-attachments']);
+/** 工单和附件都是服务端运行时数据，不用本地测试数据覆盖线上处理及清理记录。 */
+const DATA_UPLOAD_EXCLUDE = new Set(['feedback-attachments', 'feedback-tickets.json', 'anniversary-assist.json']);
 
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: rootDir, stdio: 'inherit' });

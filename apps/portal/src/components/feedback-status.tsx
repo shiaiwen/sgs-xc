@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   fetchFeedbackTicket,
   formatAttachmentSize,
@@ -25,20 +25,39 @@ export function FeedbackStatus({
   const [ticket, setTicket] = useState<FeedbackTicket | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+
+  const reloadTicket = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setRefreshing(true);
+    try {
+      const value = await fetchFeedbackTicket(token);
+      setTicket(value);
+      setError("");
+      setLastSyncedAt(Date.now());
+    } catch (loadError) {
+      setTicket((prev) => {
+        if (!prev) {
+          setError(loadError instanceof Error ? loadError.message : "加载失败");
+        }
+        return prev;
+      });
+    } finally {
+      if (!options?.silent) setRefreshing(false);
+    }
+  }, [token]);
 
   useEffect(() => {
-    let active = true;
-    fetchFeedbackTicket(token)
-      .then((value) => {
-        if (active) setTicket(value);
-      })
-      .catch((loadError) => {
-        if (active) setError(loadError instanceof Error ? loadError.message : "加载失败");
-      });
-    return () => {
-      active = false;
-    };
-  }, [token]);
+    void reloadTicket();
+  }, [reloadTicket]);
+
+  // 用户收藏链接后定时拉取，管理端改状态无需主动通知也能看到更新。
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void reloadTicket({ silent: true });
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [reloadTicket]);
 
   async function copyLink() {
     const url = window.location.href.split("#")[0];
@@ -63,13 +82,13 @@ export function FeedbackStatus({
     <div className="feedback-status">
       {isFresh ? (
         <div className="feedback-status__success">
-          <p className="feedback-status__success-title">提交成功</p>
+          <p className="feedback-status__success-title">收到了，谢谢</p>
           <p className="feedback-status__success-lead">
-            请收藏本页，或复制链接发到微信文件传输助手。查进度只靠这条链接。
+            你的反馈已经记下。请收藏本页或复制链接存到方便找的地方，有新进展会更新在这页上。
           </p>
           {uploadError ? (
             <p className="feedback-status__upload-error">
-              附件没有传上去。文字反馈已经记下了，需要的话再发一次带截图的反馈。
+              附件没有传上去。文字反馈已经记下，请用本页下方 QQ 找我补传截图。
             </p>
           ) : null}
           <button type="button" className="btn-primary" onClick={copyLink}>
@@ -80,8 +99,25 @@ export function FeedbackStatus({
 
       <div className="feedback-status__card">
         <div className="feedback-status__head">
-          <span className={statusClass(ticket.status)}>{ticket.statusLabel}</span>
-          <span className="feedback-status__type">{ticket.typeLabel}</span>
+          <div className="feedback-status__head-main">
+            <span className={statusClass(ticket.status)}>{ticket.statusLabel}</span>
+            <span className="feedback-status__type">{ticket.typeLabel}</span>
+          </div>
+          <div className="feedback-status__refresh">
+            {lastSyncedAt ? (
+              <span className="feedback-form__hint">
+                更新于 {formatFeedbackTime(lastSyncedAt)}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              className="feedback-status__refresh-btn"
+              disabled={refreshing}
+              onClick={() => void reloadTicket()}
+            >
+              {refreshing ? "刷新中…" : "刷新进度"}
+            </button>
+          </div>
         </div>
 
         <dl className="feedback-status__meta">
@@ -112,20 +148,29 @@ export function FeedbackStatus({
             <ul className="feedback-status__attachments">
               {ticket.attachments.map((item) => (
                 <li key={item.id}>
-                  <a href={resolveFeedbackAttachmentUrl(item.url)} target="_blank" rel="noreferrer">
-                    {item.name}
-                  </a>
-                  <span>{formatAttachmentSize(item.size)}</span>
+                  {/* 清理后保留原文件名供核对，不再渲染失效的下载链接。 */}
+                  {item.deletedAt ? (
+                    <span className="feedback-status__attachment-name">{item.name}</span>
+                  ) : (
+                    <a href={resolveFeedbackAttachmentUrl(item.url)} target="_blank" rel="noreferrer">
+                      {item.name}
+                    </a>
+                  )}
+                  <span>
+                    {item.deletedAt ? "附件已过期清理" : formatAttachmentSize(item.size)}
+                  </span>
                 </li>
               ))}
             </ul>
           </section>
         ) : null}
 
-        {ticket.publicNote ? (
+        {ticket.status !== "received" || ticket.publicNote ? (
           <section className="feedback-status__section">
             <h2>处理说明</h2>
-            <p className="feedback-status__note">{ticket.publicNote}</p>
+            <p className="feedback-status__note">
+              {ticket.publicNote || "正在处理，说明稍后更新。"}
+            </p>
           </section>
         ) : null}
 

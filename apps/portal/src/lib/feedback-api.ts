@@ -7,6 +7,8 @@ export type FeedbackAttachment = {
   contentType: string;
   size: number;
   url: string;
+  deletedAt?: number | null;
+  expiresAt?: number | null;
 };
 
 export type FeedbackTicket = {
@@ -34,7 +36,8 @@ export type CreateFeedbackResponse = {
 };
 
 export const FEEDBACK_MAX_ATTACHMENTS = 5;
-export const FEEDBACK_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+/** 截图常为原图，单张 5MB 不够；上限只防恶意灌盘。 */
+export const FEEDBACK_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 export const FEEDBACK_ALLOWED_ATTACHMENT_ACCEPT =
   "image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain";
 
@@ -55,7 +58,7 @@ export async function createFeedbackTicket(payload: {
   type: FeedbackType;
   body: string;
   clientVersion: string;
-  platform: FeedbackPlatform;
+  platform: FeedbackPlatform | "";
   contactType: "qq" | "email";
   contact: string;
   notifyEmail?: boolean;
@@ -87,7 +90,7 @@ export async function uploadFeedbackAttachments(token: string, files: File[]): P
   });
   if (!response.ok) {
     if (response.status === 429) throw new Error("附件上传太频繁，请稍后再试");
-    throw new Error("工单已创建，但附件上传失败，可打开进度页后联系我们补传");
+    throw new Error("工单已创建，但附件上传失败，请用本页下方 QQ 找我补传");
   }
   const payload = (await response.json().catch(() => null)) as { saved?: unknown[] } | null;
   const savedCount = Array.isArray(payload?.saved) ? payload.saved.length : files.length;

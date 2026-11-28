@@ -15,7 +15,9 @@ export default function FeedbackViewPage() {
     <main className="page-shell page-shell--narrow">
       <header className="page-shell__header">
         <h1 className="page-shell__title">反馈进度</h1>
-        <p className="page-shell__lead">这条页面就是你的回执，请收藏以便稍后查看。</p>
+        <p className="page-shell__lead">
+          谢谢你的反馈。本页是你的专属回执，收藏或保存链接即可随时查看；有进展会更新在下方状态里。想补充说明，欢迎用页面底部的 QQ 联系我。
+        </p>
       </header>
       <Suspense fallback={<p className="feedback-status__loading">加载中…</p>}>
         <FeedbackViewClient />

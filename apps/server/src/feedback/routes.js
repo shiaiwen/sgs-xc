@@ -6,9 +6,17 @@ import {
   toPublicAttachments
 } from './attachments.js';
 import {
+  adminLoginEnabled,
+  isFeedbackAdminAuthorized,
+  loginFeedbackAdmin
+} from './admin-auth.js';
+import {
   appendFeedbackAttachment,
+  cleanupFeedbackAttachments,
   createFeedbackTicket,
+  deleteFeedbackTicket,
   findFeedbackTicket,
+  findFeedbackTicketRecord,
   listFeedbackTickets,
   toAdminTicket,
   toPublicTicket,
@@ -55,21 +63,25 @@ function readAdminToken(context) {
 }
 
 function assertAdmin(context) {
-  const expected = String(process.env.FEEDBACK_ADMIN_TOKEN || '').trim();
-  if (!expected || readAdminToken(context) !== expected) {
+  const bearer = readAdminToken(context);
+  if (!isFeedbackAdminAuthorized(bearer)) {
     return context.json({ error: 'unauthorized' }, 401);
   }
   return null;
 }
 
 function normalizeContact(body) {
-  const contactType = String(body?.contactType || '').trim();
+  const contactType = String(body?.contactType || 'qq').trim();
   const contact = String(body?.contact || '').trim();
+  // 联系方式选填；留空则工单只依赖进度页链接。
+  if (!contact) {
+    return { contactType: '', contact: '' };
+  }
   if (contactType === 'qq' && /^\d{5,12}$/.test(contact)) {
-    return { contactType, contact };
+    return { contactType: 'qq', contact };
   }
   if (contactType === 'email' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact)) {
-    return { contactType, contact };
+    return { contactType: 'email', contact };
   }
   return null;
 }
@@ -89,12 +101,16 @@ export function createFeedbackRoutes() {
     const type = String(body?.type || '').trim();
     const text = String(body?.body || '').trim();
     const clientVersion = String(body?.clientVersion || '').trim().slice(0, 32);
-    const platform = String(body?.platform || 'electron').trim();
+    const platform = String(body?.platform ?? '').trim();
     const contact = normalizeContact(body);
-    if (!VALID_TYPES.has(type) || text.length < 8 || text.length > 2000 || !contact) {
+    if (!VALID_TYPES.has(type) || !text || !contact) {
       return context.json({ error: 'invalid_payload' }, 400);
     }
     if (!VALID_PLATFORMS.has(platform)) {
+      return context.json({ error: 'invalid_payload' }, 400);
+    }
+    // Bug 必须写明微端或浏览器；需求可不选使用方式。
+    if (type === 'bug' && !platform) {
       return context.json({ error: 'invalid_payload' }, 400);
     }
     const ticket = createFeedbackTicket({
@@ -160,8 +176,8 @@ export function createFeedbackRoutes() {
       saved.push(result.attachment);
     }
     return context.json({
-      attachments: toPublicAttachments(token, working.attachments),
-      saved: toPublicAttachments(token, saved),
+      attachments: toPublicAttachments(token, working.attachments, working),
+      saved: toPublicAttachments(token, saved, working),
       limits
     });
   });
@@ -174,6 +190,7 @@ export function createFeedbackRoutes() {
     const attachment = (Array.isArray(ticket.attachments) ? ticket.attachments : [])
       .find((item) => item.id === attachmentId);
     if (!attachment) return context.json({ error: 'not_found' }, 404);
+    if (attachment.deletedAt) return context.json({ error: 'attachment_expired' }, 410);
     const file = readTicketAttachmentFile(token, attachment);
     if (!file) return context.json({ error: 'not_found' }, 404);
     const inline = String(file.contentType).startsWith('image/') || file.contentType === 'application/pdf';
@@ -187,11 +204,49 @@ export function createFeedbackRoutes() {
     });
   });
 
+  /** 管理端账号密码登录，返回 Bearer 会话令牌。 */
+  routes.post('/admin/feedback/login', async (context) => {
+    if (!adminLoginEnabled()) {
+      return context.json({ error: 'login_disabled' }, 503);
+    }
+    const body = await context.req.json().catch(() => null);
+    const username = String(body?.username || '').trim();
+    const password = String(body?.password || '');
+    if (!username || !password) {
+      return context.json({ error: 'invalid_payload' }, 400);
+    }
+    const session = loginFeedbackAdmin(username, password);
+    if (!session) {
+      return context.json({ error: 'invalid_credentials' }, 401);
+    }
+    return context.json({
+      sessionToken: session.sessionToken,
+      expiresAt: session.expiresAt
+    });
+  });
+
+  // 手动清理也在服务进程内执行，与状态更新串行，避免独立脚本覆盖同时写入的 JSON。
+  routes.post('/admin/feedback-attachments/cleanup', (context) => {
+    const denied = assertAdmin(context);
+    if (denied) return denied;
+    return context.json(cleanupFeedbackAttachments());
+  });
+
   routes.get('/admin/feedback', (context) => {
     const denied = assertAdmin(context);
     if (denied) return denied;
     const tickets = listFeedbackTickets().map((item) => toAdminTicket(item));
     return context.json({ tickets });
+  });
+
+  routes.delete('/admin/feedback/:token', (context) => {
+    const denied = assertAdmin(context);
+    if (denied) return denied;
+    const token = String(context.req.param('token') || '').trim();
+    const existing = findFeedbackTicketRecord(token);
+    if (!existing) return context.json({ error: 'not_found' }, 404);
+    deleteFeedbackTicket(token);
+    return context.json({ ok: true });
   });
 
   routes.patch('/admin/feedback/:token', async (context) => {
@@ -201,6 +256,11 @@ export function createFeedbackRoutes() {
     if (!existing) return context.json({ error: 'not_found' }, 404);
     const body = await context.req.json().catch(() => null);
     const patch = {};
+    // 只有管理端能保留重要资料；用户上传或查询不能自行关闭过期清理。
+    if (body?.retainAttachments !== undefined) {
+      if (typeof body.retainAttachments !== 'boolean') return context.json({ error: 'invalid_retention' }, 400);
+      patch.retainAttachments = body.retainAttachments;
+    }
     if (body?.status !== undefined) {
       const status = String(body.status).trim();
       if (!VALID_STATUSES.has(status)) return context.json({ error: 'invalid_status' }, 400);

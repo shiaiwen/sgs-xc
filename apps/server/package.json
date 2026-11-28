@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
+    "cleanup:feedback": "node scripts/cleanup-feedback-attachments.js",
     "deploy": "node deploy/push.js"
   },
   "dependencies": {

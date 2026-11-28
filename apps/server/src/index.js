@@ -10,6 +10,7 @@ import { createLogRoutes } from './logs-page.js';
 import { captureRequestLog } from './request-log.js';
 import { createVersionRoutes } from './version/routes.js';
 import { createFeedbackRoutes } from './feedback/routes.js';
+import { startFeedbackAttachmentCleanup } from './feedback/cleanup.js';
 // 临时关闭周年庆入口，方便以后恢复。
 // import { createAnniversaryAssistRoutes } from './anniversary-assist/routes.js';
 
@@ -42,5 +43,6 @@ app.route('/', createFeedbackRoutes());
 startGiftCodeRefresh();
 
 serve({ fetch: app.fetch, port }, () => {
+  startFeedbackAttachmentCleanup();
   console.log(`服务已启动 http://127.0.0.1:${port}`);
 });

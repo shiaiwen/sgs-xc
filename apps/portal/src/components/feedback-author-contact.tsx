@@ -18,9 +18,9 @@ export function FeedbackAuthorContact() {
 
   return (
     <aside className="feedback-author-contact" aria-label="联系维护者">
-      <h2 className="feedback-author-contact__title">需要直接沟通？</h2>
+      <h2 className="feedback-author-contact__title">想再补充几句？</h2>
       <p className="feedback-author-contact__lead">
-        工单适合留记录和查进度。着急、说不清、或想先发截图，可以用 QQ 找我。网页里不能直接唤起 QQ，请复制号码或用手机扫码。
+        还有截图要发、细节没说清，或想跟进进度，都可以 QQ 找我。网页里不能直接唤起 QQ，复制号码或用手机扫码即可。
       </p>
       <div className="feedback-author-contact__body">
         <div className="feedback-author-contact__text">
