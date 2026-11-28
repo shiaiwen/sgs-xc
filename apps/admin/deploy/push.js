@@ -2,7 +2,7 @@
  * 将管理台源码同步到服务器并在远端构建、用 pm2 托管 next start。
  * 用法：在 apps/admin 目录执行 npm run deploy
  *
- * 默认 admin@123.56.3.130:/opt/xc-admin，进程名 xc-admin，端口 3001。
+ * 默认 admin@123.56.3.130:~/xc-admin，进程名 xc-admin，端口 3001。
  */
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
@@ -10,7 +10,7 @@ const { withSshOpts } = require("../../../tools/deploy-ssh-options.cjs");
 
 const rootDir = path.resolve(__dirname, "..");
 const target = process.env.ADMIN_SSH || process.env.XC_SSH || "admin@123.56.3.130";
-const remote = process.env.ADMIN_REMOTE || "/opt/xc-admin";
+const remote = process.env.ADMIN_REMOTE || "/home/admin/xc-admin";
 const pm2Name = process.env.ADMIN_PM2_NAME || "xc-admin";
 const listenPort = process.env.ADMIN_PORT || "3001";
 
