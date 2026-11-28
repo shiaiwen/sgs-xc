@@ -36,10 +36,16 @@ if (!fs.existsSync(outDir)) {
 fs.rmSync(distDir, { recursive: true, force: true });
 fs.cpSync(outDir, distDir, { recursive: true });
 
+const remoteIncoming = `${remote}/dist-incoming`;
+// 先上传到临时目录，成功后再替换正式 dist，避免上传中断时整站空白。
 run("ssh", withSshOpts([
   target,
-  `sudo mkdir -p ${remote} && sudo chown -R "$(whoami):$(whoami)" ${remote} && rm -rf ${remote}/dist`,
+  `sudo mkdir -p ${remote} && sudo chown -R "$(whoami):$(whoami)" ${remote} && rm -rf ${remoteIncoming}`,
 ]));
-run("scp", withSshOpts(["-r", "dist", `${target}:${remote}/`]));
+run("scp", withSshOpts(["-r", "dist", `${target}:${remoteIncoming}/`]));
+run("ssh", withSshOpts([
+  target,
+  `rm -rf ${remote}/dist && mv ${remoteIncoming}/dist ${remote}/dist && rmdir ${remoteIncoming} 2>/dev/null || true`,
+]));
 
 console.log(`已同步到 ${target}:${remote}/dist`);
