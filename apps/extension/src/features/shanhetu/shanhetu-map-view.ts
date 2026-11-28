@@ -119,6 +119,7 @@ function createDivider(): UnknownRecord | null {
   if (!node) return null;
   node.width = ROGUE_MAP_STYLE.panelWidth;
   node.height = 5;
+  node.mouseEnabled = false;
   call(asRecord(node.graphics), 'drawLine',
     ROGUE_MAP_STYLE.labelPad,
     3,
@@ -265,36 +266,32 @@ function createLeaderLine(panel: RogueMapPanelLayout, panelHeight: number): Unkn
   return sprite;
 }
 
-/** 清掉城池上的覆盖层。 */
-export function clearCityOverlays(cityView: UnknownRecord | null): void {
-  if (!cityView || typeof cityView.numChildren !== 'number') return;
-  for (let index = Number(cityView.numChildren) - 1; index >= 0; index -= 1) {
-    const child = asRecord(call(cityView, 'getChildAt', index));
-    if (!child) continue;
-    if (child.name === 'city' || child.name === 'cityLeader') {
-      call(cityView, 'removeChild', child);
-      try {
-        if (typeof child.destroy === 'function') child.destroy(true);
-      } catch {
-        // 忽略异常
-      }
-    }
-  }
-}
 
-/** 把城池信息挂到地图上。 */
-export function mountCityOverlays(cityView: UnknownRecord | null, nodes: UnknownRecord[]): void {
-  if (!cityView) return;
-  clearCityOverlays(cityView);
-  for (const node of nodes) call(cityView, 'addChild', node);
+export function clearCityOverlays(view: UnknownRecord | null): void {
+ if (!view) return;
+ for (let i = Number(view.numChildren)-1; i >= 0; i--) {
+  const child = asRecord(call(view, 'getChildAt', i));
+  if (child?.name !== 'city' && child?.name !== 'cityLeader') continue;
+  call(view, 'removeChild', child); call(child, 'destroy', true);
+ }
 }
-
-/** 该城是否已经挂过覆盖层。 */
-export function hasMountedCityOverlay(cityView: UnknownRecord | null): boolean {
-  if (!cityView || typeof cityView.numChildren !== 'number') return false;
-  for (let index = 0; index < Number(cityView.numChildren); index += 1) {
-    const child = asRecord(call(cityView, 'getChildAt', index));
-    if (child?.name === 'city') return true;
-  }
-  return false;
+/** 保持地图局部坐标和鼠标穿透，手牌遮挡由布局解决。 */
+export function mountCityOverlays(view: UnknownRecord | null, nodes: UnknownRecord[]): void {
+ if (!view) return; clearCityOverlays(view);
+ for (const node of nodes) call(view, 'addChild', node);
+}
+export function hasMountedCityOverlay(view: UnknownRecord | null): boolean {
+ if (!view) return false;
+ for (let i=0; i<Number(view.numChildren); i++) if (asRecord(call(view, 'getChildAt', i))?.name === 'city') return true;
+ return false;
+}
+export function getOverlayMountDebug(view: UnknownRecord | null): Record<string, unknown> {
+ const parent = asRecord(view?.parent);
+ return { mountMode: 'city-view', hostParentName: String(parent?.name || parent?.ClassName || 'unknown') };
+}
+/** 使用实际换行与文字节点高度布局，避免黑底比估算高度更高。 */
+export function measureCityOverlayHeight(panel: RogueMapPanelLayout): number {
+ const nodes=createCityOverlayNodes(panel), height=Number(nodes[0]?.height)||panel.h;
+ for (const node of nodes) call(node, 'destroy', true);
+ return height;
 }

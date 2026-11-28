@@ -17,6 +17,8 @@ import { OPEN_WINDOW_EVENT } from '../../const/game-window-events.ts';
 import { createMethodPatcher } from '../../runtime/method-patch.ts';
 import { showToast } from '../../ui/toast/show-toast.ts';
 import type { RoguePlotMeta } from './shanhetu-map-types.ts';
+import { ROGUE_SHOP_DATA_REQ_MARK } from './shanhetu-settings.ts';
+export { ROGUE_SHOP_DATA_REQ_MARK } from './shanhetu-settings.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -29,12 +31,6 @@ const SHANHE_SCENE_NAMES = new Set([
   'RogueLikeBigMapScene',
   'RogueLikeGameScene'
 ]);
-
-/**
- * 集市同步缺 shopData 时，用 RogueLikeDataReq 请求完整山河数据。
- * `0x3f` 为原版默认 dataMark 掩码。
- */
-export const ROGUE_SHOP_DATA_REQ_MARK = 0x3f;
 
 /** 商品 type 对应的标题前缀。 */
 export const ROGUE_SHOP_TYPE_LABELS: Readonly<Record<number, string>> = Object.freeze({
@@ -423,7 +419,7 @@ export function installShanhetuShopController(
       return;
     }
     publishPreview([]);
-    // 参考脚本缺集市数据时请求一次完整山河同步；进入总地图也执行一次。
+    // 缺集市数据时请求一次完整山河同步；进入山河场景也执行一次。
     if ((allowRequest || !requestedInCurrentScene) && requestShopData(ROGUE_SHOP_DATA_REQ_MARK, allowRequest)) {
       requestedInCurrentScene = true;
     }

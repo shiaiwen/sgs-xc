@@ -141,6 +141,8 @@ export const ROGUE_MAP_STYLE = Object.freeze({
   backgroundAlpha: 0.7,
   layoutGap: 4,
   viewportPad: 4,
+  /** 布局时面板底边伸入手牌区的惩罚分，促使高面板整体上移。 */
+  layoutBottomOverflowPenalty: 280,
   cityDefaultWidth: 250,
   cityDefaultHeight: 100,
   pollMs: 700,

@@ -82,19 +82,81 @@ export function readMapViewport(
     ?? projectNodeBounds(cityView, asRecord(scene?.topView), true);
   if (topHud) top = Math.max(top, topHud.bottom + pad);
 
-  const bottomHud = projectNodeBounds(cityView, asRecord(scene?.bottomView), true)
-    ?? projectNodeBounds(cityView, asRecord(scene?.bottomBar), true);
-  if (bottomHud) bottom = Math.min(bottom, bottomHud.top - pad);
+  const bottomView = asRecord(scene?.bottomView) ?? asRecord(scene?.bottomBar);
+  if (bottomView) {
+  // 手牌多在 bottomView 子节点里，按 cardItemList 投到 cityView 比只量底栏外框更准。
+    const handBounds = readHandBoundsInCityView(cityView, scene);
+    if (handBounds) bottom = Math.min(bottom, handBounds.top - pad);
+  }
 
-  if (!(bottom > top) || !(right > left)) return null;
+  // 高面板可以向上溢出，但不能因上下栏挤满视口而取消手牌底边约束。
+  if (!(right > left)) return null;
+  if (Number.isFinite(bottom) && bottom <= top + pad * 2) top = bottom - pad * 2 - 1;
   return { left: left + pad, top: top + pad, right: right - pad, bottom: bottom - pad };
 }
 
+/** 合并手牌容器内可见子节点的投影，容器本身可能没有宽高。 */
+export function readHandBoundsInCityView(view: UnknownRecord | null, scene: UnknownRecord | null): Bounds | null {
+ const bottom=asRecord(scene?.bottomView) ?? asRecord(scene?.bottomBar);
+ if (!view || !bottom || !isVisible(bottom)) return null;
+ let merged: Bounds | null=null;
+ for (const node of collectBottomHandNodes(bottom)) {
+  const bounds=projectNodeTreeBounds(view,node,16);
+  if (bounds) merged=merged ? unionBounds(merged,bounds) : bounds;
+ }
+ return merged ?? projectNodeTreeBounds(view,bottom,16);
+}
 interface Bounds {
   left: number;
   top: number;
   right: number;
   bottom: number;
+}
+
+function unionBounds(first: Bounds, second: Bounds): Bounds {
+  return {
+    left: Math.min(first.left, second.left),
+    top: Math.min(first.top, second.top),
+    right: Math.max(first.right, second.right),
+    bottom: Math.max(first.bottom, second.bottom)
+  };
+}
+
+/** bottomView 内实际放手牌、战法技能的节点，用于推算手牌区上沿。 */
+function collectBottomHandNodes(bottomView: UnknownRecord): UnknownRecord[] {
+  const nodes: UnknownRecord[] = [];
+  const cardList = bottomView.cardItemList;
+  if (Array.isArray(cardList)) {
+    for (const entry of cardList) {
+      const item = asRecord(entry);
+      if (item) nodes.push(item);
+    }
+  }
+  for (const key of ['skillItemSpr', 'zhanfaItemSpr']) {
+    const item = asRecord(bottomView[key]);
+    if (item) nodes.push(item);
+  }
+  return nodes;
+}
+
+function projectNodeTreeBounds(
+  parent: UnknownRecord,
+  node: UnknownRecord,
+  depth: number
+): Bounds | null {
+  if (!isVisible(node)) return null;
+  let merged: Bounds | null = projectNodeBounds(parent, node);
+  if (depth <= 0 || typeof node.numChildren !== 'number') return merged;
+  const count = Number(node.numChildren);
+  for (let index = 0; index < count; index += 1) {
+    const getter = node.getChildAt;
+    if (typeof getter !== 'function') break;
+    const child = asRecord((getter as Function).call(node, index));
+    if (!child || !isVisible(child)) continue;
+    const bounds = projectNodeTreeBounds(parent, child, depth - 1);
+    if (bounds) merged = merged ? unionBounds(merged, bounds) : bounds;
+  }
+  return merged;
 }
 
 function projectNodeBounds(
@@ -250,18 +312,45 @@ export function resolveCityGeometry(
   return { ...box, visualArea: box };
 }
 
-/** 城池图是否已经能显示。 */
+/**
+ * 城池图是否已经能用来算布局。
+ * 继续征程里贴图可能缩放、延迟设宽高或短暂不可见；有条目坐标或纹理即可画，避免无限 pending-images。
+ */
+// 继续征程的缩放贴图不一定等于纹理原尺寸，先按条目坐标画，再按实际几何重排。
 export function cityImageReady(cityView: UnknownRecord | null, cityId: string | number): boolean {
   const getter = cityView?.GetCityItemById;
   if (typeof getter !== 'function') return true;
   const item = asRecord((getter as Function).call(cityView, cityId));
+  if (!item) return true;
+  const posX = Number(item.x);
+  const posY = Number(item.y);
+  if (Number.isFinite(posX) && Number.isFinite(posY)) return true;
+
   const cityImg = asRecord(item?.cityImg);
   if (!cityImg) return true;
-  const tw = Number(cityImg.textureWidth) || 0;
-  const th = Number(cityImg.textureHeight) || 0;
-  const w = Number(cityImg.width) || 0;
-  const h = Number(cityImg.height) || 0;
-  return tw > 0 && th > 0 && w === tw && h === th;
+  const width = Number(cityImg.width) || 0;
+  const height = Number(cityImg.height) || 0;
+  if (width > 0 && height > 0) return true;
+
+  const textureWidth = Number(cityImg.textureWidth) || 0;
+  const textureHeight = Number(cityImg.textureHeight) || 0;
+  if (textureWidth > 0 && textureHeight > 0) return true;
+
+  const texture = asRecord(cityImg.texture) ?? asRecord(cityImg._texture);
+  if (texture) {
+    const bitmapWidth = Number(texture.width) || Number(texture.sourceWidth) || 0;
+    const bitmapHeight = Number(texture.height) || Number(texture.sourceHeight) || 0;
+    if (bitmapWidth > 0 && bitmapHeight > 0) return true;
+  }
+
+  const source = asRecord(cityImg.source) ?? asRecord(cityImg._source);
+  if (source) {
+    const sourceWidth = Number(source.width) || Number(asRecord(source.bitmap)?.width) || 0;
+    const sourceHeight = Number(source.height) || Number(asRecord(source.bitmap)?.height) || 0;
+    if (sourceWidth > 0 && sourceHeight > 0) return true;
+  }
+
+  return false;
 }
 
 /** 给城池列表做指纹，没变化就不重画。 */

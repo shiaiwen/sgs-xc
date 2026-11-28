@@ -61,8 +61,10 @@ export function installCardLabelController(
         for (const id of [...ids, ...event.cardIds]) if (id > 0) sources.delete(id);
       } else if (toSelf && !fromSelf && labelKey(source) !== XINYOU_TAG) {
         const owner = readIncomingCardOwner({ ...event, selfSeatId });
-        // 读取自己的手牌号来对上标签。原持有者以这次移牌的座位为准。
-        const receivedIds = owner !== null && source && event.cardIds.length === event.cardCount ? event.cardIds : publicIds;
+        // 暗移牌协议里卡号常为 0；明牌解析出的 ids 才是真卡号，霸朝索要交牌等均走这条路径。
+        const receivedIds = owner !== null && source && event.cardIds.length === event.cardCount
+          ? resolveIncomingCardIds(event, ids)
+          : publicIds;
         for (const id of receivedIds) if (id > 0) sources.set(id, source ?? publicHandRevealLabel(event.spellId));
       }
     }
@@ -336,6 +338,8 @@ export function installCardLabelController(
         scheduleRefresh();
         break;
       case 'cards-used':
+      case 'cards-moved':
+      case 'hand-cards-revealed':
       case 'spell-data-updated':
         scheduleRefresh();
         break;
@@ -407,6 +411,16 @@ function cardIdOf(ui: RuntimeObject): number {
 
 function cardIdOfCard(card: RuntimeObject | null): number {
   return Number(card?.CardId ?? card?.cardId ?? card?.CardID ?? 0);
+}
+
+/**
+ * 本家收入手牌的卡号：协议已亮牌用 event.cardIds，否则用明牌侧解析后的 ids。
+ */
+function resolveIncomingCardIds(event: Movement, resolvedIds: readonly number[]): number[] {
+  if (!event.cardIds.length) return resolvedIds.filter((id) => id > 0);
+  if (event.cardIds.some((id) => id > 0)) return event.cardIds.filter((id) => id > 0);
+  const fallback = resolvedIds.filter((id) => id > 0);
+  return fallback.length ? fallback : event.cardIds;
 }
 
 /** 效果名与来源前缀使用同一个去重键。调用方先加入仍生效的标签。 */

@@ -15,6 +15,9 @@ export interface ShanhetuSwitchSetting {
 /** 山河地图开关，默认开。 */
 export const SHANHETU_MAP_KEY = 'shanhetu.mapEnabled' satisfies ShanhetuSwitchKey;
 
+/** 地图与集市缺数据时请求完整山河同步；0x3f 是游戏原版 dataMark 掩码。 */
+export const ROGUE_SHOP_DATA_REQ_MARK = 0x3f;
+
 /** 隐藏对白开关，默认关。 */
 export const SHANHETU_HIDE_STORY_KEY = 'shanhetu.hideStory' satisfies ShanhetuSwitchKey;
 

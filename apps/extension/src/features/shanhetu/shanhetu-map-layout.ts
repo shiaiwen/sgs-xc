@@ -34,7 +34,10 @@ function scorePlacement(
     score += Math.hypot(panel.x - seedX, panel.y - seedY) * 0.2;
     if (viewport) {
       if (panel.y < viewport.top) score += 60;
-      if (panel.y + panel.h > viewport.bottom) score += 40;
+      const overflowBottom = panel.y + panel.h - viewport.bottom;
+      if (overflowBottom > 0) {
+        score += ROGUE_MAP_STYLE.layoutBottomOverflowPenalty + overflowBottom * 0.5;
+      }
       if (panel.x < viewport.left || panel.x + panel.w > viewport.right) score += 30;
     }
     for (let j = i + 1; j < panels.length; j += 1) {
@@ -58,15 +61,21 @@ function clampToViewport(
   if (!viewport) return { x, y };
   const viewW = viewport.right - viewport.left;
   const viewH = viewport.bottom - viewport.top;
-  // 可视区比单块面板还窄/矮时不强夹：否则多城面板会被捏到同一点，
-  // 看起来像「只有燕县有透视、朝歌问号关没有」。
-  if (!(viewW >= w) || !(viewH >= h)) return { x, y };
-  const maxX = Math.max(viewport.left, viewport.right - w);
-  const maxY = Math.max(viewport.top, viewport.bottom - h);
-  return {
-    x: Math.min(Math.max(x, viewport.left), maxX),
-    y: Math.min(Math.max(y, viewport.top), maxY)
-  };
+  let outX = x;
+  let outY = y;
+  if (viewW >= w) {
+    const maxX = Math.max(viewport.left, viewport.right - w);
+    outX = Math.min(Math.max(x, viewport.left), maxX);
+  }
+  const maxY = viewport.bottom - h;
+  if (viewH >= h) {
+    const minY = viewport.top;
+    outY = Math.min(Math.max(y, minY), Math.max(minY, maxY));
+  } else {
+    // 面板比可视区还高时仍上移，避免底边压进 hand 区；横向仍只弱夹。
+    outY = Math.min(y, maxY);
+  }
+  return { x: outX, y: outY };
 }
 
 
@@ -108,7 +117,8 @@ export function layoutMapPanels(
     const current = result[index];
     let best = { x: current.x, y: current.y, score: Number.POSITIVE_INFINITY };
     for (const [dx, dy] of directions) {
-      for (let step = 0; step <= 3; step += 1) {
+      const maxStep = current.h > 240 ? 6 : 3;
+      for (let step = 0; step <= maxStep; step += 1) {
         if (dx === 0 && dy === 0 && step > 0) continue;
         const raw = {
           x: current.x0 + dx * step * (current.w / 4 + gap),

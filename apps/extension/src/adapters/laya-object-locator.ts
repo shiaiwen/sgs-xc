@@ -313,7 +313,10 @@ export function createLayaObjectLocator(
     if (!stage) return [];
     const layers = children(stage).filter((child) => child.layerOrder === LAYER_ORDER.indexOf(layerName));
     return layers.flatMap((layer) => children(layer).filter((child) => (
-      child.name === name || child.sceneName === name || asRecord(child.constructor)?.name === name
+      child.name === name
+      || child.sceneName === name
+      || child.SceneName === name
+      || asRecord(child.constructor)?.name === name
     )));
   }
 

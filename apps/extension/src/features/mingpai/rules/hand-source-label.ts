@@ -47,7 +47,9 @@ export function buildIncomingHandSourceLabel(
   const name = input.spellName || readSpellName(input.spellId);
   let shortName = name.includes('特质') ? '特质' : HAND_LABEL_ALIASES[name] ?? name.slice(0, 2);
   if (input.spellId === SNATCH_SPELL_ID) shortName = '顺手';
-  if (BACHAO_SPELL_IDS.has(input.spellId)) shortName = '霸朝';
+  if (isBachaoSpell(input.spellId) || (input.spellName !== undefined && BACHAO_NAME.test(input.spellName))) {
+    shortName = '霸朝';
+  }
   const source = owner === null ? '' : input.seatLabel?.(owner) || `${owner + 1}号位`;
   return shortName || source ? `${shortName ? `[${shortName}]` : ''}${source}` : null;
 }
